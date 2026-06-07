@@ -1,0 +1,68 @@
+BEGIN TRANSACTION;
+
+CREATE TEMP TABLE incoming_test_events AS
+SELECT
+    getenv('TEST_RUN_ID') AS run_id,
+    row_number() OVER () AS event_index,
+    try_cast(json_extract_string(json, '$.Time') AS TIMESTAMP) AS event_time,
+    json_extract_string(json, '$.Action') AS action,
+    coalesce(
+        json_extract_string(json, '$.Package'),
+        json_extract_string(json, '$.ImportPath')
+    ) AS package,
+    json_extract_string(json, '$.Test') AS test,
+    try_cast(json_extract_string(json, '$.Elapsed') AS DOUBLE) AS elapsed_seconds,
+    json_extract_string(json, '$.Output') AS output
+FROM read_json_objects(getenv('TEST_EVENTS_FILE'), format = 'newline_delimited')
+WHERE json_extract_string(json, '$.Action') IS NOT NULL;
+
+INSERT INTO test_runs (
+    run_id,
+    started_at,
+    finished_at,
+    duration_seconds,
+    status,
+    exit_code,
+    backend,
+    race,
+    pattern,
+    command
+)
+SELECT
+    getenv('TEST_RUN_ID'),
+    getenv('TEST_STARTED_AT')::TIMESTAMP,
+    getenv('TEST_FINISHED_AT')::TIMESTAMP,
+    getenv('TEST_DURATION_SECONDS')::DOUBLE,
+    getenv('TEST_STATUS'),
+    getenv('TEST_EXIT_CODE')::INTEGER,
+    getenv('DBOS_TEST_BACKEND'),
+    getenv('TEST_RACE')::BOOLEAN,
+    nullif(getenv('TEST_PATTERN'), ''),
+    getenv('TEST_COMMAND');
+
+INSERT INTO test_events (
+    run_id,
+    event_index,
+    event_time,
+    action,
+    package,
+    test,
+    elapsed_seconds,
+    output
+)
+SELECT * FROM incoming_test_events;
+
+INSERT INTO test_results (run_id, package, test, status, elapsed_seconds)
+SELECT run_id, package, test, action, elapsed_seconds
+FROM incoming_test_events
+WHERE test IS NOT NULL
+  AND action IN ('pass', 'fail', 'skip');
+
+INSERT INTO package_results (run_id, package, status, elapsed_seconds)
+SELECT run_id, package, action, elapsed_seconds
+FROM incoming_test_events
+WHERE test IS NULL
+  AND package IS NOT NULL
+  AND action IN ('pass', 'fail', 'skip');
+
+COMMIT;

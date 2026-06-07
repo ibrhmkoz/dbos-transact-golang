@@ -5,29 +5,33 @@ ORDER BY started_at DESC
 LIMIT 20;
 
 -- Failed tests from the latest run.
-SELECT r.test, r.package, r.elapsed_seconds
-FROM test_results r
-WHERE r.run_id = (SELECT run_id FROM test_runs ORDER BY started_at DESC LIMIT 1)
-  AND r.status = 'fail'
-ORDER BY r.elapsed_seconds DESC;
+SELECT test, package, elapsed_seconds
+FROM latest_test_results
+WHERE status = 'fail'
+ORDER BY elapsed_seconds DESC;
+
+-- Failed packages from the latest run, including setup/build failures.
+SELECT package, elapsed_seconds
+FROM latest_package_results
+WHERE status = 'fail'
+ORDER BY elapsed_seconds DESC;
 
 -- Slowest tests across all recorded runs.
 SELECT
     test,
-    count(*) AS runs,
-    round(avg(elapsed_seconds), 3) AS avg_seconds,
-    round(max(elapsed_seconds), 3) AS max_seconds
-FROM test_results
-WHERE status = 'pass'
-GROUP BY test
+    package,
+    runs,
+    round(avg_seconds, 3) AS avg_seconds,
+    round(p95_seconds, 3) AS p95_seconds,
+    round(max_seconds, 3) AS max_seconds
+FROM test_duration_history
 ORDER BY avg_seconds DESC
 LIMIT 30;
 
 -- Failure output from the latest run.
-SELECT e.test, e.output
-FROM test_events e
-JOIN test_results r USING (run_id, package, test)
-WHERE e.run_id = (SELECT run_id FROM test_runs ORDER BY started_at DESC LIMIT 1)
-  AND r.status = 'fail'
-  AND e.output IS NOT NULL
-ORDER BY e.event_time;
+SELECT events.test, events.package, events.output
+FROM latest_test_events AS events
+LEFT JOIN latest_test_results AS results USING (run_id, package, test)
+WHERE events.output IS NOT NULL
+  AND (results.status = 'fail' OR events.action = 'build-output')
+ORDER BY events.event_index;
