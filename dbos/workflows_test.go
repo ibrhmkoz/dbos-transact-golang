@@ -100,6 +100,23 @@ func Identity[T any](dbosCtx DBOSContext, in T) (T, error) {
 	return in, nil
 }
 
+func TestResolveWorkflowFunctionName(t *testing.T) {
+	t.Run("non-generic workflow does not exercise generic branch", func(t *testing.T) {
+		runtimeName := runtime.FuncForPC(reflect.ValueOf(simpleWorkflow).Pointer()).Name()
+
+		require.NotContains(t, runtimeName, "[")
+		assert.Equal(t, runtimeName, resolveWorkflowFunctionName(simpleWorkflow))
+	})
+
+	t.Run("generic workflow exercises generic branch", func(t *testing.T) {
+		runtimeName := runtime.FuncForPC(reflect.ValueOf(Identity[int]).Pointer()).Name()
+		baseName := strings.Split(runtimeName, "[")[0]
+
+		require.Contains(t, runtimeName, "[")
+		assert.Equal(t, baseName+"[int,int]", resolveWorkflowFunctionName(Identity[int]))
+	})
+}
+
 func TestWorkflowsRegistration(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -5930,7 +5947,7 @@ func TestStreams(t *testing.T) {
 		// Verifies that the readStream goroutine exits when the consumer's context is
 		// cancelled, even if the consumer stops reading from the channel.
 		// goleak (via checkLeaks:true on this test) will fail if the goroutine leaks.
-		streamBlockEvent = NewEvent()    // not set — workflow blocks after initial writes
+		streamBlockEvent = NewEvent()   // not set — workflow blocks after initial writes
 		streamStartedEvent = NewEvent() // signals that initial writes are done
 
 		streamKey := "test-stream-leak"

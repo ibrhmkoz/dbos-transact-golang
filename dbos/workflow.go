@@ -447,16 +447,6 @@ func (h *workflowHandleProxy[R]) GetWorkflowID() string {
 /**********************************/
 /******* WORKFLOW REGISTRY *******/
 /**********************************/
-type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization string, opts ...WorkflowOption) (WorkflowHandle[any], error)
-
-type WorkflowRegistryEntry struct {
-	wrappedFunction wrappedWorkflowFunc
-	MaxRetries      int
-	Name            string
-	FQN             string // Fully qualified name of the workflow function
-	CronSchedule    string // Empty string for non-scheduled workflows
-}
-
 func registerWorkflow(ctx DBOSContext, workflowFQN string, fn wrappedWorkflowFunc, maxRetries int, customName string) {
 	// Skip if we don't have a concrete dbosContext
 	c, ok := ctx.(*dbosContext)
@@ -506,13 +496,9 @@ func registerScheduledWorkflow(ctx DBOSContext, workflowFQN, customName string, 
 	}
 
 	// Update the existing workflow entry with the cron schedule
-	registryEntryAny, exists := c.workflowRegistry.Load(workflowFQN)
-	if !exists {
+	if !c.workflowRegistry.SetCronSchedule(workflowFQN, cronSchedule) {
 		panic(fmt.Sprintf("workflow %s must be registered before scheduling", workflowFQN))
 	}
-	registryEntry := registryEntryAny.(WorkflowRegistryEntry)
-	registryEntry.CronSchedule = cronSchedule
-	c.workflowRegistry.Store(workflowFQN, registryEntry)
 
 	name := workflowFQN
 	if len(customName) > 0 {
@@ -702,11 +688,10 @@ func (c *dbosContext) resolveWorkflowName(workflowFn any) (string, error) {
 		return "", errors.New("workflow function is required")
 	}
 	fqn := runtime.FuncForPC(reflect.ValueOf(workflowFn).Pointer()).Name()
-	value, ok := c.workflowRegistry.Load(fqn)
+	entry, ok := c.workflowRegistry.Load(fqn)
 	if !ok {
 		return "", fmt.Errorf("workflow function not registered: %s", fqn)
 	}
-	entry := value.(WorkflowRegistryEntry)
 	if entry.Name != "" {
 		return entry.Name, nil
 	}
@@ -1011,15 +996,10 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 	}
 
 	// Lookup the registry for registration-time options
-	registeredWorkflowAny, exists := c.workflowRegistry.Load(params.WorkflowName)
+	registeredWorkflow, exists := c.workflowRegistry.Load(params.WorkflowName)
 	if !exists {
 		c.logger.Error("workflow not found in registry", "workflow_name", params.WorkflowName)
 		return nil, newNonExistentWorkflowError(params.WorkflowName)
-	}
-	registeredWorkflow, ok := registeredWorkflowAny.(WorkflowRegistryEntry)
-	if !ok {
-		c.logger.Error("invalid workflow registry entry type for workflow", "workflow_name", params.WorkflowName)
-		return nil, fmt.Errorf("invalid workflow registry entry type for workflow %s", params.WorkflowName)
 	}
 	if registeredWorkflow.MaxRetries > 0 {
 		params.MaxRetries = registeredWorkflow.MaxRetries

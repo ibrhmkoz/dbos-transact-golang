@@ -236,8 +236,8 @@ type dbosContext struct {
 	// Wait group for workflow goroutines
 	workflowsWg *sync.WaitGroup
 
-	// Workflow registry - read-mostly sync.Map since registration happens only before launch
-	workflowRegistry        *sync.Map // map[string]WorkflowRegistryEntry
+	// Workflow registry - read-mostly since registration happens only before launch
+	workflowRegistry        *WorkflowRegistry
 	workflowCustomNametoFQN *sync.Map // Maps fully qualified workflow names to custom names. Usefor when client enqueues a workflow by name because registry is indexed by FQN.
 
 	// Set of workflow IDs currently running on this context (key = workflow ID, value = activeWorkflowEntry)
@@ -540,21 +540,7 @@ func (c *dbosContext) ListRegisteredWorkflows(_ DBOSContext, opts ...ListRegiste
 		opt(params)
 	}
 
-	// Get all registered workflows and apply filters
-	var filteredWorkflows []WorkflowRegistryEntry
-	c.workflowRegistry.Range(func(key, value any) bool {
-		workflow := value.(WorkflowRegistryEntry)
-
-		// Filter by scheduled only
-		if params.scheduledOnly && workflow.CronSchedule == "" {
-			return true
-		}
-
-		filteredWorkflows = append(filteredWorkflows, workflow)
-		return true
-	})
-
-	return filteredWorkflows, nil
+	return c.workflowRegistry.List(params.scheduledOnly), nil
 }
 
 // NewDBOSContext creates a new DBOS context with the provided configuration.
@@ -582,7 +568,7 @@ func NewDBOSContext(ctx context.Context, inputConfig Config) (DBOSContext, error
 		workflowsWg:             &sync.WaitGroup{},
 		ctx:                     dbosBaseCtx,
 		ctxCancelFunc:           cancelFunc,
-		workflowRegistry:        &sync.Map{},
+		workflowRegistry:        NewWorkflowRegistry(),
 		workflowCustomNametoFQN: &sync.Map{},
 		activeWorkflowIDs:       &sync.Map{},
 	}

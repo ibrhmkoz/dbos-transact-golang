@@ -144,13 +144,9 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 	if !ok {
 		return nil, fmt.Errorf("workflow not found: %s", schedule.WorkflowName)
 	}
-	value, ok := c.workflowRegistry.Load(fqn)
+	entry, ok := c.workflowRegistry.Load(fqn.(string))
 	if !ok {
 		return nil, fmt.Errorf("workflow not found: %s", schedule.WorkflowName)
-	}
-	entry, ok := value.(WorkflowRegistryEntry)
-	if !ok {
-		return nil, fmt.Errorf("invalid workflow registry entry for: %s", schedule.WorkflowName)
 	}
 	wrappedFn := entry.wrappedFunction
 	scheduleName := schedule.ScheduleName

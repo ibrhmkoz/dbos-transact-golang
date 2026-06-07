@@ -444,14 +444,9 @@ func internalDebouncerWF[P any, R any](ctx DBOSContext, input debouncerInput[P])
 		targetWorkflowFQN = fqn.(string)
 	}
 
-	registeredWorkflowAny, exists := dbosCtx.workflowRegistry.Load(targetWorkflowFQN)
+	registeredWorkflow, exists := dbosCtx.workflowRegistry.Load(targetWorkflowFQN)
 	if !exists {
 		return zero, fmt.Errorf("target workflow %s not found in registry", input.TargetWorkflowFQNOrCustomName)
-	}
-
-	registeredWorkflow, ok := registeredWorkflowAny.(WorkflowRegistryEntry)
-	if !ok {
-		return zero, fmt.Errorf("invalid workflow registry entry type for workflow %s", input.TargetWorkflowFQNOrCustomName)
 	}
 
 	// Reconstruct WorkflowOptions from serializable format
