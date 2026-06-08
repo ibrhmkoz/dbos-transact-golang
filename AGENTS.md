@@ -88,6 +88,18 @@ Test database isolation:
   test.
 - CockroachDB creates one isolated database per test without templates.
 
+`just test postgres` starts an isolated `postgres:16-alpine` Testcontainer,
+builds the migrated template, runs tests, then terminates the container. It
+does not use PostgreSQL instances already running on the host.
+
+Set `DBOS_SYSTEM_DATABASE_URL` only to override Testcontainers, such as for
+CockroachDB CI or an externally managed PostgreSQL server. The configured user
+must be able to create and drop databases.
+
+```text
+DBOS_SYSTEM_DATABASE_URL=postgresql://<user>@localhost:5432/dbos?sslmode=disable
+```
+
 Keep tests serial when they depend on process-wide state that has not been
 isolated, including:
 

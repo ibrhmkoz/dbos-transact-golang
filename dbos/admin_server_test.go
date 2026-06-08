@@ -29,6 +29,7 @@ func TestAdminServer(t *testing.T) {
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+		testcontainerGoleakOption(),
 	)
 
 	t.Run("Admin server is not started by default", func(t *testing.T) {

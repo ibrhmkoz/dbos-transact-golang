@@ -2311,7 +2311,7 @@ func TestClientCustomPool(t *testing.T) {
 	RegisterWorkflow(serverCtx, wf, WithWorkflowName("CustomPoolClientWorkflow"))
 	require.NoError(t, Launch(serverCtx))
 
-	clientPoolConfig, err := pgxpool.ParseConfig(getDatabaseURL())
+	clientPoolConfig, err := pgxpool.ParseConfig(backendDatabaseURL(t))
 	require.NoError(t, err)
 	clientPool, err := pgxpool.NewWithConfig(context.Background(), clientPoolConfig)
 	require.NoError(t, err)

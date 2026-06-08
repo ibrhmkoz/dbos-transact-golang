@@ -15,6 +15,9 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go"
+	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
+	"github.com/testcontainers/testcontainers-go/wait"
 	"go.uber.org/goleak"
 )
 
@@ -52,11 +55,33 @@ var (
 	pgTemplateErr     error
 	pgTemplateIsCRDB  bool
 	pgTemplateCloneMu sync.Mutex
+	postgresContainer *tcpostgres.PostgresContainer
 )
 
 var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 
+func testcontainerGoleakOption() goleak.Option {
+	return goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1")
+}
+
 func TestMain(m *testing.M) {
+	if !useSqliteBackend() && os.Getenv("DBOS_TEST_PREFLIGHT") == "true" {
+		if os.Getenv("DBOS_SYSTEM_DATABASE_URL") == "" {
+			if err := startPostgresTestContainer(); err != nil {
+				fmt.Fprintf(os.Stderr, "PostgreSQL testcontainer setup failed: %v\n", err)
+				os.Exit(2)
+			}
+		}
+		pgTemplateOnce.Do(func() {
+			pgTemplateErr = initializePostgresTemplate()
+		})
+		if pgTemplateErr != nil {
+			fmt.Fprintf(os.Stderr, "PostgreSQL test setup failed: %v\n", pgTemplateErr)
+			cleanupPostgresTestContainer()
+			os.Exit(2)
+		}
+	}
+
 	exitCode := m.Run()
 	if pgTemplateName != "" {
 		config, err := pgx.ParseConfig(pgTemplateURL)
@@ -69,7 +94,43 @@ func TestMain(m *testing.M) {
 			}
 		}
 	}
+	cleanupPostgresTestContainer()
 	os.Exit(exitCode)
+}
+
+func startPostgresTestContainer() error {
+	ctx := context.Background()
+	container, err := tcpostgres.Run(ctx,
+		"postgres:16-alpine",
+		tcpostgres.WithDatabase("dbos"),
+		tcpostgres.WithUsername("postgres"),
+		tcpostgres.WithPassword("dbos"),
+		testcontainers.WithWaitStrategy(
+			wait.ForLog("database system is ready to accept connections").WithOccurrence(2),
+		),
+	)
+	if err != nil {
+		return err
+	}
+
+	databaseURL, err := container.ConnectionString(ctx, "sslmode=disable")
+	if err != nil {
+		_ = container.Terminate(ctx)
+		return err
+	}
+	if err := os.Setenv("DBOS_SYSTEM_DATABASE_URL", databaseURL); err != nil {
+		_ = container.Terminate(ctx)
+		return err
+	}
+	postgresContainer = container
+	return nil
+}
+
+func cleanupPostgresTestContainer() {
+	if postgresContainer != nil {
+		_ = postgresContainer.Terminate(context.Background())
+		postgresContainer = nil
+	}
 }
 
 func parallelTest(t *testing.T) {
@@ -120,8 +181,8 @@ func createPostgresTestDatabase(t *testing.T) string {
 	pgTemplateCloneMu.Unlock()
 	require.NoError(t, err)
 
-	config.Database = dbName
-	databaseURL := config.ConnString()
+	databaseURL, err := databaseURLWithName(pgTemplateURL, dbName)
+	require.NoError(t, err)
 	t.Cleanup(func() {
 		cleanupConfig := adminConfig.Copy()
 		cleanupConn, cleanupErr := pgx.ConnectConfig(context.Background(), cleanupConfig)
@@ -135,50 +196,63 @@ func createPostgresTestDatabase(t *testing.T) string {
 func ensurePostgresTemplate(t *testing.T) {
 	t.Helper()
 	pgTemplateOnce.Do(func() {
-		config, err := pgx.ParseConfig(getDatabaseURL())
-		if err != nil {
-			pgTemplateErr = err
-			return
-		}
-		adminConfig := config.Copy()
-		adminConfig.Database = "postgres"
-		conn, err := pgx.ConnectConfig(context.Background(), adminConfig)
-		if err != nil {
-			pgTemplateErr = err
-			return
-		}
-		defer conn.Close(context.Background())
-
-		pgTemplateIsCRDB = isCockroachDB(context.Background(), conn)
-		if pgTemplateIsCRDB {
-			pgTemplateURL = config.ConnString()
-			return
-		}
-
-		pgTemplateName = testDatabaseName("template")
-		_, err = conn.Exec(context.Background(), fmt.Sprintf(
-			"CREATE DATABASE %s",
-			pgx.Identifier{pgTemplateName}.Sanitize(),
-		))
-		if err != nil {
-			pgTemplateErr = err
-			return
-		}
-
-		templateConfig := config.Copy()
-		templateConfig.Database = pgTemplateName
-		pgTemplateURL = templateConfig.ConnString()
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: pgTemplateURL,
-			AppName:     "test-template",
-		})
-		if err != nil {
-			pgTemplateErr = err
-			return
-		}
-		Shutdown(ctx, time.Minute)
+		pgTemplateErr = initializePostgresTemplate()
 	})
 	require.NoError(t, pgTemplateErr)
+}
+
+func initializePostgresTemplate() error {
+	config, err := pgx.ParseConfig(getDatabaseURL())
+	if err != nil {
+		return fmt.Errorf("parse DBOS_SYSTEM_DATABASE_URL: %w", err)
+	}
+	adminConfig := config.Copy()
+	adminConfig.Database = "postgres"
+	conn, err := pgx.ConnectConfig(context.Background(), adminConfig)
+	if err != nil {
+		return fmt.Errorf("connect to PostgreSQL as %q at %s:%d: %w", config.User, config.Host, config.Port, err)
+	}
+	defer conn.Close(context.Background())
+
+	pgTemplateIsCRDB = isCockroachDB(context.Background(), conn)
+	if pgTemplateIsCRDB {
+		pgTemplateURL = config.ConnString()
+		return nil
+	}
+
+	pgTemplateName = testDatabaseName("template")
+	if _, err := conn.Exec(context.Background(), fmt.Sprintf(
+		"CREATE DATABASE %s",
+		pgx.Identifier{pgTemplateName}.Sanitize(),
+	)); err != nil {
+		return fmt.Errorf("create PostgreSQL test template database as %q: %w", config.User, err)
+	}
+
+	pgTemplateURL, err = databaseURLWithName(getDatabaseURL(), pgTemplateName)
+	if err != nil {
+		return fmt.Errorf("build PostgreSQL test template URL: %w", err)
+	}
+	ctx, err := NewDBOSContext(context.Background(), Config{
+		DatabaseURL: pgTemplateURL,
+		AppName:     "test-template",
+	})
+	if err != nil {
+		return fmt.Errorf("initialize PostgreSQL test template database: %w", err)
+	}
+	Shutdown(ctx, time.Minute)
+	return nil
+}
+
+func databaseURLWithName(databaseURL, databaseName string) (string, error) {
+	parsedURL, err := url.Parse(databaseURL)
+	if err != nil {
+		return "", err
+	}
+	if parsedURL.Scheme != "postgres" && parsedURL.Scheme != "postgresql" {
+		return "", fmt.Errorf("expected PostgreSQL URL, got scheme %q", parsedURL.Scheme)
+	}
+	parsedURL.Path = "/" + databaseName
+	return parsedURL.String(), nil
 }
 
 func testDatabaseName(testName string) string {
@@ -270,6 +344,7 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 				// the sqlite backend.
 				goleak.IgnoreAnyFunction("database/sql.(*DB).connectionOpener"),
 				goleak.IgnoreAnyFunction("database/sql.(*DB).connectionCleaner"),
+				testcontainerGoleakOption(),
 			)
 		}
 	})

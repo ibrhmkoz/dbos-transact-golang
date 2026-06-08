@@ -26,6 +26,7 @@ func TestConfig(t *testing.T) {
 		// Close, sometimes after goleak's check fires under the sqlite backend.
 		goleak.IgnoreAnyFunction("database/sql.(*DB).connectionOpener"),
 		goleak.IgnoreAnyFunction("database/sql.(*DB).connectionCleaner"),
+		testcontainerGoleakOption(),
 	)
 	databaseURL := backendDatabaseURL(t)
 
@@ -514,12 +515,13 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+		testcontainerGoleakOption(),
 	)
 	t.Setenv("DBOS__APPVERSION", "v1.0.0")
 	t.Setenv("DBOS__APPID", "test-custom-schema")
 	t.Setenv("DBOS__VMID", "test-executor-id")
 
-	databaseURL := getDatabaseURL()
+	databaseURL := backendDatabaseURL(t)
 	customSchema := "dbos_custom_test"
 
 	ctx, err := NewDBOSContext(context.Background(), Config{
@@ -734,6 +736,7 @@ func TestCustomPool(t *testing.T) {
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+		testcontainerGoleakOption(),
 	)
 	// Test workflows for custom pool testing
 	type customPoolWorkflowInput struct {
@@ -779,7 +782,7 @@ func TestCustomPool(t *testing.T) {
 
 	t.Run("CustomPool", func(t *testing.T) {
 		// Custom Pool
-		databaseURL := getDatabaseURL()
+		databaseURL := backendDatabaseURL(t)
 		poolConfig, err := pgxpool.ParseConfig(databaseURL)
 		require.NoError(t, err)
 
@@ -881,7 +884,7 @@ func TestCustomPool(t *testing.T) {
 
 	t.Run("CustomPoolTakesPrecedence", func(t *testing.T) {
 		invalidDatabaseURL := "postgres://invalid:invalid@localhost:5432/invaliddb"
-		databaseURL := getDatabaseURL()
+		databaseURL := backendDatabaseURL(t)
 		poolConfig, err := pgxpool.ParseConfig(databaseURL)
 		require.NoError(t, err)
 		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
@@ -908,7 +911,7 @@ func TestCustomPool(t *testing.T) {
 	})
 
 	t.Run("InvalidCustomPool", func(t *testing.T) {
-		databaseURL := getDatabaseURL()
+		databaseURL := backendDatabaseURL(t)
 		poolConfig, err := pgxpool.ParseConfig(databaseURL)
 		require.NoError(t, err)
 		poolConfig.ConnConfig.Host = "invalid-host"
@@ -931,7 +934,7 @@ func TestCustomPool(t *testing.T) {
 
 	t.Run("DirectSystemDatabase", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		databaseURL := getDatabaseURL()
+		databaseURL := backendDatabaseURL(t)
 		logger := slog.Default()
 
 		// Create custom pool
@@ -1453,6 +1456,7 @@ func TestCustomSqlitePool(t *testing.T) {
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+		testcontainerGoleakOption(),
 	)
 
 	type customPoolWorkflowInput struct {
