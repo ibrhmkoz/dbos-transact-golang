@@ -5,7 +5,7 @@ default:
 
 # Run dbos tests using SQLite by default and record results in DuckDB.
 test backend="sqlite":
-    DBOS_TEST_BACKEND={{ backend }} DBOS_TEST_PREFLIGHT=true scripts/record-tests.sh go test -json -count=1 -timeout 30m ./dbos
+    DBOS_TEST_BACKEND={{ backend }} scripts/record-tests.sh go test -json -count=1 -timeout 30m ./dbos
 
 # Query the latest recorded test run.
 results:

@@ -17,7 +17,6 @@ func TestLogger(t *testing.T) {
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
-		testcontainerGoleakOption(),
 	)
 	databaseURL := backendDatabaseURL(t)
 
