@@ -22,8 +22,6 @@ CREATE TABLE IF NOT EXISTS test_events (
     output VARCHAR
 );
 
-ALTER TABLE test_events ADD COLUMN IF NOT EXISTS event_index BIGINT;
-
 CREATE TABLE IF NOT EXISTS test_results (
     run_id VARCHAR NOT NULL,
     package VARCHAR NOT NULL,
