@@ -28,8 +28,12 @@ CREATE TABLE IF NOT EXISTS test_results (
     test VARCHAR NOT NULL,
     status VARCHAR NOT NULL,
     elapsed_seconds DOUBLE,
+    parallel BOOLEAN NOT NULL DEFAULT false,
     PRIMARY KEY (run_id, package, test)
 );
+
+ALTER TABLE test_results
+ADD COLUMN IF NOT EXISTS parallel BOOLEAN DEFAULT false;
 
 CREATE TABLE IF NOT EXISTS package_results (
     run_id VARCHAR NOT NULL,
@@ -60,6 +64,15 @@ WHERE NOT EXISTS (
       AND child.package = results.package
       AND starts_with(child.test, results.test || '/')
 );
+
+CREATE OR REPLACE VIEW latest_test_parallelism AS
+SELECT
+    parallel,
+    count(*) AS tests,
+    round(sum(elapsed_seconds), 3) AS elapsed_seconds
+FROM latest_leaf_test_results
+GROUP BY parallel
+ORDER BY parallel;
 
 CREATE OR REPLACE VIEW latest_package_results AS
 SELECT results.*

@@ -34,6 +34,7 @@ func queueStep(_ context.Context, input string) (string, error) {
 }
 
 func TestWorkflowQueues(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	queue := NewWorkflowQueue(dbosCtx, "test-queue",
@@ -615,6 +616,7 @@ func TestWorkflowQueues(t *testing.T) {
 }
 
 func TestQueueRecovery(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	recoveryQueue := NewWorkflowQueue(dbosCtx, "recovery-queue")
@@ -746,6 +748,7 @@ func TestQueueRecovery(t *testing.T) {
 
 // Note: we could update this test to have the same logic than TestWorkerConcurrency
 func TestGlobalConcurrency(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	globalConcurrencyQueue := NewWorkflowQueue(dbosCtx, "test-global-concurrency-queue", WithGlobalConcurrency(1))
@@ -924,6 +927,7 @@ func rateLimiterTestWorkflow(ctx DBOSContext, _ string) (time.Time, error) {
 }
 
 func TestQueueRateLimiter(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	rateLimiterQueue := NewWorkflowQueue(dbosCtx, "test-rate-limiter-queue", WithRateLimiter(&RateLimiter{Limit: 5, Period: time.Duration(1800 * time.Millisecond)}))
@@ -1007,6 +1011,7 @@ func TestQueueRateLimiter(t *testing.T) {
 }
 
 func TestQueueTimeouts(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	timeoutQueue := NewWorkflowQueue(dbosCtx, "timeout-queue")
@@ -1229,6 +1234,7 @@ func TestQueueTimeouts(t *testing.T) {
 }
 
 func TestPriorityQueue(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Create priority-enabled queue with max concurrency of 1
@@ -1324,6 +1330,7 @@ func TestPriorityQueue(t *testing.T) {
 }
 
 func TestListQueuedWorkflows(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Simple test workflow that completes immediately
@@ -1428,6 +1435,7 @@ func TestListQueuedWorkflows(t *testing.T) {
 }
 
 func TestPartitionedQueues(t *testing.T) {
+	parallelTest(t)
 	t.Run("PartitionKeyWithoutQueue", func(t *testing.T) {
 		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1640,6 +1648,7 @@ func TestPartitionedQueues(t *testing.T) {
 }
 
 func TestNewQueueRunner(t *testing.T) {
+	parallelTest(t)
 	t.Run("init queue runner", func(t *testing.T) {
 		runner := newQueueRunner(slog.New(slog.NewTextHandler(os.Stdout, nil)))
 		require.NotNil(t, runner)
@@ -1648,6 +1657,7 @@ func TestNewQueueRunner(t *testing.T) {
 }
 
 func TestQueuePollingIntervals(t *testing.T) {
+	parallelTest(t)
 	t.Run("queue uses default intervals when not specified", func(t *testing.T) {
 		ctx := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: false})
 
@@ -1674,6 +1684,7 @@ func TestQueuePollingIntervals(t *testing.T) {
 }
 
 func TestListenQueues(t *testing.T) {
+	parallelTest(t)
 	t.Run("ListenToSubsetOfQueues", func(t *testing.T) {
 		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1902,6 +1913,7 @@ func TestListenQueues(t *testing.T) {
 }
 
 func TestDelayedExecution(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	delayQueue := NewWorkflowQueue(dbosCtx, "test-delay-queue",

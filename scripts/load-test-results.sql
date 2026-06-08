@@ -52,11 +52,27 @@ INSERT INTO test_events (
 )
 SELECT * FROM incoming_test_events;
 
-INSERT INTO test_results (run_id, package, test, status, elapsed_seconds)
-SELECT run_id, package, test, action, elapsed_seconds
-FROM incoming_test_events
-WHERE test IS NOT NULL
-  AND action IN ('pass', 'fail', 'skip');
+INSERT INTO test_results (run_id, package, test, status, elapsed_seconds, parallel)
+SELECT
+    results.run_id,
+    results.package,
+    results.test,
+    results.action,
+    results.elapsed_seconds,
+    EXISTS (
+        SELECT 1
+        FROM incoming_test_events AS paused
+        WHERE paused.run_id = results.run_id
+          AND paused.package = results.package
+          AND paused.action = 'pause'
+          AND (
+              paused.test = results.test
+              OR starts_with(results.test, paused.test || '/')
+          )
+    )
+FROM incoming_test_events AS results
+WHERE results.test IS NOT NULL
+  AND results.action IN ('pass', 'fail', 'skip');
 
 INSERT INTO package_results (run_id, package, status, elapsed_seconds)
 SELECT run_id, package, action, elapsed_seconds

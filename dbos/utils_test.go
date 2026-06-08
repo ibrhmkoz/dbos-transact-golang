@@ -6,7 +6,10 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -38,7 +41,43 @@ func skipIfSqlite(t *testing.T, reason string) {
 	}
 }
 
-var testDBURLs sync.Map // *testing.T -> string; ensures setupDBOS and follow-up callers (e.g. NewClient) share the same sqlite file.
+var (
+	testDBURLs        sync.Map // *testing.T -> string; ensures setupDBOS and follow-up callers share the same database.
+	usedTestDBs       sync.Map // *testing.T -> struct{}; tracks whether setupDBOS has initialized the test database.
+	parallelTestCount atomic.Int64
+	testDatabaseID    atomic.Uint64
+	pgTemplateOnce    sync.Once
+	pgTemplateURL     string
+	pgTemplateName    string
+	pgTemplateErr     error
+	pgTemplateIsCRDB  bool
+	pgTemplateCloneMu sync.Mutex
+)
+
+var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
+
+func TestMain(m *testing.M) {
+	exitCode := m.Run()
+	if pgTemplateName != "" {
+		config, err := pgx.ParseConfig(pgTemplateURL)
+		if err == nil {
+			config.Database = "postgres"
+			conn, connectErr := pgx.ConnectConfig(context.Background(), config)
+			if connectErr == nil {
+				_ = dropDatabaseIfExists(context.Background(), conn, pgTemplateName)
+				_ = conn.Close(context.Background())
+			}
+		}
+	}
+	os.Exit(exitCode)
+}
+
+func parallelTest(t *testing.T) {
+	t.Helper()
+	t.Parallel()
+	parallelTestCount.Add(1)
+	t.Cleanup(func() { parallelTestCount.Add(-1) })
+}
 
 func backendDatabaseURL(t *testing.T) string {
 	t.Helper()
@@ -49,11 +88,108 @@ func backendDatabaseURL(t *testing.T) string {
 	if useSqliteBackend() {
 		url = "sqlite:" + filepath.Join(t.TempDir(), "dbos.db")
 	} else {
-		url = getDatabaseURL()
+		url = createPostgresTestDatabase(t)
 	}
 	testDBURLs.Store(t, url)
-	t.Cleanup(func() { testDBURLs.Delete(t) })
+	t.Cleanup(func() {
+		testDBURLs.Delete(t)
+		usedTestDBs.Delete(t)
+	})
 	return url
+}
+
+func createPostgresTestDatabase(t *testing.T) string {
+	t.Helper()
+	ensurePostgresTemplate(t)
+
+	config, err := pgx.ParseConfig(pgTemplateURL)
+	require.NoError(t, err)
+	adminConfig := config.Copy()
+	adminConfig.Database = "postgres"
+	conn, err := pgx.ConnectConfig(context.Background(), adminConfig)
+	require.NoError(t, err)
+	defer conn.Close(context.Background())
+
+	dbName := testDatabaseName(t.Name())
+	createSQL := fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())
+	if !pgTemplateIsCRDB {
+		createSQL += fmt.Sprintf(" TEMPLATE %s", pgx.Identifier{pgTemplateName}.Sanitize())
+	}
+	pgTemplateCloneMu.Lock()
+	_, err = conn.Exec(context.Background(), createSQL)
+	pgTemplateCloneMu.Unlock()
+	require.NoError(t, err)
+
+	config.Database = dbName
+	databaseURL := config.ConnString()
+	t.Cleanup(func() {
+		cleanupConfig := adminConfig.Copy()
+		cleanupConn, cleanupErr := pgx.ConnectConfig(context.Background(), cleanupConfig)
+		require.NoError(t, cleanupErr)
+		defer cleanupConn.Close(context.Background())
+		require.NoError(t, dropDatabaseIfExists(context.Background(), cleanupConn, dbName))
+	})
+	return databaseURL
+}
+
+func ensurePostgresTemplate(t *testing.T) {
+	t.Helper()
+	pgTemplateOnce.Do(func() {
+		config, err := pgx.ParseConfig(getDatabaseURL())
+		if err != nil {
+			pgTemplateErr = err
+			return
+		}
+		adminConfig := config.Copy()
+		adminConfig.Database = "postgres"
+		conn, err := pgx.ConnectConfig(context.Background(), adminConfig)
+		if err != nil {
+			pgTemplateErr = err
+			return
+		}
+		defer conn.Close(context.Background())
+
+		pgTemplateIsCRDB = isCockroachDB(context.Background(), conn)
+		if pgTemplateIsCRDB {
+			pgTemplateURL = config.ConnString()
+			return
+		}
+
+		pgTemplateName = testDatabaseName("template")
+		_, err = conn.Exec(context.Background(), fmt.Sprintf(
+			"CREATE DATABASE %s",
+			pgx.Identifier{pgTemplateName}.Sanitize(),
+		))
+		if err != nil {
+			pgTemplateErr = err
+			return
+		}
+
+		templateConfig := config.Copy()
+		templateConfig.Database = pgTemplateName
+		pgTemplateURL = templateConfig.ConnString()
+		ctx, err := NewDBOSContext(context.Background(), Config{
+			DatabaseURL: pgTemplateURL,
+			AppName:     "test-template",
+		})
+		if err != nil {
+			pgTemplateErr = err
+			return
+		}
+		Shutdown(ctx, time.Minute)
+	})
+	require.NoError(t, pgTemplateErr)
+}
+
+func testDatabaseName(testName string) string {
+	name := invalidDatabaseNameChars.ReplaceAllString(testName, "_")
+	suffix := "_" + strconv.Itoa(os.Getpid()) + "_" + strconv.FormatUint(testDatabaseID.Add(1), 10)
+	const maxPostgresIdentifierLength = 63
+	maxNameLength := maxPostgresIdentifierLength - len("dbos_test_") - len(suffix)
+	if len(name) > maxNameLength {
+		name = name[:maxNameLength]
+	}
+	return "dbos_test_" + name + suffix
 }
 
 /* Test database reset */
@@ -98,7 +234,8 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 		testDBURLs.Delete(t)
 	}
 	databaseURL := backendDatabaseURL(t)
-	if opts.dropDB && !useSqliteBackend() {
+	_, databaseWasUsed := usedTestDBs.Load(t)
+	if opts.dropDB && !useSqliteBackend() && databaseWasUsed {
 		resetTestDatabase(t, databaseURL)
 	}
 
@@ -112,6 +249,7 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 	dbosCtx, err := NewDBOSContext(context.Background(), config)
 	require.NoError(t, err)
 	require.NotNil(t, dbosCtx)
+	usedTestDBs.Store(t, struct{}{})
 
 	// Register cleanup to run after test completes
 	t.Cleanup(func() {
@@ -120,7 +258,7 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 			Shutdown(dbosCtx, 30*time.Second) // Wait for workflows to finish and shutdown admin server and system database
 		}
 		dbosCtx = nil
-		if opts.checkLeaks {
+		if opts.checkLeaks && parallelTestCount.Load() == 0 {
 			goleak.VerifyNone(t,
 				// Ignore pgx health checks
 				// https://github.com/jackc/pgx/blob/15bca4a4e14e0049777c1245dba4c16300fe4fd0/pgxpool/pool.go#L417

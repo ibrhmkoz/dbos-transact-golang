@@ -10,6 +10,7 @@ import (
 )
 
 func TestGetMetrics(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	defer Shutdown(dbosCtx, 1*time.Minute)
 
@@ -113,6 +114,7 @@ func TestGetMetrics(t *testing.T) {
 }
 
 func TestGetMetricsEmptyTimeRange(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	defer Shutdown(dbosCtx, 1*time.Minute)
 

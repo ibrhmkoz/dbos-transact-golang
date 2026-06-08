@@ -8,11 +8,32 @@ LIMIT 20;
 -- Parent tests are excluded because their elapsed time includes their subtests.
 SELECT
     runs.duration_seconds AS wall_seconds,
+    round(sum(results.elapsed_seconds) FILTER (WHERE NOT results.parallel), 3) AS serial_leaf_seconds,
+    round(sum(results.elapsed_seconds) FILTER (WHERE results.parallel), 3) AS parallel_leaf_seconds,
     round(sum(results.elapsed_seconds), 3) AS leaf_test_seconds,
+    round(sum(results.elapsed_seconds) / runs.duration_seconds, 2) AS effective_parallelism,
     count(*) AS leaf_tests
 FROM latest_test_run AS runs
 CROSS JOIN latest_leaf_test_results AS results
 GROUP BY runs.duration_seconds;
+
+-- Leaf-test elapsed time split by serial and parallel execution.
+SELECT *
+FROM latest_test_parallelism;
+
+-- Slowest serial leaf tests. These directly extend wall time.
+SELECT test, package, elapsed_seconds
+FROM latest_leaf_test_results
+WHERE NOT parallel
+ORDER BY elapsed_seconds DESC
+LIMIT 30;
+
+-- Slowest parallel leaf tests. These may define the parallel phase's critical path.
+SELECT test, package, elapsed_seconds
+FROM latest_leaf_test_results
+WHERE parallel
+ORDER BY elapsed_seconds DESC
+LIMIT 30;
 
 -- Failed tests from the latest run.
 SELECT test, package, elapsed_seconds
@@ -26,7 +47,7 @@ FROM latest_package_results
 WHERE status = 'fail'
 ORDER BY elapsed_seconds DESC;
 
--- Slowest tests across all recorded runs.
+-- Slowest tests in this recorded run.
 SELECT
     test,
     package,
@@ -49,8 +70,8 @@ ORDER BY events.event_index;
 -- Output for one test from the latest run.
 -- Usage:
 -- TEST_NAME='TestGarbageCollect/GarbageCollectOnlyCompletedWorkflows' \
---   duckdb .test-results/tests.duckdb -f scripts/test-results.sql
+--   duckdb -readonly .test-results/latest.duckdb -f scripts/test-results.sql
 SELECT string_agg(events.output, '' ORDER BY events.event_index) AS output
 FROM latest_test_events AS events
-WHERE events.test = 'TestGarbageCollect/GarbageCollectOnlyCompletedWorkflows'
+WHERE events.test = getenv('TEST_NAME')
   AND events.output IS NOT NULL;

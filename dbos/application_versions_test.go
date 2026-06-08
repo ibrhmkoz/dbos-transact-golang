@@ -9,6 +9,7 @@ import (
 )
 
 func TestApplicationVersions(t *testing.T) {
+	parallelTest(t)
 	t.Run("LaunchRegistersCurrentVersion", func(t *testing.T) {
 		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
 		require.NoError(t, dbosCtx.Launch())

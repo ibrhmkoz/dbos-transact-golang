@@ -118,6 +118,7 @@ func TestResolveWorkflowFunctionName(t *testing.T) {
 }
 
 func TestWorkflowsRegistration(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Setup workflows with executor
@@ -481,6 +482,7 @@ func genericStepWorkflow(dbosCtx DBOSContext, input string) (string, error) {
 }
 
 func TestSteps(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Create workflows with executor
@@ -781,6 +783,7 @@ func stepReturningStepID(ctx context.Context) (int, error) {
 }
 
 func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	t.Run("Go must run steps inside a workflow", func(t *testing.T) {
@@ -895,6 +898,7 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 }
 
 func TestSelect(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	selectWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
@@ -1061,6 +1065,7 @@ func TestSelect(t *testing.T) {
 }
 
 func TestChildWorkflow(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	type Inheritance struct {
@@ -1792,6 +1797,7 @@ func idempotencyWorkflow(dbosCtx DBOSContext, input string) (string, error) {
 }
 
 func TestWorkflowIdempotency(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, idempotencyWorkflow)
 
@@ -1829,6 +1835,7 @@ func TestWorkflowIdempotency(t *testing.T) {
 }
 
 func TestNoConcurrentWorkflowSameID(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	startedEvent := NewEvent()
@@ -1880,6 +1887,7 @@ func TestNoConcurrentWorkflowSameID(t *testing.T) {
 }
 
 func TestWorkflowRecovery(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	var recoveryCounters []int64
@@ -2005,6 +2013,7 @@ func infiniteDeadLetterQueueWorkflow(ctx DBOSContext, input string) (int, error)
 	return 0, nil
 }
 func TestWorkflowDeadLetterQueue(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, deadLetterQueueWorkflow, WithMaxRetries(maxRecoveryAttempts))
 	RegisterWorkflow(dbosCtx, infiniteDeadLetterQueueWorkflow, WithMaxRetries(-1)) // A negative value means infinite retries
@@ -2122,6 +2131,7 @@ func TestWorkflowDeadLetterQueue(t *testing.T) {
 }
 
 func TestCancelWorkflows(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	blockEvent := NewEvent()
@@ -2207,6 +2217,7 @@ func TestCancelWorkflows(t *testing.T) {
 }
 
 func TestResumeWorkflows(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	resumeBatchQueue := NewWorkflowQueue(dbosCtx, "resume-batch-target-queue",
@@ -2319,6 +2330,7 @@ var (
 )
 
 func TestScheduledWorkflows(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	RegisterWorkflow(dbosCtx, func(ctx DBOSContext, scheduledTime time.Time) (string, error) {
@@ -2401,6 +2413,7 @@ func scheduledWfForIDTest(ctx DBOSContext, scheduledTime time.Time) (string, err
 // multiple binaries share the same database and register the same Go function under
 // different custom names.
 func TestScheduledWorkflowIDUsesCustomName(t *testing.T) {
+	parallelTest(t)
 	// Set up two separate DBOS contexts (simulating two binaries sharing a DB).
 	// They share the same database, simulating two different services.
 	dbosCtx1 := setupDBOS(t, setupDBOSOptions{dropDB: true})
@@ -2601,6 +2614,7 @@ func recvContextCancelWorkflow(ctx DBOSContext, topic string) (string, error) {
 }
 
 func TestSendRecv(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Register all send/recv workflows with executor
@@ -3091,6 +3105,7 @@ func durableGetEventSleepWorkflow(ctx DBOSContext, targetWorkflowID string) (str
 }
 
 func TestSetGetEvent(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Register all set/get event workflows with executor
@@ -3455,6 +3470,7 @@ func workflowWithMultipleSteps(dbosCtx DBOSContext, input string) (string, error
 }
 
 func TestWorkflowExecutionMismatch(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Register workflows for testing
@@ -3523,6 +3539,7 @@ func sleepRecoveryWorkflow(dbosCtx DBOSContext, duration time.Duration) (time.Du
 }
 
 func TestSleep(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, sleepRecoveryWorkflow)
 
@@ -3579,6 +3596,7 @@ func TestSleep(t *testing.T) {
 }
 
 func TestWorkflowTimeout(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	waitForCancelWorkflow := func(ctx DBOSContext, _ string) (string, error) {
@@ -3997,6 +4015,7 @@ func concurrentSimpleWorkflow(dbosCtx DBOSContext, input int) (int, error) {
 }
 
 func TestConcurrentWorkflows(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, concurrentSimpleWorkflow)
 	RegisterWorkflow(dbosCtx, notificationWaiterWorkflow)
@@ -4243,6 +4262,7 @@ func TestConcurrentWorkflows(t *testing.T) {
 }
 
 func TestWorkflowAtVersion(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	RegisterWorkflow(dbosCtx, simpleWorkflow)
@@ -4263,6 +4283,7 @@ func TestWorkflowAtVersion(t *testing.T) {
 }
 
 func TestWorkflowCancel(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	blockingEvent := NewEvent()
@@ -4372,6 +4393,7 @@ func cancelAllBeforeBlockingWorkflow(ctx DBOSContext, input string) (string, err
 }
 
 func TestCancelAllBefore(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	RegisterWorkflow(dbosCtx, cancelAllBeforeBlockingWorkflow)
@@ -4491,6 +4513,7 @@ func gcBlockedWorkflow(dbosCtx DBOSContext, event *Event) (string, error) {
 }
 
 func TestGarbageCollect(t *testing.T) {
+	parallelTest(t)
 	t.Run("GarbageCollectWithOffset", func(t *testing.T) {
 		// Start with clean database for precise workflow counting
 		databaseURL := backendDatabaseURL(t)
@@ -4924,6 +4947,7 @@ func TestGarbageCollect(t *testing.T) {
 // TestSpecialSteps tests that special workflow functions (ListWorkflows, CancelWorkflow,
 // ResumeWorkflow, ForkWorkflow, GetWorkflowSteps) work correctly as durable steps
 func TestSpecialSteps(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	childEvent := NewEvent()
@@ -5084,6 +5108,7 @@ func TestSpecialSteps(t *testing.T) {
 }
 
 func TestRegisteredWorkflowListing(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Register some regular workflows
@@ -5150,6 +5175,7 @@ func TestRegisteredWorkflowListing(t *testing.T) {
 }
 
 func TestWorkflowIdentity(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, simpleWorkflow)
 	handle, err := RunWorkflow(
@@ -5180,6 +5206,7 @@ func TestWorkflowIdentity(t *testing.T) {
 }
 
 func TestWorkflowHandles(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, slowWorkflow)
 
@@ -5223,6 +5250,7 @@ func TestWorkflowHandles(t *testing.T) {
 }
 
 func TestWorkflowHandleContextCancel(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(dbosCtx, getEventWorkflow)
 
@@ -5629,6 +5657,7 @@ func asyncReadStream(ctx DBOSContext, workflowID string, key string) ([]string, 
 }
 
 func TestStreams(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	// Register all stream workflows
@@ -6100,6 +6129,7 @@ type exportTestPerson struct {
 }
 
 func TestExportImportWorkflow(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	eventKey := "export-event-key"
@@ -6394,6 +6424,7 @@ func aggregatesWorkflowFail(_ DBOSContext, _ string) (string, error) {
 }
 
 func TestGetWorkflowAggregates(t *testing.T) {
+	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
 	RegisterWorkflow(dbosCtx, aggregatesWorkflowSuccess)

@@ -12,12 +12,14 @@ if ! command -v duckdb >/dev/null 2>&1; then
     exit 2
 fi
 
-db_path="${TEST_RESULTS_DB:-.test-results/tests.duckdb}"
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 backend="${DBOS_TEST_BACKEND:-postgres}"
 race="${TEST_RACE:-false}"
 pattern="${TEST_PATTERN:-}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+results_dir="${TEST_RESULTS_DIR:-.test-results/runs}"
+db_path="${TEST_RESULTS_DB:-$results_dir/$run_id.duckdb}"
+latest_path="${TEST_RESULTS_LATEST:-.test-results/latest.duckdb}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 started_epoch="$(date +%s)"
 events_file="$(mktemp "${TMPDIR:-/tmp}/go-test-events.XXXXXX")"
@@ -66,9 +68,17 @@ if ! TEST_RUN_ID="$run_id" \
         -f "$script_dir/test-results-schema.sql" \
         -f "$script_dir/load-test-results.sql" >/dev/null; then
     echo "Failed to record test run in $db_path" >&2
-    echo "Close write-capable DuckDB connections, or open the database read-only while tests run." >&2
     exit 2
 fi
 
+mkdir -p "$(dirname "$latest_path")"
+if [[ "$db_path" = /* ]]; then
+    db_absolute_path="$db_path"
+else
+    db_absolute_path="$PWD/$db_path"
+fi
+ln -sfn "$db_absolute_path" "$latest_path"
+
 printf '\nRecorded run %s: %s in %ss\n' "$run_id" "$status" "$duration_seconds"
+printf 'Latest results: %s\n' "$latest_path"
 exit "$test_exit_code"

@@ -19,6 +19,7 @@ import (
 )
 
 func TestClientEnqueue(t *testing.T) {
+	parallelTest(t)
 	// Setup server context - this will process tasks
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -370,6 +371,7 @@ func TestClientEnqueue(t *testing.T) {
 }
 
 func TestCancelResume(t *testing.T) {
+	parallelTest(t)
 	var stepsCompleted int
 
 	// Setup server context - this will process tasks
@@ -607,6 +609,7 @@ func TestCancelResume(t *testing.T) {
 }
 
 func TestDeleteWorkflow(t *testing.T) {
+	parallelTest(t)
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	queue := NewWorkflowQueue(serverCtx, "delete-workflow-queue")
 
@@ -654,6 +657,7 @@ func TestDeleteWorkflow(t *testing.T) {
 }
 
 func TestForkWorkflow(t *testing.T) {
+	parallelTest(t)
 	// Global counters for tracking execution (no mutex needed since workflows run solo)
 	var (
 		stepCount1  int
@@ -939,6 +943,7 @@ func TestForkWorkflow(t *testing.T) {
 }
 
 func TestListWorkflows(t *testing.T) {
+	parallelTest(t)
 	// Setup server context. On pg we also exercise a non-default schema; on
 	// sqlite there is no per-schema isolation so the default is used. The
 	// filtering assertions below are schema-agnostic.
@@ -1329,6 +1334,7 @@ func TestListWorkflows(t *testing.T) {
 }
 
 func TestGetWorkflowSteps(t *testing.T) {
+	parallelTest(t)
 	// Setup server context
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1417,6 +1423,7 @@ func asyncClientReadStream(c Client, workflowID string, key string) ([]string, b
 }
 
 func TestClientReadStream(t *testing.T) {
+	parallelTest(t)
 	// Setup server context
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1498,6 +1505,7 @@ func TestClientReadStream(t *testing.T) {
 }
 
 func TestClientReadStreamAsyncGoroutineLeak(t *testing.T) {
+	parallelTest(t)
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: true})
 
 	// Workflow that writes values then blocks waiting for a message, keeping it PENDING
@@ -1537,6 +1545,7 @@ func TestClientReadStreamAsyncGoroutineLeak(t *testing.T) {
 
 // TestDebouncerClient tests the DebouncerClient functionality using a Client interface
 func TestDebouncerClient(t *testing.T) {
+	parallelTest(t)
 	// Setup server context - this will process tasks
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1739,6 +1748,7 @@ func TestDebouncerClient(t *testing.T) {
 }
 
 func TestDebouncerClientWorkflowOptions(t *testing.T) {
+	parallelTest(t)
 	// Setup server context
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1823,6 +1833,7 @@ func TestDebouncerClientWorkflowOptions(t *testing.T) {
 }
 
 func TestClientEnqueueDelay(t *testing.T) {
+	parallelTest(t)
 	// Setup server context
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
@@ -1965,6 +1976,7 @@ func TestClientEnqueueDelay(t *testing.T) {
 // backfill semantics) lives in schedule_test.go; this test just verifies the
 // client wiring reaches the database.
 func TestClientSchedules(t *testing.T) {
+	parallelTest(t)
 	serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	RegisterWorkflow(serverCtx, testWorkflowForSchedule)
 	require.NoError(t, Launch(serverCtx))
@@ -2104,6 +2116,7 @@ func TestClientSchedules(t *testing.T) {
 }
 
 func TestClientApplicationVersions(t *testing.T) {
+	parallelTest(t)
 	t.Run("ListAndGetLatestReflectLaunch", func(t *testing.T) {
 		serverCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 		require.NoError(t, Launch(serverCtx))
