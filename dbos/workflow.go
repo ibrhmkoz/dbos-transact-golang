@@ -735,6 +735,18 @@ func (c *dbosContext) countActiveWorkflowsForQueue(queueName, queuePartitionKey 
 	return count
 }
 
+// DeduplicationPolicy controls how a colliding deduplication ID on the same queue is handled.
+type DeduplicationPolicy int
+
+const (
+	// DeduplicationPolicyReject (default) returns a QueueDeduplicated error if another workflow
+	// already holds the deduplication ID on the queue.
+	DeduplicationPolicyReject DeduplicationPolicy = iota
+	// DeduplicationPolicyReturnExisting returns a handle to the existing workflow instead of an
+	// error.
+	DeduplicationPolicyReturnExisting
+)
+
 type workflowOptions struct {
 	WorkflowName        string
 	WorkflowID          string
@@ -742,6 +754,7 @@ type workflowOptions struct {
 	ApplicationVersion  string
 	MaxRetries          int
 	DeduplicationID     string
+	DeduplicationPolicy DeduplicationPolicy
 	Priority            uint
 	AuthenticatedUser   string
 	AssumedRole         string
@@ -784,6 +797,15 @@ func WithApplicationVersion(version string) WorkflowOption {
 func WithDeduplicationID(id string) WorkflowOption {
 	return func(p *workflowOptions) {
 		p.DeduplicationID = id
+	}
+}
+
+// WithDeduplicationPolicy sets how a colliding deduplication ID is handled for a queue workflow.
+// DeduplicationPolicyReturnExisting requires both a queue (WithQueue) and a deduplication ID
+// (WithDeduplicationID).
+func WithDeduplicationPolicy(policy DeduplicationPolicy) WorkflowOption {
+	return func(p *workflowOptions) {
+		p.DeduplicationPolicy = policy
 	}
 }
 
@@ -1026,6 +1048,16 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 		return nil, newWorkflowExecutionError("", fmt.Errorf("partition key and deduplication ID cannot be used together"))
 	}
 
+	// A non-default deduplication policy only applies to a queued workflow with a deduplication ID
+	if params.DeduplicationPolicy != DeduplicationPolicyReject {
+		if len(params.DeduplicationID) == 0 {
+			return nil, newWorkflowExecutionError("", fmt.Errorf("a deduplication policy requires a deduplication ID"))
+		}
+		if len(params.QueueName) == 0 {
+			return nil, newWorkflowExecutionError("", fmt.Errorf("a deduplication policy requires a queue name"))
+		}
+	}
+
 	// Validate queue exists if provided
 	if len(params.QueueName) > 0 {
 		queue := c.queueRunner.getQueue(params.QueueName)
@@ -1183,9 +1215,10 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 
 	var earlyReturnPollingHandle *workflowPollingHandle[any]
 	var insertStatusResult *insertWorkflowResult
+	returnExisting := params.DeduplicationPolicy == DeduplicationPolicyReturnExisting
 
 	// Init status and record child workflow relationship in a single transaction
-	err := retry(c, func() error {
+	insertWorkflowStatusTx := func() error {
 		tx, err := c.systemDB.(*sysDB).pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
 			return newWorkflowExecutionError(workflowID, fmt.Errorf("failed to begin transaction: %w", err))
@@ -1203,7 +1236,10 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 		}
 		insertStatusResult, err = c.systemDB.insertWorkflowStatus(uncancellableCtx, insertInput)
 		if err != nil {
-			c.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowID)
+			// Silence dedup error under return-existing policy.
+			if !(returnExisting && errors.Is(err, &DBOSError{Code: QueueDeduplicated})) {
+				c.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowID)
+			}
 			return newWorkflowExecutionError(workflowID, fmt.Errorf("failed to insert workflow status: %w", err))
 		}
 
@@ -1254,9 +1290,43 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 		}
 
 		return nil
-	}, withRetrierLogger(c.logger))
-	if err != nil {
-		return nil, err
+	}
+
+	for {
+		err := retry(c, insertWorkflowStatusTx, withRetrierLogger(c.logger))
+		if err == nil {
+			// Common path
+			break
+		}
+		// Now handle the case where the insert failed because the deduplication ID is already held by another workflow.
+		// We must also handle the case were a parent workflow spawned a return-existing child, and record their parent-child relationship.
+		if !returnExisting || !errors.Is(err, &DBOSError{Code: QueueDeduplicated}) {
+			return nil, err
+		}
+		existingID, lookupErr := retryWithResult(uncancellableCtx, func() (*string, error) {
+			return c.systemDB.getDeduplicatedWorkflow(uncancellableCtx, params.QueueName, params.DeduplicationID)
+		}, withRetrierLogger(c.logger))
+		if lookupErr != nil {
+			return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
+		}
+		if existingID == nil {
+			continue // the slot was cleared between our insert and the lookup; try to claim it
+		}
+		// Attach to the existing workflow holding the deduplication slot. For a child workflow, record
+		// the parent->child mapping at the reserved step ID so replay resolves to the same workflow.
+		if isChildWorkflow {
+			childInput := recordChildWorkflowDBInput{
+				parentWorkflowID: parentWorkflowState.workflowID,
+				childWorkflowID:  *existingID,
+				stepName:         params.WorkflowName,
+				stepID:           parentWorkflowState.stepID,
+			}
+			if err := c.systemDB.recordChildWorkflow(uncancellableCtx, childInput); err != nil {
+				return nil, newWorkflowExecutionError(parentWorkflowState.workflowID, fmt.Errorf("recording child workflow: %w", err))
+			}
+		}
+		c.logger.Info("returning handle to existing deduplicated workflow", "workflow_name", params.WorkflowName, "queue_name", params.QueueName, "deduplication_id", params.DeduplicationID, "existing_workflow_id", *existingID)
+		return newWorkflowPollingHandle[any](uncancellableCtx, *existingID), nil
 	}
 	if earlyReturnPollingHandle != nil {
 		return earlyReturnPollingHandle, nil
@@ -1286,7 +1356,7 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 		// Register a cancel function that cancels the workflow in the DB as soon as the context is cancelled
 		workflowCancelFunction := func() {
 			c.logger.Info("Cancelling workflow", "workflow_id", workflowID)
-			err = retry(c, func() error {
+			err := retry(c, func() error {
 				_, err := c.systemDB.cancelWorkflows(uncancellableCtx, cancelWorkflowsDBInput{workflowIDs: []string{workflowID}})
 				return err
 			}, withRetrierLogger(c.logger))
@@ -3992,12 +4062,30 @@ type StepInfo struct {
 	CompletedAt     time.Time // When the step execution completed
 }
 
-func (c *dbosContext) GetWorkflowSteps(_ DBOSContext, workflowID string) ([]StepInfo, error) {
-	var loadOutput bool
-	if c.launched.Load() {
-		loadOutput = true
-	} else {
-		loadOutput = false
+// getWorkflowStepsOptions holds optional parameters for GetWorkflowSteps.
+type getWorkflowStepsOptions struct {
+	loadOutput *bool
+}
+
+// GetWorkflowStepsOption is a functional option for GetWorkflowSteps.
+type GetWorkflowStepsOption func(*getWorkflowStepsOptions)
+
+// WithStepsLoadOutput controls whether to load step output data.
+// When unset, output is loaded only if the DBOS context has been launched.
+func WithStepsLoadOutput(loadOutput bool) GetWorkflowStepsOption {
+	return func(o *getWorkflowStepsOptions) {
+		o.loadOutput = &loadOutput
+	}
+}
+
+func (c *dbosContext) GetWorkflowSteps(_ DBOSContext, workflowID string, opts ...GetWorkflowStepsOption) ([]StepInfo, error) {
+	options := getWorkflowStepsOptions{}
+	for _, opt := range opts {
+		opt(&options)
+	}
+	loadOutput := c.launched.Load()
+	if options.loadOutput != nil {
+		loadOutput = *options.loadOutput
 	}
 	getWorkflowStepsInput := getWorkflowStepsInput{
 		workflowID: workflowID,
@@ -4090,11 +4178,11 @@ func (c *dbosContext) GetWorkflowSteps(_ DBOSContext, workflowID string) ([]Step
 //	for _, step := range steps {
 //	    log.Printf("Step %d: %s", step.StepID, step.StepName)
 //	}
-func GetWorkflowSteps(ctx DBOSContext, workflowID string) ([]StepInfo, error) {
+func GetWorkflowSteps(ctx DBOSContext, workflowID string, opts ...GetWorkflowStepsOption) ([]StepInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetWorkflowSteps(ctx, workflowID)
+	return ctx.GetWorkflowSteps(ctx, workflowID, opts...)
 }
 
 // GetWorkflowAggregatesInput is the input to GetWorkflowAggregates.
