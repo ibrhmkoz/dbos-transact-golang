@@ -35,3 +35,12 @@ LEFT JOIN latest_test_results AS results USING (run_id, package, test)
 WHERE events.output IS NOT NULL
   AND (results.status = 'fail' OR events.action = 'build-output')
 ORDER BY events.event_index;
+
+-- Output for one test from the latest run.
+-- Usage:
+-- TEST_NAME='TestGarbageCollect/GarbageCollectOnlyCompletedWorkflows' \
+--   duckdb .test-results/tests.duckdb -f scripts/test-results.sql
+SELECT string_agg(events.output, '' ORDER BY events.event_index) AS output
+FROM latest_test_events AS events
+WHERE events.test = 'TestGarbageCollect/GarbageCollectOnlyCompletedWorkflows'
+  AND events.output IS NOT NULL;
