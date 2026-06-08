@@ -4512,6 +4512,7 @@ func TestGarbageCollect(t *testing.T) {
 		// Start one blocked workflow and 10 normal workflows
 		blockedHandle, err := RunWorkflow(dbosCtx, gcBlockedWorkflow, gcTestEvent)
 		require.NoError(t, err, "failed to start blocked workflow")
+		time.Sleep(2 * time.Millisecond)
 
 		var completedHandles []WorkflowHandle[int]
 		for i := range numWorkflows {
@@ -4521,6 +4522,9 @@ func TestGarbageCollect(t *testing.T) {
 			require.NoError(t, err, "failed to get result from test workflow %d", i)
 			require.Equal(t, i, result, "expected result %d, got %d", i, result)
 			completedHandles = append(completedHandles, handle)
+			if i < numWorkflows-1 {
+				time.Sleep(2 * time.Millisecond)
+			}
 		}
 
 		// Verify exactly 11 workflows exist before GC (1 blocked + 10 completed)
@@ -4750,14 +4754,18 @@ func TestGarbageCollect(t *testing.T) {
 		// Start blocked workflow that will remain pending
 		blockedHandle, err := RunWorkflow(dbosCtx, gcBlockedWorkflow, gcTestEvent)
 		require.NoError(t, err, "failed to start blocked workflow")
+		time.Sleep(2 * time.Millisecond)
 
-		// Execute normal workflows to completion
+		// Execute normal workflows to completion with distinct persisted creation timestamps
 		for i := range numWorkflows {
 			handle, err := RunWorkflow(dbosCtx, gcTestWorkflow, i)
 			require.NoError(t, err, "failed to start test workflow %d", i)
 			result, err := handle.GetResult()
 			require.NoError(t, err, "failed to get result from test workflow %d", i)
 			require.Equal(t, i, result, "expected result %d, got %d", i, result)
+			if i < numWorkflows-1 {
+				time.Sleep(2 * time.Millisecond)
+			}
 		}
 
 		// Verify exactly 6 workflows exist (1 blocked + 5 completed)
