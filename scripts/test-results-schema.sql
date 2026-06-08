@@ -69,7 +69,8 @@ CREATE OR REPLACE VIEW latest_test_parallelism AS
 SELECT
     parallel,
     count(*) AS tests,
-    round(sum(elapsed_seconds), 3) AS elapsed_seconds
+    round(sum(elapsed_seconds), 3) AS work_seconds,
+    round(max(elapsed_seconds), 3) AS longest_test_seconds
 FROM latest_leaf_test_results
 GROUP BY parallel
 ORDER BY parallel;
@@ -83,6 +84,23 @@ CREATE OR REPLACE VIEW latest_test_events AS
 SELECT events.*
 FROM test_events AS events
 JOIN latest_test_run AS latest USING (run_id);
+
+CREATE OR REPLACE VIEW latest_parallel_phase AS
+SELECT
+    min(event_time) FILTER (WHERE action = 'cont') AS started_at,
+    max(event_time) FILTER (
+        WHERE test IS NOT NULL
+          AND action IN ('pass', 'fail', 'skip')
+    ) AS finished_at,
+    date_diff(
+        'millisecond',
+        min(event_time) FILTER (WHERE action = 'cont'),
+        max(event_time) FILTER (
+            WHERE test IS NOT NULL
+              AND action IN ('pass', 'fail', 'skip')
+        )
+    ) / 1000.0 AS wall_seconds
+FROM latest_test_events;
 
 CREATE OR REPLACE VIEW failed_test_results AS
 SELECT runs.started_at, runs.backend, runs.race, results.*
