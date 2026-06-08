@@ -4,6 +4,16 @@ FROM test_runs
 ORDER BY started_at DESC
 LIMIT 20;
 
+-- Latest run wall time compared with the sum of leaf-test elapsed times.
+-- Parent tests are excluded because their elapsed time includes their subtests.
+SELECT
+    runs.duration_seconds AS wall_seconds,
+    round(sum(results.elapsed_seconds), 3) AS leaf_test_seconds,
+    count(*) AS leaf_tests
+FROM latest_test_run AS runs
+CROSS JOIN latest_leaf_test_results AS results
+GROUP BY runs.duration_seconds;
+
 -- Failed tests from the latest run.
 SELECT test, package, elapsed_seconds
 FROM latest_test_results

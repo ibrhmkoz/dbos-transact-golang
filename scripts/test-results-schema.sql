@@ -50,6 +50,17 @@ SELECT results.*
 FROM test_results AS results
 JOIN latest_test_run AS latest USING (run_id);
 
+CREATE OR REPLACE VIEW latest_leaf_test_results AS
+SELECT results.*
+FROM latest_test_results AS results
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM latest_test_results AS child
+    WHERE child.run_id = results.run_id
+      AND child.package = results.package
+      AND starts_with(child.test, results.test || '/')
+);
+
 CREATE OR REPLACE VIEW latest_package_results AS
 SELECT results.*
 FROM package_results AS results
