@@ -1432,48 +1432,47 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 			outcomeChan <- workflowOutcome[any]{result: encodedResult, err: err, needsDecoding: true, serialization: ser}
 			close(outcomeChan)
 			return
-		} else {
-			status := WorkflowStatusSuccess
+		}
+		status := WorkflowStatusSuccess
 
-			// If an error occurred, set the status to error
-			if err != nil {
-				status = WorkflowStatusError
-			}
+		// If an error occurred, set the status to error
+		if err != nil {
+			status = WorkflowStatusError
+		}
 
-			// If the afterFunc has started, the workflow was cancelled and the status should be set to cancelled
-			if stopFunc != nil && !stopFunc() {
-				c.logger.Info("Workflow was cancelled. Waiting for cancel function to complete", "workflow_id", workflowID)
-				<-cancelFuncCompleted // Wait for the cancel function to complete
-				status = WorkflowStatusCancelled
-			}
+		// If the afterFunc has started, the workflow was cancelled and the status should be set to cancelled
+		if stopFunc != nil && !stopFunc() {
+			c.logger.Info("Workflow was cancelled. Waiting for cancel function to complete", "workflow_id", workflowID)
+			<-cancelFuncCompleted // Wait for the cancel function to complete
+			status = WorkflowStatusCancelled
+		}
 
-			// Serialize the output before recording
-			encodedOutput, serErr := resolveEncoder(workflowCtx).Encode(result)
-			if serErr != nil {
-				c.logger.Error("Failed to serialize workflow output", "workflow_id", workflowID, "error", serErr)
-				outcomeChan <- workflowOutcome[any]{result: nil, err: fmt.Errorf("failed to serialize output: %w", serErr)}
-				close(outcomeChan)
-				return
-			}
+		// Serialize the output before recording
+		encodedOutput, serErr := resolveEncoder(workflowCtx).Encode(result)
+		if serErr != nil {
+			c.logger.Error("Failed to serialize workflow output", "workflow_id", workflowID, "error", serErr)
+			outcomeChan <- workflowOutcome[any]{result: nil, err: fmt.Errorf("failed to serialize output: %w", serErr)}
+			close(outcomeChan)
+			return
+		}
 
-			var serializedErr string
-			if err != nil {
-				serializedErr = serializeWorkflowError(err, resolveEncoder(workflowCtx).Name())
-			}
-			recordErr := retry(c, func() error {
-				return c.systemDB.updateWorkflowOutcome(uncancellableCtx, updateWorkflowOutcomeDBInput{
-					workflowID: workflowID,
-					status:     status,
-					errStr:     serializedErr,
-					output:     encodedOutput,
-				})
-			}, withRetrierLogger(c.logger))
-			if recordErr != nil {
-				c.logger.Error("Error recording workflow outcome", "workflow_id", workflowID, "error", recordErr)
-				outcomeChan <- workflowOutcome[any]{result: nil, err: recordErr}
-				close(outcomeChan)
-				return
-			}
+		var serializedErr string
+		if err != nil {
+			serializedErr = serializeWorkflowError(err, resolveEncoder(workflowCtx).Name())
+		}
+		recordErr := retry(c, func() error {
+			return c.systemDB.updateWorkflowOutcome(uncancellableCtx, updateWorkflowOutcomeDBInput{
+				workflowID: workflowID,
+				status:     status,
+				errStr:     serializedErr,
+				output:     encodedOutput,
+			})
+		}, withRetrierLogger(c.logger))
+		if recordErr != nil {
+			c.logger.Error("Error recording workflow outcome", "workflow_id", workflowID, "error", recordErr)
+			outcomeChan <- workflowOutcome[any]{result: nil, err: recordErr}
+			close(outcomeChan)
+			return
 		}
 		outcomeChan <- workflowOutcome[any]{result: result, err: err}
 		close(outcomeChan)
