@@ -85,7 +85,7 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 	})
 
 	for {
-		_, err := ctx.RunWorkflow(ctx, internalWF, dInput, WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
+		_, err := ctx.RunWorkflow(internalWF, dInput, WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
 		if err == nil {
 			return newWorkflowHandle[R](ctx, dInput.TargetWorkflowID), nil
 		}

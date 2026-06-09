@@ -175,7 +175,7 @@ func runWorkflowList(cmd *cobra.Command, args []string) error {
 	opts = append(opts, dbos.WithLoadInput(false), dbos.WithLoadOutput(false))
 
 	// List workflows
-	workflows, err := ctx.ListWorkflows(ctx, opts...)
+	workflows, err := ctx.ListWorkflows(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list workflows: %w", err)
 	}
@@ -208,7 +208,6 @@ func runWorkflowGet(cmd *cobra.Command, args []string) error {
 
 	// Retrieve workflow
 	workflows, err := ctx.ListWorkflows(
-		ctx,
 		dbos.WithWorkflowIDs([]string{workflowID}),
 		dbos.WithLoadInput(false),
 		dbos.WithLoadOutput(false),
@@ -274,7 +273,7 @@ func runWorkflowCancel(cmd *cobra.Command, args []string) error {
 	}
 
 	// Cancel workflow
-	err = ctx.CancelWorkflow(ctx, workflowID)
+	err = ctx.CancelWorkflow(workflowID)
 	if err != nil {
 		return err
 	}
@@ -300,7 +299,7 @@ func runWorkflowResume(cmd *cobra.Command, args []string) error {
 	}
 
 	// Resume workflow
-	handle, err := ctx.ResumeWorkflow(ctx, workflowID)
+	handle, err := ctx.ResumeWorkflow(workflowID)
 	if err != nil {
 		return err
 	}
@@ -355,7 +354,7 @@ func runWorkflowFork(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fork workflow
-	handle, err := ctx.ForkWorkflow(ctx, input)
+	handle, err := ctx.ForkWorkflow(input)
 	if err != nil {
 		return err
 	}
@@ -390,7 +389,7 @@ func runWorkflowDelete(cmd *cobra.Command, args []string) error {
 		opts = append(opts, dbos.WithDeleteChildren())
 	}
 
-	if err := ctx.DeleteWorkflows(ctx, args, opts...); err != nil {
+	if err := ctx.DeleteWorkflows(args, opts...); err != nil {
 		return err
 	}
 

@@ -491,7 +491,7 @@ func (c *conductor) handleCancelWorkflowRequest(data []byte, requestID string) e
 	success := true
 	var errorMsg *string
 
-	if err := c.dbosCtx.CancelWorkflows(c.dbosCtx, workflowIDs); err != nil {
+	if err := c.dbosCtx.CancelWorkflows(workflowIDs); err != nil {
 		c.logger.Error("Failed to cancel workflows", "workflow_ids", workflowIDs, "error", err)
 		errStr := fmt.Sprintf("failed to cancel workflows: %v", err)
 		errorMsg = &errStr
@@ -533,7 +533,7 @@ func (c *conductor) handleResumeWorkflowRequest(data []byte, requestID string) e
 	if req.QueueName != nil {
 		resumeOpts = append(resumeOpts, WithResumeQueue(*req.QueueName))
 	}
-	_, err := c.dbosCtx.ResumeWorkflows(c.dbosCtx, workflowIDs, resumeOpts...)
+	_, err := c.dbosCtx.ResumeWorkflows(workflowIDs, resumeOpts...)
 	if err != nil {
 		c.logger.Error("Failed to resume workflows", "workflow_ids", workflowIDs, "error", err)
 		errStr := fmt.Sprintf("failed to resume workflows: %v", err)
@@ -750,7 +750,7 @@ func (c *conductor) handleListWorkflowsRequest(data []byte, requestID string) er
 		opts = append(opts, WithExecutorIDs(req.Body.ExecutorID.toSlice()))
 	}
 
-	workflows, err := c.dbosCtx.ListWorkflows(c.dbosCtx, opts...)
+	workflows, err := c.dbosCtx.ListWorkflows(opts...)
 	if err != nil {
 		c.logger.Error("Failed to list workflows", "error", err)
 		errorMsg := fmt.Sprintf("failed to list workflows: %v", err)
@@ -841,7 +841,7 @@ func (c *conductor) handleGetWorkflowRequest(data []byte, requestID string) erro
 	}
 	c.logger.Debug("Handling get workflow request", "workflow_id", req.WorkflowID)
 
-	workflows, err := c.dbosCtx.ListWorkflows(c.dbosCtx,
+	workflows, err := c.dbosCtx.ListWorkflows(
 		WithWorkflowIDs([]string{req.WorkflowID}),
 		WithLoadInput(req.LoadInput),
 		WithLoadOutput(req.LoadOutput))
@@ -915,7 +915,7 @@ func (c *conductor) handleForkWorkflowRequest(data []byte, requestID string) err
 	}
 
 	// Execute the fork workflow
-	handle, err := c.dbosCtx.ForkWorkflow(c.dbosCtx, input)
+	handle, err := c.dbosCtx.ForkWorkflow(input)
 	var newWorkflowID *string
 	var errorMsg *string
 
@@ -958,7 +958,7 @@ func (c *conductor) handleExistPendingWorkflowsRequest(data []byte, requestID st
 		WithAppVersion(req.ApplicationVersion),
 	}
 
-	workflows, err := c.dbosCtx.ListWorkflows(c.dbosCtx, opts...)
+	workflows, err := c.dbosCtx.ListWorkflows(opts...)
 	var errorMsg *string
 	if err != nil {
 		c.logger.Error("Failed to check for pending workflows", "executor_id", req.ExecutorID, "application_version", req.ApplicationVersion, "error", err)
@@ -1390,7 +1390,7 @@ func (c *conductor) handleGetWorkflowAggregatesRequest(data []byte, requestID st
 		Output: []WorkflowAggregateRow{},
 	}
 
-	rows, err := c.dbosCtx.GetWorkflowAggregates(c.dbosCtx, input)
+	rows, err := c.dbosCtx.GetWorkflowAggregates(input)
 	if err != nil {
 		c.logger.Error("Failed to get workflow aggregates", "error", err)
 		errStr := fmt.Sprintf("failed to get workflow aggregates: %v", err)
@@ -1436,7 +1436,7 @@ func (c *conductor) handleGetStepAggregatesRequest(data []byte, requestID string
 		Output: []StepAggregateRow{},
 	}
 
-	rows, err := c.dbosCtx.GetStepAggregates(c.dbosCtx, input)
+	rows, err := c.dbosCtx.GetStepAggregates(input)
 	if err != nil {
 		c.logger.Error("Failed to get step aggregates", "error", err)
 		errStr := fmt.Sprintf("Exception encountered when getting step aggregates: %v", err)
@@ -1540,7 +1540,7 @@ func (c *conductor) handleListSchedulesRequest(data []byte, requestID string) er
 		opts = append(opts, WithScheduleNamePrefixes(req.Body.ScheduleNamePrefix.toSlice()...))
 	}
 
-	schedules, err := c.dbosCtx.ListSchedules(c.dbosCtx, opts...)
+	schedules, err := c.dbosCtx.ListSchedules(opts...)
 	output := []scheduleConductorOutput{}
 	var errorMsg *string
 	if err != nil {
@@ -1576,7 +1576,7 @@ func (c *conductor) handleGetScheduleRequest(data []byte, requestID string) erro
 		loadContext = *req.LoadContext
 	}
 
-	schedule, err := c.dbosCtx.GetSchedule(c.dbosCtx, req.ScheduleName)
+	schedule, err := c.dbosCtx.GetSchedule(req.ScheduleName)
 	var errorMsg *string
 	var output *scheduleConductorOutput
 	if err != nil {
@@ -1607,7 +1607,7 @@ func (c *conductor) handlePauseScheduleRequest(data []byte, requestID string) er
 
 	success := true
 	var errorMsg *string
-	if err := c.dbosCtx.PauseSchedule(c.dbosCtx, req.ScheduleName); err != nil {
+	if err := c.dbosCtx.PauseSchedule(req.ScheduleName); err != nil {
 		c.logger.Error("Failed to pause schedule", "schedule_name", req.ScheduleName, "error", err)
 		msg := fmt.Sprintf("failed to pause schedule '%s': %v", req.ScheduleName, err)
 		errorMsg = &msg
@@ -1633,7 +1633,7 @@ func (c *conductor) handleResumeScheduleRequest(data []byte, requestID string) e
 
 	success := true
 	var errorMsg *string
-	if err := c.dbosCtx.ResumeSchedule(c.dbosCtx, req.ScheduleName); err != nil {
+	if err := c.dbosCtx.ResumeSchedule(req.ScheduleName); err != nil {
 		c.logger.Error("Failed to resume schedule", "schedule_name", req.ScheduleName, "error", err)
 		msg := fmt.Sprintf("failed to resume schedule '%s': %v", req.ScheduleName, err)
 		errorMsg = &msg
@@ -1676,7 +1676,7 @@ func (c *conductor) handleBackfillScheduleRequest(data []byte, requestID string)
 			msg := fmt.Sprintf("failed to parse end time '%s': %v", req.End, errEnd)
 			errorMsg = &msg
 		} else {
-			schedule, errGet := c.dbosCtx.GetSchedule(c.dbosCtx, req.ScheduleName)
+			schedule, errGet := c.dbosCtx.GetSchedule(req.ScheduleName)
 			if errGet != nil {
 				msg := fmt.Sprintf("failed to get schedule '%s': %v", req.ScheduleName, errGet)
 				errorMsg = &msg

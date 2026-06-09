@@ -143,38 +143,38 @@ type DBOSContext interface {
 	Shutdown(timeout time.Duration) // Gracefully shutdown all DBOS resources
 
 	// WorkflowFn operations
-	RunAsStep(_ DBOSContext, fn StepFunc, opts ...StepOption) (any, error)                                       // Execute a function as a durable step within a workflow
-	RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opts ...WorkflowOption) (*WorkflowHandle[any], error) // Start a new workflow execution
-	Go(_ DBOSContext, fn StepFunc, opts ...StepOption) (chan StepOutcome[any], error)                            // Starts a step inside a Go routine and returns a channel to receive the result
-	Select(_ DBOSContext, channels []<-chan StepOutcome[any]) (any, error)                                       // Performs a durable select over a slice of channels, checkpointing the selected channel and value
-	Send(_ DBOSContext, destinationID string, message any, topic string, opts ...SendOption) error               // Send a message to another workflow
-	Recv(_ DBOSContext, topic string, timeout time.Duration) (any, error)                                        // Receive a message sent to this workflow
-	SetEvent(_ DBOSContext, key string, message any, opts ...SetEventOption) error                               // Set a key-value event for this workflow
-	GetEvent(_ DBOSContext, targetWorkflowID string, key string, timeout time.Duration) (any, error)             // Get a key-value event from a target workflow
-	WriteStream(_ DBOSContext, key string, value any, opts ...WriteStreamOption) error                           // Write a value to a durable stream
-	CloseStream(_ DBOSContext, key string) error                                                                 // Close a durable stream
-	ReadStream(_ DBOSContext, workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error)      // Read values from a durable stream (blocks until workflow inactive or stream closed
-	ReadStreamAsync(_ DBOSContext, workflowID string, key string) (<-chan StreamValue[any], error)               // Read values from a durable stream asynchronously
-	Sleep(_ DBOSContext, duration time.Duration) (time.Duration, error)                                          // Durable sleep that survives workflow recovery
-	Patch(_ DBOSContext, patchName string) (bool, error)                                                         // Check if workflow should use patched code
-	DeprecatePatch(_ DBOSContext, patchName string) error                                                        // Deprecate a patch
-	GetWorkflowID() (string, error)                                                                              // Get the current workflow ID (only available within workflows)
-	GetStepID() (int, error)                                                                                     // Get the current step ID (only available within workflows)
+	RunAsStep(fn StepFunc, opts ...StepOption) (any, error)                                       // Execute a function as a durable step within a workflow
+	RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOption) (*WorkflowHandle[any], error) // Start a new workflow execution
+	Go(fn StepFunc, opts ...StepOption) (chan StepOutcome[any], error)                            // Starts a step inside a Go routine and returns a channel to receive the result
+	Select(channels []<-chan StepOutcome[any]) (any, error)                                       // Performs a durable select over a slice of channels, checkpointing the selected channel and value
+	Send(destinationID string, message any, topic string, opts ...SendOption) error               // Send a message to another workflow
+	Recv(topic string, timeout time.Duration) (any, error)                                        // Receive a message sent to this workflow
+	SetEvent(key string, message any, opts ...SetEventOption) error                               // Set a key-value event for this workflow
+	GetEvent(targetWorkflowID string, key string, timeout time.Duration) (any, error)             // Get a key-value event from a target workflow
+	WriteStream(key string, value any, opts ...WriteStreamOption) error                           // Write a value to a durable stream
+	CloseStream(key string) error                                                                 // Close a durable stream
+	ReadStream(workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error)      // Read values from a durable stream (blocks until workflow inactive or stream closed
+	ReadStreamAsync(workflowID string, key string) (<-chan StreamValue[any], error)               // Read values from a durable stream asynchronously
+	Sleep(duration time.Duration) (time.Duration, error)                                          // Durable sleep that survives workflow recovery
+	Patch(patchName string) (bool, error)                                                         // Check if workflow should use patched code
+	DeprecatePatch(patchName string) error                                                        // Deprecate a patch
+	GetWorkflowID() (string, error)                                                               // Get the current workflow ID (only available within workflows)
+	GetStepID() (int, error)                                                                      // Get the current step ID (only available within workflows)
 
 	// WorkflowFn management
-	RetrieveWorkflow(_ DBOSContext, workflowID string) (*WorkflowHandle[any], error)                                   // Get a handle to an existing workflow
-	CancelWorkflow(_ DBOSContext, workflowID string) error                                                             // Cancel a workflow by setting its status to CANCELLED
-	CancelWorkflows(_ DBOSContext, workflowIDs []string) error                                                         // Cancel multiple workflows in a single DB round-trip
-	SetWorkflowDelay(_ DBOSContext, workflowID string, opts ...SetWorkflowDelayOption) error                           // Set or update the delay on a DELAYED workflow
-	ResumeWorkflow(_ DBOSContext, workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)       // Resume a cancelled workflow
-	ResumeWorkflows(_ DBOSContext, workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) // Resume multiple workflows in a single DB round-trip
-	ForkWorkflow(_ DBOSContext, input ForkWorkflowInput) (*WorkflowHandle[any], error)                                 // Fork a workflow from a specific step
-	ListWorkflows(_ DBOSContext, opts ...ListWorkflowsOption) ([]WorkflowStatus, error)                                // List workflows based on filtering criteria
-	GetWorkflowSteps(_ DBOSContext, workflowID string, opts ...GetWorkflowStepsOption) ([]StepInfo, error)             // Get the execution steps of a workflow
-	GetWorkflowAggregates(_ DBOSContext, input GetWorkflowAggregatesInput) ([]WorkflowAggregateRow, error)             // Aggregate counts of workflows by one or more grouping columns
-	GetStepAggregates(_ DBOSContext, input GetStepAggregatesInput) ([]StepAggregateRow, error)                         // Aggregate counts/durations of steps by function name and/or status
-	ListRegisteredWorkflows(_ DBOSContext, opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error)     // List registered workflows with filtering options
-	DeleteWorkflows(_ DBOSContext, workflowIDs []string, opts ...DeleteWorkflowOption) error                           // Delete workflows and all their associated data
+	RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error)                                   // Get a handle to an existing workflow
+	CancelWorkflow(workflowID string) error                                                             // Cancel a workflow by setting its status to CANCELLED
+	CancelWorkflows(workflowIDs []string) error                                                         // Cancel multiple workflows in a single DB round-trip
+	SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error                           // Set or update the delay on a DELAYED workflow
+	ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)       // Resume a cancelled workflow
+	ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) // Resume multiple workflows in a single DB round-trip
+	ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error)                                 // Fork a workflow from a specific step
+	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)                                // List workflows based on filtering criteria
+	GetWorkflowSteps(workflowID string, opts ...GetWorkflowStepsOption) ([]StepInfo, error)             // Get the execution steps of a workflow
+	GetWorkflowAggregates(input GetWorkflowAggregatesInput) ([]WorkflowAggregateRow, error)             // Aggregate counts of workflows by one or more grouping columns
+	GetStepAggregates(input GetStepAggregatesInput) ([]StepAggregateRow, error)                         // Aggregate counts/durations of steps by function name and/or status
+	ListRegisteredWorkflows(opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error)     // List registered workflows with filtering options
+	DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error                           // Delete workflows and all their associated data
 
 	// Accessors
 	GetApplicationVersion() string // Get the application version for this context
@@ -182,28 +182,28 @@ type DBOSContext interface {
 	GetApplicationID() string      // Get the application ID for this context
 
 	// Context management
-	From(_ DBOSContext, ctx context.Context) DBOSContext                                // Returns a copy of the current DBOSContext wrapping the provided context.Context
-	WithoutCancel(_ DBOSContext) DBOSContext                                            // Returns a copy that is not canceled when the parent is canceled
-	WithTimeout(_ DBOSContext, timeout time.Duration) (DBOSContext, context.CancelFunc) // Returns a copy that is canceled after the timeout
-	WithValue(key, val any) DBOSContext                                                 // Returns a copy of the DBOS context with the given key-value pair
-	WithCancel() (DBOSContext, context.CancelFunc)                                      // Returns a copy that can be manually canceled
-	WithCancelCause() (DBOSContext, context.CancelCauseFunc)                            // Returns a copy of the DBOS context that can be canceled with a cause
+	From(ctx context.Context) DBOSContext                                // Returns a copy of the current DBOSContext wrapping the provided context.Context
+	WithoutCancel() DBOSContext                                          // Returns a copy that is not canceled when the parent is canceled
+	WithTimeout(timeout time.Duration) (DBOSContext, context.CancelFunc) // Returns a copy that is canceled after the timeout
+	WithValue(key, val any) DBOSContext                                  // Returns a copy of the DBOS context with the given key-value pair
+	WithCancel() (DBOSContext, context.CancelFunc)                       // Returns a copy that can be manually canceled
+	WithCancelCause() (DBOSContext, context.CancelCauseFunc)             // Returns a copy of the DBOS context that can be canceled with a cause
 
 	// Schedule management
-	CreateSchedule(_ DBOSContext, fn ScheduledWorkflowFunc, input CreateScheduleRequest, opts ...CreateScheduleOption) error // Create a new schedule
-	ApplySchedules(_ DBOSContext, schedules []ApplySchedulesRequest) error                                                   // Apply schedules (create or update)
-	PauseSchedule(_ DBOSContext, scheduleName string) error                                                                  // Pause a schedule
-	ResumeSchedule(_ DBOSContext, scheduleName string) error                                                                 // Resume a paused schedule
-	DeleteSchedule(_ DBOSContext, scheduleName string) error                                                                 // Delete a schedule
-	GetSchedule(_ DBOSContext, scheduleName string) (*WorkflowSchedule, error)                                               // Get a schedule by name
-	ListSchedules(_ DBOSContext, opts ...ListSchedulesOption) ([]WorkflowSchedule, error)                                    // List schedules with optional filters
-	BackfillSchedule(_ DBOSContext, scheduleName string, start time.Time, end time.Time) ([]string, error)                   // Backfill a schedule, returning the IDs of the enqueued workflows
-	TriggerSchedule(_ DBOSContext, scheduleName string) (*WorkflowHandle[any], error)                                        // Trigger a schedule immediately, returning a handle to the enqueued workflow
+	CreateSchedule(fn ScheduledWorkflowFunc, input CreateScheduleRequest, opts ...CreateScheduleOption) error // Create a new schedule
+	ApplySchedules(schedules []ApplySchedulesRequest) error                                                   // Apply schedules (create or update)
+	PauseSchedule(scheduleName string) error                                                                  // Pause a schedule
+	ResumeSchedule(scheduleName string) error                                                                 // Resume a paused schedule
+	DeleteSchedule(scheduleName string) error                                                                 // Delete a schedule
+	GetSchedule(scheduleName string) (*WorkflowSchedule, error)                                               // Get a schedule by name
+	ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSchedule, error)                                    // List schedules with optional filters
+	BackfillSchedule(scheduleName string, start time.Time, end time.Time) ([]string, error)                   // Backfill a schedule, returning the IDs of the enqueued workflows
+	TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error)                                        // Trigger a schedule immediately, returning a handle to the enqueued workflow
 
 	// Application versions
-	ListApplicationVersions(_ DBOSContext) ([]VersionInfo, error)        // List all registered application versions, newest first
-	GetLatestApplicationVersion(_ DBOSContext) (*VersionInfo, error)     // Get the latest registered application version
-	SetLatestApplicationVersion(_ DBOSContext, versionName string) error // Mark the named version as latest by bumping its timestamp to now
+	ListApplicationVersions() ([]VersionInfo, error)      // List all registered application versions, newest first
+	GetLatestApplicationVersion() (*VersionInfo, error)   // Get the latest registered application version
+	SetLatestApplicationVersion(versionName string) error // Mark the named version as latest by bumping its timestamp to now
 
 	// Alert handling
 	SetAlertHandler(handler AlertHandler) // Register a handler for alerts from DBOS Conductor (must be called before Launch)
@@ -308,7 +308,7 @@ func (c *dbosContext) Value(key any) any {
 // From returns a copy of the current DBOSContext with the underlying context.Context set to the provided ctx.
 // The provided context must be a child of a context.Context that was provided by DBOS (e.g., the first argument of RunWorkflow or Run)
 // That is because such context embeds important metadata necessary for DBOS to function correctly.
-func (c *dbosContext) From(_ DBOSContext, ctx context.Context) DBOSContext {
+func (c *dbosContext) From(ctx context.Context) DBOSContext {
 	if ctx == nil {
 		return nil
 	}
@@ -335,7 +335,7 @@ func From(dbosCtx DBOSContext, ctx context.Context) DBOSContext {
 	if dbosCtx == nil {
 		return nil
 	}
-	return dbosCtx.From(dbosCtx, ctx)
+	return dbosCtx.From(ctx)
 }
 
 // WithValue returns a copy of the DBOS context with the given key-value pair.
@@ -367,7 +367,7 @@ func (c *dbosContext) WithValue(key, val any) DBOSContext {
 	return childCtx
 }
 
-func (c *dbosContext) WithoutCancel(_ DBOSContext) DBOSContext {
+func (c *dbosContext) WithoutCancel() DBOSContext {
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
 		ctx:                context.WithoutCancel(c.ctx),
@@ -393,7 +393,7 @@ func WithoutCancel(ctx DBOSContext) DBOSContext {
 	if ctx == nil {
 		return nil
 	}
-	return ctx.WithoutCancel(ctx)
+	return ctx.WithoutCancel()
 }
 
 func (c *dbosContext) WithCancel() (DBOSContext, context.CancelFunc) {
@@ -455,7 +455,7 @@ func WithCancelCause(ctx DBOSContext) (DBOSContext, context.CancelCauseFunc) {
 	return ctx.WithCancelCause()
 }
 
-func (c *dbosContext) WithTimeout(_ DBOSContext, timeout time.Duration) (DBOSContext, context.CancelFunc) {
+func (c *dbosContext) WithTimeout(timeout time.Duration) (DBOSContext, context.CancelFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelFunc := context.WithTimeoutCause(c.ctx, timeout, errors.New("DBOS context timeout"))
 	childCtx := &dbosContext{
@@ -481,7 +481,7 @@ func WithTimeout(ctx DBOSContext, timeout time.Duration) (DBOSContext, context.C
 	if ctx == nil {
 		return nil, func() {}
 	}
-	return ctx.WithTimeout(ctx, timeout)
+	return ctx.WithTimeout(timeout)
 }
 
 func (c *dbosContext) getWorkflowScheduler() *cron.Cron {
@@ -507,7 +507,7 @@ func (c *dbosContext) GetApplicationID() string {
 
 // ListRegisteredWorkflows returns information about registered workflows with their registration parameters.
 // Supports filtering using functional options.
-func (c *dbosContext) ListRegisteredWorkflows(_ DBOSContext, opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error) {
+func (c *dbosContext) ListRegisteredWorkflows(opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error) {
 	// Initialize parameters with defaults
 	params := &listRegisteredWorkflowsOptions{}
 

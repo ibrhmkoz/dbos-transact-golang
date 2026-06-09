@@ -424,7 +424,7 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 		workflowID := r.PathValue("id")
 		ctx.logger.Info("Cancelling workflow", "workflow_id", workflowID)
 
-		err := ctx.CancelWorkflow(ctx, workflowID)
+		err := ctx.CancelWorkflow(workflowID)
 		if err != nil {
 			ctx.logger.Error("Failed to cancel workflow", "workflow_id", workflowID, "error", err)
 			http.Error(w, fmt.Sprintf("Failed to cancel workflow: %v", err), http.StatusInternalServerError)
@@ -439,7 +439,7 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 		workflowID := r.PathValue("id")
 		ctx.logger.Info("Resuming workflow", "workflow_id", workflowID)
 
-		_, err := ctx.ResumeWorkflow(ctx, workflowID)
+		_, err := ctx.ResumeWorkflow(workflowID)
 		if err != nil {
 			ctx.logger.Error("Failed to resume workflow", "workflow_id", workflowID, "error", err)
 			http.Error(w, fmt.Sprintf("Failed to resume workflow: %v", err), http.StatusInternalServerError)
@@ -479,7 +479,7 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 
 		ctx.logger.Info("Forking workflow", "workflow_id", workflowID, "start_step", input.StartStep)
 
-		handle, err := ctx.ForkWorkflow(ctx, input)
+		handle, err := ctx.ForkWorkflow(input)
 		if err != nil {
 			ctx.logger.Error("Failed to fork workflow", "workflow_id", workflowID, "error", err)
 			http.Error(w, fmt.Sprintf("Failed to fork workflow: %v", err), http.StatusInternalServerError)

@@ -445,17 +445,17 @@ func Enqueue[P any, R any](c Client, queueName, workflowName string, input P, op
 
 // ListWorkflows retrieves a list of workflows based on the provided filters.
 func (c *client) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error) {
-	return c.dbosCtx.ListWorkflows(c.dbosCtx, opts...)
+	return c.dbosCtx.ListWorkflows(opts...)
 }
 
 // Send sends a message to another workflow.
 func (c *client) Send(destinationID string, message any, topic string, opts ...SendOption) error {
-	return c.dbosCtx.Send(c.dbosCtx, destinationID, message, topic, opts...)
+	return c.dbosCtx.Send(destinationID, message, topic, opts...)
 }
 
 // GetEvent retrieves a key-value event from a target workflow.
 func (c *client) GetEvent(targetWorkflowID, key string, timeout time.Duration) (any, error) {
-	result, err := c.dbosCtx.GetEvent(c.dbosCtx, targetWorkflowID, key, timeout)
+	result, err := c.dbosCtx.GetEvent(targetWorkflowID, key, timeout)
 	if err != nil {
 		return nil, err
 	}
@@ -468,48 +468,48 @@ func (c *client) GetEvent(targetWorkflowID, key string, timeout time.Duration) (
 
 // RetrieveWorkflow returns a handle to an existing workflow.
 func (c *client) RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.RetrieveWorkflow(c.dbosCtx, workflowID)
+	return c.dbosCtx.RetrieveWorkflow(workflowID)
 }
 
 // CancelWorkflow cancels a running or enqueued workflow.
 func (c *client) CancelWorkflow(workflowID string) error {
-	return c.dbosCtx.CancelWorkflow(c.dbosCtx, workflowID)
+	return c.dbosCtx.CancelWorkflow(workflowID)
 }
 
 // CancelWorkflows cancels multiple workflows in a single database round-trip.
 // Workflows that are missing or already in a terminal state are silently skipped.
 func (c *client) CancelWorkflows(workflowIDs []string) error {
-	return c.dbosCtx.CancelWorkflows(c.dbosCtx, workflowIDs)
+	return c.dbosCtx.CancelWorkflows(workflowIDs)
 }
 
 // SetWorkflowDelay sets or updates the delay on a DELAYED workflow.
 func (c *client) SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error {
-	return c.dbosCtx.SetWorkflowDelay(c.dbosCtx, workflowID, opts...)
+	return c.dbosCtx.SetWorkflowDelay(workflowID, opts...)
 }
 
 // DeleteWorkflows permanently deletes workflows and all their associated data.
 func (c *client) DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error {
-	return c.dbosCtx.DeleteWorkflows(c.dbosCtx, workflowIDs, opts...)
+	return c.dbosCtx.DeleteWorkflows(workflowIDs, opts...)
 }
 
 // ResumeWorkflow resumes a workflow from its last completed step.
 func (c *client) ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.ResumeWorkflow(c.dbosCtx, workflowID, opts...)
+	return c.dbosCtx.ResumeWorkflow(workflowID, opts...)
 }
 
 // ResumeWorkflows resumes multiple workflows in a single database round-trip.
 func (c *client) ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) {
-	return c.dbosCtx.ResumeWorkflows(c.dbosCtx, workflowIDs, opts...)
+	return c.dbosCtx.ResumeWorkflows(workflowIDs, opts...)
 }
 
 // ForkWorkflow creates a new workflow instance by copying an existing workflow from a specific step.
 func (c *client) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.ForkWorkflow(c.dbosCtx, input)
+	return c.dbosCtx.ForkWorkflow(input)
 }
 
 // GetWorkflowSteps retrieves the execution steps of a workflow.
 func (c *client) GetWorkflowSteps(workflowID string) ([]StepInfo, error) {
-	return c.dbosCtx.GetWorkflowSteps(c.dbosCtx, workflowID)
+	return c.dbosCtx.GetWorkflowSteps(workflowID)
 }
 
 // ReadStream reads values from a durable stream.
@@ -519,7 +519,7 @@ func (c *client) GetWorkflowSteps(workflowID string) ([]StepInfo, error) {
 //
 // Returns the values, whether the stream is closed, and any error.
 func (c *client) ClientReadStream(workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error) {
-	return c.dbosCtx.ReadStream(c.dbosCtx, workflowID, key, opts...)
+	return c.dbosCtx.ReadStream(workflowID, key, opts...)
 }
 
 // ClientReadStream reads values from a durable stream with type safety.
@@ -571,7 +571,7 @@ func ClientReadStream[R any](c Client, workflowID string, key string, opts ...Re
 // ClientReadStreamAsync reads values from a durable stream asynchronously.
 // Returns a channel that will receive StreamValue items as they're read.
 func (c *client) ClientReadStreamAsync(workflowID string, key string) (<-chan StreamValue[any], error) {
-	return c.dbosCtx.ReadStreamAsync(c.dbosCtx, workflowID, key)
+	return c.dbosCtx.ReadStreamAsync(workflowID, key)
 }
 
 // ClientReadStreamAsync reads values from a durable stream asynchronously with type safety.
@@ -804,59 +804,59 @@ func (c *client) ApplySchedules(schedules []ClientScheduleInput) error {
 
 // GetSchedule gets a schedule by name using the client.
 func (c *client) GetSchedule(scheduleName string) (*WorkflowSchedule, error) {
-	return c.dbosCtx.GetSchedule(c.dbosCtx, scheduleName)
+	return c.dbosCtx.GetSchedule(scheduleName)
 }
 
 // ListSchedules lists schedules, optionally filtered by the supplied options.
 func (c *client) ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSchedule, error) {
-	return c.dbosCtx.ListSchedules(c.dbosCtx, opts...)
+	return c.dbosCtx.ListSchedules(opts...)
 }
 
 // PauseSchedule pauses a schedule using the client.
 func (c *client) PauseSchedule(scheduleName string) error {
-	return c.dbosCtx.PauseSchedule(c.dbosCtx, scheduleName)
+	return c.dbosCtx.PauseSchedule(scheduleName)
 }
 
 // ResumeSchedule resumes a paused schedule using the client.
 func (c *client) ResumeSchedule(scheduleName string) error {
-	return c.dbosCtx.ResumeSchedule(c.dbosCtx, scheduleName)
+	return c.dbosCtx.ResumeSchedule(scheduleName)
 }
 
 // DeleteSchedule deletes a schedule using the client.
 func (c *client) DeleteSchedule(scheduleName string) error {
-	return c.dbosCtx.DeleteSchedule(c.dbosCtx, scheduleName)
+	return c.dbosCtx.DeleteSchedule(scheduleName)
 }
 
 // BackfillSchedule enqueues all executions of the named schedule that would
 // have run between start and end. Already-executed times are skipped. Returns
 // the IDs of the workflows enqueued for the backfilled time slots.
 func (c *client) BackfillSchedule(scheduleName string, start, end time.Time) ([]string, error) {
-	return c.dbosCtx.BackfillSchedule(c.dbosCtx, scheduleName, start, end)
+	return c.dbosCtx.BackfillSchedule(scheduleName, start, end)
 }
 
 // TriggerSchedule immediately enqueues the named schedule's workflow on its
 // configured queue (falling back to the internal queue) and returns a handle
 // to the enqueued workflow.
 func (c *client) TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.TriggerSchedule(c.dbosCtx, scheduleName)
+	return c.dbosCtx.TriggerSchedule(scheduleName)
 }
 
 // ListApplicationVersions returns every registered application version ordered
 // by timestamp (newest first).
 func (c *client) ListApplicationVersions() ([]VersionInfo, error) {
-	return c.dbosCtx.ListApplicationVersions(c.dbosCtx)
+	return c.dbosCtx.ListApplicationVersions()
 }
 
 // GetLatestApplicationVersion returns the application version with the most
 // recent timestamp.
 func (c *client) GetLatestApplicationVersion() (*VersionInfo, error) {
-	return c.dbosCtx.GetLatestApplicationVersion(c.dbosCtx)
+	return c.dbosCtx.GetLatestApplicationVersion()
 }
 
 // SetLatestApplicationVersion marks the named application version as latest by
 // updating its timestamp to the current time.
 func (c *client) SetLatestApplicationVersion(versionName string) error {
-	return c.dbosCtx.SetLatestApplicationVersion(c.dbosCtx, versionName)
+	return c.dbosCtx.SetLatestApplicationVersion(versionName)
 }
 
 // Shutdown gracefully shuts down the client and closes the system database connection.
