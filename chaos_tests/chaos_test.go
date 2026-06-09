@@ -335,7 +335,7 @@ func TestChaosWorkflow(t *testing.T) {
 	}
 
 	// Register the workflows
-	dbos.NewWorkflow(dbosCtx, workflow)
+	workflowWF := dbos.NewWorkflow(dbosCtx, workflow)
 	// Register scheduled workflow to run every second for chaos testing
 	dbos.NewWorkflow(dbosCtx, scheduledWorkflow, dbos.WithSchedule("* * * * * *"), dbos.WithWorkflowName("ScheduledChaosTest"))
 
@@ -348,7 +348,7 @@ func TestChaosWorkflow(t *testing.T) {
 		if i%100 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
 		}
-		handle, err := dbos.RunWorkflow(dbosCtx, workflow, i)
+		handle, err := workflowWF(dbosCtx, i)
 		require.NoError(t, err, "failed to start workflow %d", i)
 
 		result, err := handle.GetResult()
@@ -410,7 +410,7 @@ func TestChaosRecv(t *testing.T) {
 	}
 
 	// Register the workflow
-	dbos.NewWorkflow(dbosCtx, recvWorkflow)
+	recvWorkflowWF := dbos.NewWorkflow(dbosCtx, recvWorkflow)
 
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
@@ -420,7 +420,7 @@ func TestChaosRecv(t *testing.T) {
 		if i%100 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
 		}
-		handle, err := dbos.RunWorkflow(dbosCtx, recvWorkflow, i)
+		handle, err := recvWorkflowWF(dbosCtx, i)
 		require.NoError(t, err, "failed to start workflow %d", i)
 
 		// Wait for the workflow to actually start before calling Recv
@@ -465,7 +465,7 @@ func TestChaosEvents(t *testing.T) {
 	}
 
 	// Register the workflow
-	dbos.NewWorkflow(dbosCtx, eventWorkflow)
+	eventWorkflowWF := dbos.NewWorkflow(dbosCtx, eventWorkflow)
 
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
@@ -479,7 +479,7 @@ func TestChaosEvents(t *testing.T) {
 		wfID := uuid.NewString()
 
 		// Start workflow with specific ID
-		handle, err := dbos.RunWorkflow(dbosCtx, eventWorkflow, "", dbos.WithWorkflowID(wfID))
+		handle, err := eventWorkflowWF(dbosCtx, "", dbos.WithWorkflowID(wfID))
 		require.NoError(t, err, "failed to start workflow %d", i)
 
 		// Get the workflow result
