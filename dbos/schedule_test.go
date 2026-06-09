@@ -391,7 +391,7 @@ func TestScheduleWorkflowInternalRejections(t *testing.T) {
 
 	cases := []struct {
 		name string
-		fn   WorkflowDefinition[string, string]
+		fn   Workflow[string, string]
 		want string
 	}{
 		{"ApplySchedules", applySchedulesWF, "ApplySchedules cannot be called from within a workflow"},

@@ -111,7 +111,7 @@ type systemDatabase interface {
 	listApplicationVersions(ctx context.Context) ([]VersionInfo, error)
 	getLatestApplicationVersion(ctx context.Context) (*VersionInfo, error)
 
-	// Workflow export/import
+	// WorkflowFn export/import
 	exportWorkflow(ctx context.Context, workflowID string, exportChildren bool) ([]ExportedWorkflow, error)
 	importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error
 }

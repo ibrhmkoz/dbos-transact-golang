@@ -38,7 +38,7 @@
 // Key workflow features:
 //   - Automatic recovery: Workflows resume from the last completed step after crashes
 //   - Idempotency: Assign workflow IDs to ensure operations run exactly once
-//   - Determinism: Workflow functions must be deterministic; use steps for non-deterministic operations
+//   - Determinism: WorkflowFn functions must be deterministic; use steps for non-deterministic operations
 //   - Timeouts: Set durable timeouts that persist across restarts
 //   - Events & messaging: Workflows can emit events and receive messages for coordination
 //
@@ -67,7 +67,7 @@
 //
 // # Execution Policies
 //
-// Workflow options control how workers claim and execute workflows:
+// WorkflowFn options control how workers claim and execute workflows:
 //
 //	taskWorkflow := dbos.NewWorkflow(dbosContext, workflow,
 //	    dbos.WithGlobalConcurrency(5),

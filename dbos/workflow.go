@@ -24,13 +24,13 @@ import (
 type WorkflowStatusType string
 
 const (
-	WorkflowStatusPending                     WorkflowStatusType = "PENDING"                        // Workflow is running or ready to run
-	WorkflowStatusEnqueued                    WorkflowStatusType = "ENQUEUED"                       // Workflow is queued and waiting for execution
-	WorkflowStatusDelayed                     WorkflowStatusType = "DELAYED"                        // Workflow is delayed and will transition to ENQUEUED after the delay expires
-	WorkflowStatusSuccess                     WorkflowStatusType = "SUCCESS"                        // Workflow completed successfully
-	WorkflowStatusError                       WorkflowStatusType = "ERROR"                          // Workflow completed with an error
-	WorkflowStatusCancelled                   WorkflowStatusType = "CANCELLED"                      // Workflow was cancelled (manually or due to timeout)
-	WorkflowStatusMaxRecoveryAttemptsExceeded WorkflowStatusType = "MAX_RECOVERY_ATTEMPTS_EXCEEDED" // Workflow exceeded maximum retry attempts
+	WorkflowStatusPending                     WorkflowStatusType = "PENDING"                        // WorkflowFn is running or ready to run
+	WorkflowStatusEnqueued                    WorkflowStatusType = "ENQUEUED"                       // WorkflowFn is queued and waiting for execution
+	WorkflowStatusDelayed                     WorkflowStatusType = "DELAYED"                        // WorkflowFn is delayed and will transition to ENQUEUED after the delay expires
+	WorkflowStatusSuccess                     WorkflowStatusType = "SUCCESS"                        // WorkflowFn completed successfully
+	WorkflowStatusError                       WorkflowStatusType = "ERROR"                          // WorkflowFn completed with an error
+	WorkflowStatusCancelled                   WorkflowStatusType = "CANCELLED"                      // WorkflowFn was cancelled (manually or due to timeout)
+	WorkflowStatusMaxRecoveryAttemptsExceeded WorkflowStatusType = "MAX_RECOVERY_ATTEMPTS_EXCEEDED" // WorkflowFn exceeded maximum retry attempts
 )
 
 // WorkflowStatus contains comprehensive information about a workflow's current state and execution history.
@@ -41,7 +41,7 @@ type WorkflowStatus struct {
 	AuthenticatedUser  string             `json:"authenticated_user,omitempty"`  // User who initiated the workflow (if applicable)
 	AssumedRole        string             `json:"assumed_role,omitempty"`        // Role assumed during execution (if applicable)
 	AuthenticatedRoles []string           `json:"authenticated_roles,omitempty"` // Roles available to the user (if applicable)
-	Output             any                `json:"output,omitempty"`              // Workflow output (available after completion)
+	Output             any                `json:"output,omitempty"`              // WorkflowFn output (available after completion)
 	Error              error              `json:"error,omitempty"`               // Error information (if status is ERROR)
 	ExecutorID         string             `json:"executor_id"`                   // ID of the executor running this workflow
 	CreatedAt          time.Time          `json:"created_at"`                    // When the workflow was created
@@ -50,7 +50,7 @@ type WorkflowStatus struct {
 	ApplicationID      string             `json:"application_id,omitempty"`      // Application identifier
 	Attempts           int                `json:"attempts"`                      // Number of execution attempts
 	QueueName          string             `json:"queue_name,omitempty"`          // Queue name (if workflow was enqueued)
-	Timeout            time.Duration      `json:"timeout,omitempty"`             // Workflow timeout duration
+	Timeout            time.Duration      `json:"timeout,omitempty"`             // WorkflowFn timeout duration
 	Deadline           time.Time          `json:"deadline"`                      // Absolute deadline for workflow completion
 	StartedAt          time.Time          `json:"started_at"`                    // When the workflow execution actually started
 	DeduplicationID    string             `json:"deduplication_id,omitempty"`    // Queue deduplication identifier
@@ -432,13 +432,13 @@ func WithRateLimit(limit int, period time.Duration) WorkflowOption {
 	}
 }
 
-// WorkflowDefinition is a callable, self-contained durable workflow.
-type WorkflowDefinition[P any, R any] func(ctx DBOSContext, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
+// Workflow is a callable, self-contained, durable workflow.
+type Workflow[P any, R any] func(ctx DBOSContext, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
 
 // NewWorkflow creates and registers a workflow.
 // Calling the returned function persists an execution request for an available worker.
 // Execution behavior is configured with options such as WithGlobalConcurrency and WithRateLimit.
-func NewWorkflow[P any, R any](ctx DBOSContext, fn Workflow[P, R], opts ...WorkflowOption) WorkflowDefinition[P, R] {
+func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
 	c, ok := ctx.(*dbosContext)
 	if !ok {
 		panic("ctx must be a DBOS context")
@@ -498,7 +498,7 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn Workflow[P, R], opts ...Workf
 
 // resolveWorkflowFunctionName resolves the function name for a workflow function,
 // handling generic workflows by appending the actual type parameters.
-func resolveWorkflowFunctionName[P any, R any](fn Workflow[P, R]) string {
+func resolveWorkflowFunctionName[P any, R any](fn WorkflowFn[P, R]) string {
 	ptr := reflect.ValueOf(fn).Pointer()
 	fqn := runtime.FuncForPC(ptr).Name()
 
@@ -519,7 +519,7 @@ func resolveWorkflowFunctionName[P any, R any](fn Workflow[P, R]) string {
 // The function is registered with type safety - P represents the input type and R the return type.
 // Scheduled workflows (WithSchedule) receive a time.Time as input representing the scheduled execution time.
 // This is internal: NewWorkflow is the only way to make a workflow available to the runtime.
-func registerWorkflow[P any, R any](ctx DBOSContext, fn Workflow[P, R], opts ...WorkflowOption) {
+func registerWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...WorkflowOption) {
 	if ctx == nil {
 		panic("ctx cannot be nil")
 	}
@@ -617,10 +617,10 @@ type dbosContextKey string
 
 const workflowStateKey dbosContextKey = "workflowState"
 
-// Workflow represents a type-safe workflow function with specific input and output types.
+// WorkflowFn represents a type-safe workflow function with specific input and output types.
 // P is the input parameter type and R is the return type.
 // All workflow functions must accept a DBOSContext as their first parameter.
-type Workflow[P any, R any] func(ctx DBOSContext, input P) (R, error)
+type WorkflowFn[P any, R any] func(ctx DBOSContext, input P) (R, error)
 
 // WorkflowFunc represents a type-erased workflow function used internally.
 type WorkflowFunc func(ctx DBOSContext, input any) (any, error)
@@ -2176,7 +2176,7 @@ func SetEvent[P any](ctx DBOSContext, key string, message P, opts ...SetEventOpt
 }
 
 type getEventInput struct {
-	TargetWorkflowID string        // Workflow ID to get the event from
+	TargetWorkflowID string        // WorkflowFn ID to get the event from
 	Key              string        // Event key to retrieve
 	Timeout          time.Duration // Maximum time to wait for the event to be set
 	serialization    string        // fallback serialization format (caller's) for recording when no event is found

@@ -6,20 +6,20 @@ import "fmt"
 type DBOSErrorCode int
 
 const (
-	ConflictingIDError           DBOSErrorCode = iota + 1 // Workflow ID conflicts or duplicate operations
+	ConflictingIDError           DBOSErrorCode = iota + 1 // WorkflowFn ID conflicts or duplicate operations
 	InitializationError                                   // DBOS context initialization failures
 	NonExistentWorkflowError                              // Referenced workflow does not exist
-	ConflictingWorkflowError                              // Workflow with same ID already exists with different parameters
-	WorkflowCancelled                                     // Workflow was cancelled during execution
+	ConflictingWorkflowError                              // WorkflowFn with same ID already exists with different parameters
+	WorkflowCancelled                                     // WorkflowFn was cancelled during execution
 	UnexpectedStep                                        // Step function mismatch during recovery (non-deterministic workflow)
 	AwaitedWorkflowCancelled                              // A workflow being awaited was cancelled
 	ConflictingRegistrationError                          // Attempting to register a workflow/queue that already exists
 	WorkflowUnexpectedTypeError                           // Type mismatch in workflow input/output
 	WorkflowExecutionError                                // General workflow execution error
 	StepExecutionError                                    // General step execution error
-	DeadLetterQueueError                                  // Workflow moved to dead letter queue after max retries
+	DeadLetterQueueError                                  // WorkflowFn moved to dead letter queue after max retries
 	MaxStepRetriesExceeded                                // Step exceeded maximum retry attempts
-	QueueDeduplicated                                     // Workflow was deduplicated in the queue
+	QueueDeduplicated                                     // WorkflowFn was deduplicated in the queue
 	PatchingNotEnabled                                    // Patching system is not enabled in the DBOS context configuration
 	TimeoutError                                          // Operation timed out (e.g., recv timeout)
 	NoApplicationVersions                                 // No application versions are registered in the system database

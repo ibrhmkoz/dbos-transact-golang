@@ -11,7 +11,7 @@ import (
 )
 
 // Callable debounced workflow shared by the debounce tests. Assigned in TestDebouncer setup.
-var debounceTestWF WorkflowDefinition[string, string]
+var debounceTestWF Workflow[string, string]
 
 // Helper test workflows
 func debounceTestWorkflow(ctx DBOSContext, input string) (string, error) {

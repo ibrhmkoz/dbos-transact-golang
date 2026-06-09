@@ -18,8 +18,8 @@ func childWorkflow(ctx dbos.DBOSContext, i int) (int, error) {
 
 // Callables for the workflows, assigned in aRealProgramFunction before launch.
 var (
-	workflowWF      dbos.WorkflowDefinition[int, int]
-	childWorkflowWF dbos.WorkflowDefinition[int, int]
+	workflowWF      dbos.Workflow[int, int]
+	childWorkflowWF dbos.Workflow[int, int]
 )
 
 func workflow(ctx dbos.DBOSContext, i int) (int, error) {

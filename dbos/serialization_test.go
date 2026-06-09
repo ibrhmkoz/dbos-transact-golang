@@ -16,14 +16,14 @@ import (
 
 // testAllSerializationPaths tests workflow recovery and verifies all read paths.
 // This is the unified test function that exercises:
-// 1. Workflow recovery: starts a workflow, blocks it, recovers it, then verifies completion
+// 1. WorkflowFn recovery: starts a workflow, blocks it, recovers it, then verifies completion
 // 2. All read paths: HandleGetResult, GetWorkflowSteps, ListWorkflows, RetrieveWorkflow
 // This ensures recovery paths exercise all encoding/decoding scenarios that normal workflows do.
 // If input is nil, the test expects the output to be nil too.
 func testAllSerializationPaths[T any](
 	t *testing.T,
 	executor DBOSContext,
-	recoveryWorkflow WorkflowDefinition[T, T],
+	recoveryWorkflow Workflow[T, T],
 	input T,
 	workflowID string,
 ) {
@@ -225,8 +225,8 @@ func testAllSerializationPaths[T any](
 func testSendRecv[T any](
 	t *testing.T,
 	executor DBOSContext,
-	senderWorkflow WorkflowDefinition[T, T],
-	receiverWorkflow WorkflowDefinition[T, T],
+	senderWorkflow Workflow[T, T],
+	receiverWorkflow Workflow[T, T],
 	input T,
 	senderID string,
 ) {
@@ -257,8 +257,8 @@ func testSendRecv[T any](
 func testSetGetEvent[T any](
 	t *testing.T,
 	executor DBOSContext,
-	setEventWorkflow WorkflowDefinition[T, T],
-	getEventWorkflow WorkflowDefinition[string, T],
+	setEventWorkflow Workflow[T, T],
+	getEventWorkflow Workflow[string, T],
 	input T,
 	setEventID string,
 	getEventID string,
@@ -366,7 +366,7 @@ var (
 // Stream workflows
 var serializerStreamWorkflow = makeStreamWorkflow[TestWorkflowData]()
 
-func makeStreamWorkflow[T any]() Workflow[T, T] {
+func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		if err := WriteStream(ctx, "test-stream", input); err != nil {
 			return *new(T), fmt.Errorf("write stream failed: %w", err)
@@ -379,7 +379,7 @@ func makeStreamWorkflow[T any]() Workflow[T, T] {
 }
 
 // makeSenderWorkflow creates a generic sender workflow that sends a message to a receiver workflow.
-func makeSenderWorkflow[T any]() Workflow[T, T] {
+func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		receiverWorkflowID, err := GetWorkflowID(ctx)
 		if err != nil {
@@ -395,7 +395,7 @@ func makeSenderWorkflow[T any]() Workflow[T, T] {
 }
 
 // makeReceiverWorkflow creates a generic receiver workflow that receives a message.
-func makeReceiverWorkflow[T any]() Workflow[T, T] {
+func makeReceiverWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, _ T) (T, error) {
 		received, err := Recv[T](ctx, "test-topic", 10*time.Second)
 		if err != nil {
@@ -406,7 +406,7 @@ func makeReceiverWorkflow[T any]() Workflow[T, T] {
 }
 
 // makeSetEventWorkflow creates a generic workflow that sets an event.
-func makeSetEventWorkflow[T any]() Workflow[T, T] {
+func makeSetEventWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		err := SetEvent(ctx, "test-key", input)
 		if err != nil {
@@ -417,7 +417,7 @@ func makeSetEventWorkflow[T any]() Workflow[T, T] {
 }
 
 // makeGetEventWorkflow creates a generic workflow that gets an event.
-func makeGetEventWorkflow[T any]() Workflow[string, T] {
+func makeGetEventWorkflow[T any]() WorkflowFn[string, T] {
 	return func(ctx DBOSContext, targetWorkflowID string) (T, error) {
 		event, err := GetEvent[T](ctx, targetWorkflowID, "test-key", 10*time.Second)
 		if err != nil {
@@ -428,7 +428,7 @@ func makeGetEventWorkflow[T any]() Workflow[string, T] {
 }
 
 // makeTestWorkflow creates a generic workflow that simply returns the input.
-func makeTestWorkflow[T any]() Workflow[T, T] {
+func makeTestWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		return Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
@@ -456,7 +456,7 @@ var recoveryEventRegistry = make(map[string]struct {
 // and then a blocking step that uses the output of the first step.
 // This is used to test workflow recovery with various types.
 // The workflow looks up events from recoveryEventRegistry using the workflow ID.
-func makeRecoveryWorkflow[T any]() Workflow[T, T] {
+func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		// First step: return the input (tests encoding/decoding of type T)
 		firstStepOutput, err := Run(ctx, func(context context.Context) (T, error) {
@@ -1490,11 +1490,11 @@ func TestPortablePerOperationOptions(t *testing.T) {
 
 	// Workflows must be registered before Launch.
 	var (
-		portableSendSenderWf   Workflow[string, string]
-		portableSendReceiverWf Workflow[string, Payload]
-		portableSetterWf       Workflow[string, string]
-		portableGetterWf       Workflow[string, Payload]
-		portableWriterWf       Workflow[string, string]
+		portableSendSenderWf   WorkflowFn[string, string]
+		portableSendReceiverWf WorkflowFn[string, Payload]
+		portableSetterWf       WorkflowFn[string, string]
+		portableGetterWf       WorkflowFn[string, Payload]
+		portableWriterWf       WorkflowFn[string, string]
 	)
 
 	portableSendSenderWf = func(ctx DBOSContext, receiverID string) (string, error) {

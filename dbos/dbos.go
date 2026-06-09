@@ -142,7 +142,7 @@ type DBOSContext interface {
 	Launch() error                  // Launch the DBOS runtime including system database, queues, and perform a workflow recovery for the local executor
 	Shutdown(timeout time.Duration) // Gracefully shutdown all DBOS resources
 
-	// Workflow operations
+	// WorkflowFn operations
 	RunAsStep(_ DBOSContext, fn StepFunc, opts ...StepOption) (any, error)                                       // Execute a function as a durable step within a workflow
 	RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opts ...WorkflowOption) (*WorkflowHandle[any], error) // Start a new workflow execution
 	Go(_ DBOSContext, fn StepFunc, opts ...StepOption) (chan StepOutcome[any], error)                            // Starts a step inside a Go routine and returns a channel to receive the result
@@ -161,7 +161,7 @@ type DBOSContext interface {
 	GetWorkflowID() (string, error)                                                                              // Get the current workflow ID (only available within workflows)
 	GetStepID() (int, error)                                                                                     // Get the current step ID (only available within workflows)
 
-	// Workflow management
+	// WorkflowFn management
 	RetrieveWorkflow(_ DBOSContext, workflowID string) (*WorkflowHandle[any], error)                                   // Get a handle to an existing workflow
 	CancelWorkflow(_ DBOSContext, workflowID string) error                                                             // Cancel a workflow by setting its status to CANCELLED
 	CancelWorkflows(_ DBOSContext, workflowIDs []string) error                                                         // Cancel multiple workflows in a single DB round-trip
@@ -233,13 +233,13 @@ type dbosContext struct {
 	// Wait group for workflow goroutines
 	workflowsWg *sync.WaitGroup
 
-	// Workflow registry - read-mostly since registration happens only before launch
+	// WorkflowFn registry - read-mostly since registration happens only before launch
 	workflowRegistry *WorkflowRegistry
 
 	// Set of workflow IDs currently running on this context (key = workflow ID, value = activeWorkflowEntry)
 	activeWorkflowIDs *sync.Map
 
-	// Workflow scheduler
+	// WorkflowFn scheduler
 	workflowScheduler *cron.Cron
 
 	scheduleMu sync.Mutex

@@ -4909,8 +4909,8 @@ func captureAuthFromDB(ctx DBOSContext) (authSnapshot, error) {
 
 // Callables for the child-spawning auth workflows, assigned in TestAuthPropagation.
 var (
-	authChildWorkflowD  WorkflowDefinition[string, authSnapshot]
-	authParentWorkflowD WorkflowDefinition[string, authSnapshot]
+	authChildWorkflowD  Workflow[string, authSnapshot]
+	authParentWorkflowD Workflow[string, authSnapshot]
 )
 
 // authChildWorkflow returns its own auth snapshot as output.
