@@ -105,18 +105,19 @@ func NewDebouncer[P any, R any](
 
 	// Validate that the workflow is registered in the registry
 	// Assertively panic if the workflow is not registered, as a sign of highly unexpected behavior
-	if _, exists := dbosCtx.workflowRegistry.Load(fqn); !exists {
+	workflowName, exists := dbosCtx.workflowRegistry.ResolveName(fqn)
+	if !exists {
 		panic(newNonExistentWorkflowError(fqn))
 	}
 
 	// Register the internal debouncer workflow for this debouncer if it has not been registered yet (first debouncer for this workflow)
 	internalDebouncerFQN := resolveWorkflowFunctionName(internalDebouncerWF[P, R])
-	if _, exists := dbosCtx.workflowCustomNametoFQN.Load(internalDebouncerFQN); !exists {
+	if _, exists := dbosCtx.workflowRegistry.ResolveName(internalDebouncerFQN); !exists {
 		RegisterWorkflow(ctx, internalDebouncerWF[P, R])
 	}
 
 	return &Debouncer[P, R]{
-		WorkflowFQN:          fqn,
+		WorkflowFQN:          workflowName,
 		Timeout:              timeout,
 		internalDebouncerFQN: internalDebouncerFQN,
 	}
@@ -436,15 +437,12 @@ func internalDebouncerWF[P any, R any](ctx DBOSContext, input debouncerInput[P])
 	}
 
 	// Now execute the target workflow with the latest input
-	// Look up the workflow from the registry
-	// First resolve the FQN
-	// workflowCustomNametoFQN stores all types of name to FQN: custom name -> FQN if the workflow was registered with a custom name, otherwise FQN->FQN
-	targetWorkflowFQN := input.TargetWorkflowFQNOrCustomName
-	if fqn, ok := dbosCtx.workflowCustomNametoFQN.Load(input.TargetWorkflowFQNOrCustomName); ok { // ok should always be true
-		targetWorkflowFQN = fqn.(string)
+	targetWorkflowName := input.TargetWorkflowFQNOrCustomName
+	if name, ok := dbosCtx.workflowRegistry.ResolveName(targetWorkflowName); ok {
+		targetWorkflowName = name
 	}
 
-	registeredWorkflow, exists := dbosCtx.workflowRegistry.Load(targetWorkflowFQN)
+	registeredWorkflow, exists := dbosCtx.workflowRegistry.Load(targetWorkflowName)
 	if !exists {
 		return zero, fmt.Errorf("target workflow %s not found in registry", input.TargetWorkflowFQNOrCustomName)
 	}

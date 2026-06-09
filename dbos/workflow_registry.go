@@ -13,54 +13,84 @@ type WorkflowRegistryEntry struct {
 }
 
 type WorkflowRegistry struct {
-	store *sync.Map
+	mu        sync.RWMutex
+	store     map[string]WorkflowRegistryEntry
+	fqnToName map[string]string
 }
 
 func NewWorkflowRegistry() *WorkflowRegistry {
-	return &WorkflowRegistry{store: &sync.Map{}}
+	return &WorkflowRegistry{
+		store:     make(map[string]WorkflowRegistryEntry),
+		fqnToName: make(map[string]string),
+	}
 }
 
-func (wf *WorkflowRegistry) Load(workflowFQN string) (WorkflowRegistryEntry, bool) {
-	entry, exists := wf.store.Load(workflowFQN)
-	if !exists {
-		return WorkflowRegistryEntry{}, false
-	}
-
-	return entry.(WorkflowRegistryEntry), true
+func (wf *WorkflowRegistry) Load(workflowName string) (WorkflowRegistryEntry, bool) {
+	wf.mu.RLock()
+	defer wf.mu.RUnlock()
+	entry, exists := wf.store[workflowName]
+	return entry, exists
 }
 
-func (wf *WorkflowRegistry) LoadOrStore(workflowFQN string, entry WorkflowRegistryEntry) (WorkflowRegistryEntry, bool) {
-	found, exists := wf.store.LoadOrStore(workflowFQN, entry)
-	if exists {
-		return found.(WorkflowRegistryEntry), true
+func (wf *WorkflowRegistry) LoadOrStore(workflowName string, entry WorkflowRegistryEntry) (WorkflowRegistryEntry, bool) {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	if foundName, exists := wf.fqnToName[entry.FQN]; exists {
+		return wf.store[foundName], true
 	}
-
+	if found, exists := wf.store[workflowName]; exists {
+		return found, true
+	}
+	wf.store[workflowName] = entry
+	wf.fqnToName[entry.FQN] = workflowName
 	return entry, false
 }
 
-func (wf *WorkflowRegistry) SetCronSchedule(workflowFQN, cronSchedule string) bool {
-	entry, exists := wf.Load(workflowFQN)
+func (wf *WorkflowRegistry) ResolveName(workflowFQN string) (string, bool) {
+	wf.mu.RLock()
+	defer wf.mu.RUnlock()
+	name, exists := wf.fqnToName[workflowFQN]
+	return name, exists
+}
+
+func (wf *WorkflowRegistry) SetCronSchedule(workflowName, cronSchedule string) bool {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	entry, exists := wf.store[workflowName]
 	if !exists {
 		return false
 	}
 
 	entry.CronSchedule = cronSchedule
-	wf.store.Store(workflowFQN, entry)
+	wf.store[workflowName] = entry
 	return true
 }
 
+func (wf *WorkflowRegistry) Names() []string {
+	wf.mu.RLock()
+	defer wf.mu.RUnlock()
+	names := make([]string, 0, len(wf.store))
+	for name := range wf.store {
+		names = append(names, name)
+	}
+	return names
+}
+
 func (wf *WorkflowRegistry) List(scheduledOnly bool) []WorkflowRegistryEntry {
-	var workflows []WorkflowRegistryEntry
-	wf.store.Range(func(_, value any) bool {
-		workflow := value.(WorkflowRegistryEntry)
+	wf.mu.RLock()
+	defer wf.mu.RUnlock()
+	workflows := make([]WorkflowRegistryEntry, 0, len(wf.store))
+	for _, workflow := range wf.store {
 		if !scheduledOnly || workflow.CronSchedule != "" {
 			workflows = append(workflows, workflow)
 		}
-		return true
-	})
+	}
 	return workflows
 }
 
 func (wf *WorkflowRegistry) Clear() {
-	wf.store.Clear()
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	clear(wf.store)
+	clear(wf.fqnToName)
 }

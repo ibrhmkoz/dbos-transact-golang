@@ -3973,6 +3973,7 @@ type dequeueWorkflowsInput struct {
 	queue              WorkflowQueue
 	executorID         string
 	applicationVersion string
+	workflowNames      []string
 	queuePartitionKey  string
 	localRunningCount  int
 }
@@ -4059,20 +4060,33 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 	if maxTasks <= 0 {
 		return nil, nil
 	}
+	if len(input.workflowNames) == 0 {
+		return nil, nil
+	}
 
 	// Build the SELECT for candidate workflow IDs. Always order by
 	// (priority, created_at) so the planner can satisfy the dequeue scan from
 	// idx_workflow_status_in_flight (queue_name, status, priority, created_at).
 	queryArgs := []any{input.queue.Name, WorkflowStatusEnqueued, input.applicationVersion}
 	query := s.renderSQL(`
-			SELECT workflow_uuid
-			FROM %sworkflow_status
-			WHERE queue_name = $1
-			  AND status = $2
-			  AND (application_version = $3 OR application_version IS NULL)`, schemaPrefix)
+				SELECT workflow_uuid
+				FROM %sworkflow_status
+				WHERE queue_name = $1
+				  AND status = $2
+				  AND (application_version = $3 OR application_version IS NULL)`, schemaPrefix)
+
+	query += ` AND name IN (`
+	for i, workflowName := range input.workflowNames {
+		if i > 0 {
+			query += ", "
+		}
+		query += fmt.Sprintf("$%d", len(queryArgs)+1)
+		queryArgs = append(queryArgs, workflowName)
+	}
+	query += ")"
 
 	if len(input.queuePartitionKey) > 0 {
-		query += ` AND queue_partition_key = $4`
+		query += fmt.Sprintf(` AND queue_partition_key = $%d`, len(queryArgs)+1)
 		queryArgs = append(queryArgs, input.queuePartitionKey)
 	}
 

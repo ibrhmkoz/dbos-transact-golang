@@ -238,8 +238,7 @@ type dbosContext struct {
 	workflowsWg *sync.WaitGroup
 
 	// Workflow registry - read-mostly since registration happens only before launch
-	workflowRegistry        *WorkflowRegistry
-	workflowCustomNametoFQN *sync.Map // Maps fully qualified workflow names to custom names. Usefor when client enqueues a workflow by name because registry is indexed by FQN.
+	workflowRegistry *WorkflowRegistry
 
 	// Set of workflow IDs currently running on this context (key = workflow ID, value = activeWorkflowEntry)
 	activeWorkflowIDs *sync.Map
@@ -291,7 +290,6 @@ func SetAlertHandler(ctx DBOSContext, handler AlertHandler) {
 // allowing re-registration of workflows and queues. Intended for testing only.
 func (c *dbosContext) ClearRegistries() {
 	c.workflowRegistry.Clear()
-	c.workflowCustomNametoFQN.Clear()
 	for name := range c.queueRunner.workflowQueueRegistry {
 		if name != _DBOS_INTERNAL_QUEUE_NAME {
 			delete(c.queueRunner.workflowQueueRegistry, name)
@@ -325,19 +323,18 @@ func (c *dbosContext) From(_ DBOSContext, ctx context.Context) DBOSContext {
 	}
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
-		ctx:                     ctx, // Use the provided context
-		config:                  c.config,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                ctx, // Use the provided context
+		config:             c.config,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx
@@ -362,19 +359,18 @@ func WithValue(ctx DBOSContext, key, val any) DBOSContext {
 func (c *dbosContext) WithValue(key, val any) DBOSContext {
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
-		ctx:                     context.WithValue(c.ctx, key, val), // Spawn a new child context with the value set
-		config:                  c.config,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                context.WithValue(c.ctx, key, val), // Spawn a new child context with the value set
+		config:             c.config,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx
@@ -383,19 +379,18 @@ func (c *dbosContext) WithValue(key, val any) DBOSContext {
 func (c *dbosContext) WithoutCancel(_ DBOSContext) DBOSContext {
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
-		ctx:                     context.WithoutCancel(c.ctx),
-		config:                  c.config,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                context.WithoutCancel(c.ctx),
+		config:             c.config,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx
@@ -414,18 +409,17 @@ func (c *dbosContext) WithCancel() (DBOSContext, context.CancelFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelFunc := context.WithCancel(c.ctx)
 	childCtx := &dbosContext{
-		ctx:                     newCtx,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                newCtx,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx, cancelFunc
@@ -445,18 +439,17 @@ func (c *dbosContext) WithCancelCause() (DBOSContext, context.CancelCauseFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelCauseFunc := context.WithCancelCause(c.ctx)
 	childCtx := &dbosContext{
-		ctx:                     newCtx,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                newCtx,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx, cancelCauseFunc
@@ -475,19 +468,18 @@ func (c *dbosContext) WithTimeout(_ DBOSContext, timeout time.Duration) (DBOSCon
 	launched := c.launched.Load()
 	newCtx, cancelFunc := context.WithTimeoutCause(c.ctx, timeout, errors.New("DBOS context timeout"))
 	childCtx := &dbosContext{
-		ctx:                     newCtx,
-		config:                  c.config,
-		logger:                  c.logger,
-		systemDB:                c.systemDB,
-		workflowsWg:             c.workflowsWg,
-		workflowRegistry:        c.workflowRegistry,
-		workflowCustomNametoFQN: c.workflowCustomNametoFQN,
-		activeWorkflowIDs:       c.activeWorkflowIDs,
-		applicationVersion:      c.applicationVersion,
-		executorID:              c.executorID,
-		applicationID:           c.applicationID,
-		queueRunner:             c.queueRunner,
-		serializer:              c.serializer,
+		ctx:                newCtx,
+		config:             c.config,
+		logger:             c.logger,
+		systemDB:           c.systemDB,
+		workflowsWg:        c.workflowsWg,
+		workflowRegistry:   c.workflowRegistry,
+		activeWorkflowIDs:  c.activeWorkflowIDs,
+		applicationVersion: c.applicationVersion,
+		executorID:         c.executorID,
+		applicationID:      c.applicationID,
+		queueRunner:        c.queueRunner,
+		serializer:         c.serializer,
 	}
 	childCtx.launched.Store(launched)
 	return childCtx, cancelFunc
@@ -566,12 +558,11 @@ func (c *dbosContext) ListRegisteredWorkflows(_ DBOSContext, opts ...ListRegiste
 func NewDBOSContext(ctx context.Context, inputConfig Config) (DBOSContext, error) {
 	dbosBaseCtx, cancelFunc := context.WithCancelCause(ctx)
 	initExecutor := &dbosContext{
-		workflowsWg:             &sync.WaitGroup{},
-		ctx:                     dbosBaseCtx,
-		ctxCancelFunc:           cancelFunc,
-		workflowRegistry:        NewWorkflowRegistry(),
-		workflowCustomNametoFQN: &sync.Map{},
-		activeWorkflowIDs:       &sync.Map{},
+		workflowsWg:       &sync.WaitGroup{},
+		ctx:               dbosBaseCtx,
+		ctxCancelFunc:     cancelFunc,
+		workflowRegistry:  NewWorkflowRegistry(),
+		activeWorkflowIDs: &sync.Map{},
 	}
 
 	// Load and process the configuration

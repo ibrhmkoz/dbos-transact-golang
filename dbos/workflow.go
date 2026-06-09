@@ -471,20 +471,13 @@ func registerWorkflow(ctx DBOSContext, workflowFQN string, fn wrappedWorkflowFun
 		CronSchedule:    "",
 	}
 
-	if _, exists := c.workflowRegistry.LoadOrStore(workflowFQN, entry); exists {
-		c.logger.Error("workflow function already registered", "fqn", workflowFQN)
-		panic(newConflictingRegistrationError(workflowFQN))
+	workflowName := workflowFQN
+	if customName != "" {
+		workflowName = customName
 	}
-
-	// We need to get a mapping from custom name to FQN for registry lookups that might not know the FQN (queue, recovery)
-	// We also panic if we found the name was already registered (this could happen if registering two different workflows under the same custom name)
-	if len(customName) > 0 {
-		if _, exists := c.workflowCustomNametoFQN.LoadOrStore(customName, workflowFQN); exists {
-			c.logger.Error("workflow function already registered", "custom_name", customName)
-			panic(newConflictingRegistrationError(customName))
-		}
-	} else {
-		c.workflowCustomNametoFQN.Store(workflowFQN, workflowFQN) // Store the FQN as the custom name if none was provided
+	if _, exists := c.workflowRegistry.LoadOrStore(workflowName, entry); exists {
+		c.logger.Error("workflow function already registered", "workflow_name", workflowName, "fqn", workflowFQN)
+		panic(newConflictingRegistrationError(workflowName))
 	}
 }
 
@@ -500,14 +493,15 @@ func registerScheduledWorkflow(ctx DBOSContext, workflowFQN, customName string, 
 	}
 
 	// Update the existing workflow entry with the cron schedule
-	if !c.workflowRegistry.SetCronSchedule(workflowFQN, cronSchedule) {
+	workflowName := workflowFQN
+	if customName != "" {
+		workflowName = customName
+	}
+	if !c.workflowRegistry.SetCronSchedule(workflowName, cronSchedule) {
 		panic(fmt.Sprintf("workflow %s must be registered before scheduling", workflowFQN))
 	}
 
-	name := workflowFQN
-	if len(customName) > 0 {
-		name = customName
-	}
+	name := workflowName
 	scheduled := ScheduledWorkflowFunc(func(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
 		scheduledTime := input.ScheduledTime
 		wfID := fmt.Sprintf("sched-%s-%s", name, scheduledTime)
@@ -692,14 +686,11 @@ func (c *dbosContext) resolveWorkflowName(workflowFn any) (string, error) {
 		return "", errors.New("workflow function is required")
 	}
 	fqn := runtime.FuncForPC(reflect.ValueOf(workflowFn).Pointer()).Name()
-	entry, ok := c.workflowRegistry.Load(fqn)
+	name, ok := c.workflowRegistry.ResolveName(fqn)
 	if !ok {
 		return "", fmt.Errorf("workflow function not registered: %s", fqn)
 	}
-	if entry.Name != "" {
-		return entry.Name, nil
-	}
-	return entry.FQN, nil
+	return name, nil
 }
 
 /**********************************/
@@ -1022,6 +1013,9 @@ func (c *dbosContext) RunWorkflow(_ DBOSContext, fn WorkflowFunc, input any, opt
 	}
 
 	// Lookup the registry for registration-time options
+	if workflowName, ok := c.workflowRegistry.ResolveName(params.WorkflowName); ok {
+		params.WorkflowName = workflowName
+	}
 	registeredWorkflow, exists := c.workflowRegistry.Load(params.WorkflowName)
 	if !exists {
 		c.logger.Error("workflow not found in registry", "workflow_name", params.WorkflowName)

@@ -140,11 +140,7 @@ func (c *dbosContext) addScheduleCronEntry(
 // wraps the registry's type-erased workflow wrapper into a ScheduledWorkflowFunc
 // that also checks if the schedule already fired for this interval
 func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledWorkflowFunc, error) {
-	fqn, ok := c.workflowCustomNametoFQN.Load(schedule.WorkflowName)
-	if !ok {
-		return nil, fmt.Errorf("workflow not found: %s", schedule.WorkflowName)
-	}
-	entry, ok := c.workflowRegistry.Load(fqn.(string))
+	entry, ok := c.workflowRegistry.Load(schedule.WorkflowName)
 	if !ok {
 		return nil, fmt.Errorf("workflow not found: %s", schedule.WorkflowName)
 	}

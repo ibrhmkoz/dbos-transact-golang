@@ -749,6 +749,43 @@ func TestWorkflowQueues(t *testing.T) {
 	})
 }
 
+func TestQueueClaimsOnlyRegisteredWorkflows(t *testing.T) {
+	parallelTest(t)
+	producerCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	workerCtx := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: true})
+
+	const queueName = "supported-workflows-only"
+	NewWorkflowQueue(producerCtx, queueName)
+	NewWorkflowQueue(workerCtx, queueName,
+		WithQueueBasePollingInterval(20*time.Millisecond),
+		WithQueueMaxPollingInterval(100*time.Millisecond))
+
+	supportedWorkflow := func(_ DBOSContext, input string) (string, error) {
+		return input, nil
+	}
+	unsupportedWorkflow := func(_ DBOSContext, input string) (string, error) {
+		return input, nil
+	}
+	RegisterWorkflow(producerCtx, supportedWorkflow)
+	RegisterWorkflow(producerCtx, unsupportedWorkflow)
+	RegisterWorkflow(workerCtx, supportedWorkflow)
+
+	supportedHandle, err := RunWorkflow(producerCtx, supportedWorkflow, "supported", WithQueue(queueName))
+	require.NoError(t, err)
+	unsupportedHandle, err := RunWorkflow(producerCtx, unsupportedWorkflow, "unsupported", WithQueue(queueName))
+	require.NoError(t, err)
+
+	require.NoError(t, Launch(workerCtx))
+	result, err := supportedHandle.GetResult()
+	require.NoError(t, err)
+	require.Equal(t, "supported", result)
+
+	time.Sleep(300 * time.Millisecond)
+	status, err := unsupportedHandle.GetStatus()
+	require.NoError(t, err)
+	require.Equal(t, WorkflowStatusEnqueued, status.Status)
+}
+
 func TestQueueRecovery(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
