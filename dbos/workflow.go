@@ -94,7 +94,7 @@ type stepCheckpointedOutcome struct {
 	serialization string // DB-stored serialization format
 }
 
-type baseWorkflowHandle struct {
+type workflowHandle struct {
 	workflowID  string
 	dbosContext DBOSContext
 }
@@ -132,7 +132,7 @@ func WithHandlePollingInterval(interval time.Duration) GetResultOption {
 
 // GetStatus returns the current status of the workflow from the database
 // If the DBOSContext is running in client mode, do not load input and outputs
-func (h *baseWorkflowHandle) GetStatus() (WorkflowStatus, error) {
+func (h *workflowHandle) GetStatus() (WorkflowStatus, error) {
 	loadInput := false
 	loadOutput := false
 	if h.dbosContext.(*dbosContext).launched.Load() {
@@ -172,13 +172,13 @@ func (h *baseWorkflowHandle) GetStatus() (WorkflowStatus, error) {
 	return workflowStatuses[0], nil
 }
 
-func (h *baseWorkflowHandle) GetWorkflowID() string {
+func (h *workflowHandle) GetWorkflowID() string {
 	return h.workflowID
 }
 
 func newWorkflowHandle[R any](ctx DBOSContext, workflowID string) *WorkflowHandle[R] {
 	return &WorkflowHandle[R]{
-		baseWorkflowHandle: baseWorkflowHandle{
+		workflowHandle: workflowHandle{
 			workflowID:  workflowID,
 			dbosContext: ctx,
 		},
@@ -221,7 +221,7 @@ func checkGetResultExecution[R any](dbosCtx context.Context) (R, bool, error) {
 }
 
 type WorkflowHandle[R any] struct {
-	baseWorkflowHandle
+	workflowHandle
 }
 
 func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
