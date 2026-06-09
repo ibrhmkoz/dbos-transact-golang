@@ -15,7 +15,7 @@
 //	defer dbos.Shutdown(dbosContext, 5 * time.Second)
 //
 //	// Register workflows before launching
-//	dbos.RegisterWorkflow(dbosContext, myWorkflow)
+//	myDurableWorkflow := dbos.NewWorkflow(dbosContext, myWorkflow)
 //
 //	// Launch the context to start processing
 //	err = dbos.Launch(dbosContext)
@@ -65,20 +65,17 @@
 //
 // Steps support configurable retries with exponential backoff for handling transient failures.
 //
-// # Queues
+// # Execution Policies
 //
-// Queues manage workflow concurrency and rate limiting:
+// Workflow options control how workers claim and execute workflows:
 //
-//	queue := dbos.NewWorkflowQueue(dbosContext, "task_queue",
-//	    dbos.WithWorkerConcurrency(5),    // Max 5 concurrent workflows per process
-//	    dbos.WithRateLimiter(&dbos.RateLimiter{
-//	        Limit:  100,
-//	        Period: 60 * time.Second,  // 100 workflows per 60 seconds
-//	    }))
+//	taskWorkflow := dbos.NewWorkflow(dbosContext, workflow,
+//	    dbos.WithGlobalConcurrency(5),
+//	    dbos.WithRateLimit(100, 60*time.Second), // 100 workflows per 60 seconds
+//	)
 //
-//	// Enqueue workflows with optional deduplication and priority
-//	handle, err := dbos.RunWorkflow(ctx, taskWorkflow, input,
-//	    dbos.WithQueue(queue.Name),
+//	// Every call persists a request for a supporting worker to claim.
+//	handle, err := taskWorkflow(ctx, input,
 //	    dbos.WithDeduplicationID("unique-id"),
 //	    dbos.WithPriority(10))
 //

@@ -1,7 +1,7 @@
 package dbos
 
-func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]WorkflowHandle[any], error) {
-	workflowHandles := make([]WorkflowHandle[any], 0)
+func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]*WorkflowHandle[any], error) {
+	workflowHandles := make([]*WorkflowHandle[any], 0)
 	// List pending workflows for the executors
 	pendingWorkflows, err := retryWithResult(ctx, func() ([]WorkflowStatus, error) {
 		appVersion := []string{}
@@ -29,7 +29,7 @@ func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]Workflow
 				continue
 			}
 			if cleared {
-				workflowHandles = append(workflowHandles, newWorkflowPollingHandle[any](ctx, workflow.ID))
+				workflowHandles = append(workflowHandles, newWorkflowHandle[any](ctx, workflow.ID))
 			}
 			continue
 		}

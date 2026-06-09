@@ -41,7 +41,6 @@ const (
 	cancelWorkflowMessage        messageType = "cancel"
 	resumeWorkflowMessage        messageType = "resume"
 	listWorkflowsMessage         messageType = "list_workflows"
-	listQueuedWorkflowsMessage   messageType = "list_queued_workflows"
 	listStepsMessage             messageType = "list_steps"
 	getWorkflowMessage           messageType = "get_workflow"
 	forkWorkflowMessage          messageType = "fork_workflow"
@@ -112,7 +111,6 @@ type listWorkflowsConductorRequestBody struct {
 	ParentWorkflowID   stringOrList `json:"parent_workflow_id,omitempty"`
 	WasForkedFrom      *bool        `json:"was_forked_from,omitempty"`
 	HasParent          *bool        `json:"has_parent,omitempty"`
-	QueueName          stringOrList `json:"queue_name,omitempty"`
 	Limit              *int         `json:"limit,omitempty"`
 	Offset             *int         `json:"offset,omitempty"`
 	SortDesc           bool         `json:"sort_desc"`
@@ -120,7 +118,6 @@ type listWorkflowsConductorRequestBody struct {
 	LoadInput          bool         `json:"load_input"`
 	LoadOutput         bool         `json:"load_output"`
 	ExecutorID         stringOrList `json:"executor_id,omitempty"`
-	QueuesOnly         bool         `json:"queues_only"`
 }
 
 // listWorkflowsConductorRequest is sent by the conductor to list workflows

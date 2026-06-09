@@ -47,24 +47,26 @@ func TestGetMetrics(t *testing.T) {
 	}
 
 	// Register workflows with custom names
-	RegisterWorkflow(dbosCtx, testWorkflowA, WithWorkflowName("testWorkflowA"))
-	RegisterWorkflow(dbosCtx, testWorkflowB, WithWorkflowName("testWorkflowB"))
+	wfA := NewWorkflow(dbosCtx, testWorkflowA, WithWorkflowName("testWorkflowA"))
+	wfB := NewWorkflow(dbosCtx, testWorkflowB, WithWorkflowName("testWorkflowB"))
+
+	require.NoError(t, Launch(dbosCtx))
 
 	// Record start time before creating workflows
 	startTime := time.Now()
 
 	// Execute workflows to create metrics data
-	handle1, err := RunWorkflow(dbosCtx, testWorkflowA, "input1")
+	handle1, err := wfA(dbosCtx, "input1")
 	require.NoError(t, err)
 	_, err = handle1.GetResult()
 	require.NoError(t, err)
 
-	handle2, err := RunWorkflow(dbosCtx, testWorkflowA, "input2")
+	handle2, err := wfA(dbosCtx, "input2")
 	require.NoError(t, err)
 	_, err = handle2.GetResult()
 	require.NoError(t, err)
 
-	handle3, err := RunWorkflow(dbosCtx, testWorkflowB, "input3")
+	handle3, err := wfB(dbosCtx, "input3")
 	require.NoError(t, err)
 	_, err = handle3.GetResult()
 	require.NoError(t, err)

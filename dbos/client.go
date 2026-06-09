@@ -27,18 +27,18 @@ type ClientConfig struct {
 // It manages the underlying DBOSContext and provides methods for workflow operations
 // without requiring direct management of the context lifecycle.
 type Client interface {
-	Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (WorkflowHandle[any], error)
+	Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error)
 	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)
 	Send(destinationID string, message any, topic string, opts ...SendOption) error
 	GetEvent(targetWorkflowID, key string, timeout time.Duration) (any, error)
-	RetrieveWorkflow(workflowID string) (WorkflowHandle[any], error)
+	RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error)
 	CancelWorkflow(workflowID string) error
 	CancelWorkflows(workflowIDs []string) error
 	SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error
 	DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error
-	ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (WorkflowHandle[any], error)
-	ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]WorkflowHandle[any], error)
-	ForkWorkflow(input ForkWorkflowInput) (WorkflowHandle[any], error)
+	ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)
+	ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error)
+	ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error)
 	GetWorkflowSteps(workflowID string) ([]StepInfo, error)
 	ClientReadStream(workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error)
 	ClientReadStreamAsync(workflowID string, key string) (<-chan StreamValue[any], error)
@@ -52,7 +52,7 @@ type Client interface {
 	ResumeSchedule(scheduleName string) error
 	DeleteSchedule(scheduleName string) error
 	BackfillSchedule(scheduleName string, start, end time.Time) ([]string, error)
-	TriggerSchedule(scheduleName string) (WorkflowHandle[any], error)
+	TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error)
 
 	// Application version management
 	ListApplicationVersions() ([]VersionInfo, error)
@@ -224,7 +224,7 @@ type enqueueOptions struct {
 }
 
 // EnqueueWorkflow enqueues a workflow to a named queue for deferred execution.
-func (c *client) Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (WorkflowHandle[any], error) {
+func (c *client) Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error) {
 	// Get the concrete dbosContext to access internal fields
 	dbosCtx, ok := c.dbosCtx.(*dbosContext)
 	if !ok {
@@ -350,7 +350,7 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 					return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
 				}
 				if existingID != nil {
-					return newWorkflowPollingHandle[any](uncancellableCtx, *existingID), nil
+					return newWorkflowHandle[any](uncancellableCtx, *existingID), nil
 				}
 				// Try again if the deduplication record was not found. Means that the dedup slot was freed.
 				continue
@@ -366,7 +366,7 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 
-		return newWorkflowPollingHandle[any](uncancellableCtx, workflowID), nil
+		return newWorkflowHandle[any](uncancellableCtx, workflowID), nil
 	}
 }
 
@@ -429,7 +429,7 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 //	    NamedArgs:      map[string]any{"key": "value"},
 //	}
 //	handle, err := dbos.Enqueue[dbos.PortableWorkflowArgs, any](client, "queue", "py_workflow", args)
-func Enqueue[P any, R any](c Client, queueName, workflowName string, input P, opts ...EnqueueOption) (WorkflowHandle[R], error) {
+func Enqueue[P any, R any](c Client, queueName, workflowName string, input P, opts ...EnqueueOption) (*WorkflowHandle[R], error) {
 	if c == nil {
 		return nil, errors.New("client cannot be nil")
 	}
@@ -440,7 +440,7 @@ func Enqueue[P any, R any](c Client, queueName, workflowName string, input P, op
 		return nil, err
 	}
 
-	return newWorkflowPollingHandle[R](c.(*client).dbosCtx, handle.GetWorkflowID()), nil
+	return newWorkflowHandle[R](c.(*client).dbosCtx, handle.GetWorkflowID()), nil
 }
 
 // ListWorkflows retrieves a list of workflows based on the provided filters.
@@ -467,7 +467,7 @@ func (c *client) GetEvent(targetWorkflowID, key string, timeout time.Duration) (
 }
 
 // RetrieveWorkflow returns a handle to an existing workflow.
-func (c *client) RetrieveWorkflow(workflowID string) (WorkflowHandle[any], error) {
+func (c *client) RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.RetrieveWorkflow(c.dbosCtx, workflowID)
 }
 
@@ -493,17 +493,17 @@ func (c *client) DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOpt
 }
 
 // ResumeWorkflow resumes a workflow from its last completed step.
-func (c *client) ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (WorkflowHandle[any], error) {
+func (c *client) ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.ResumeWorkflow(c.dbosCtx, workflowID, opts...)
 }
 
 // ResumeWorkflows resumes multiple workflows in a single database round-trip.
-func (c *client) ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]WorkflowHandle[any], error) {
+func (c *client) ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) {
 	return c.dbosCtx.ResumeWorkflows(c.dbosCtx, workflowIDs, opts...)
 }
 
 // ForkWorkflow creates a new workflow instance by copying an existing workflow from a specific step.
-func (c *client) ForkWorkflow(input ForkWorkflowInput) (WorkflowHandle[any], error) {
+func (c *client) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.ForkWorkflow(c.dbosCtx, input)
 }
 
@@ -837,7 +837,7 @@ func (c *client) BackfillSchedule(scheduleName string, start, end time.Time) ([]
 // TriggerSchedule immediately enqueues the named schedule's workflow on its
 // configured queue (falling back to the internal queue) and returns a handle
 // to the enqueued workflow.
-func (c *client) TriggerSchedule(scheduleName string) (WorkflowHandle[any], error) {
+func (c *client) TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.TriggerSchedule(c.dbosCtx, scheduleName)
 }
 

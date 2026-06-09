@@ -79,7 +79,7 @@ func main() {
     }
 
     // Register a workflow
-    dbos.RegisterWorkflow(ctx, workflow)
+    durableWorkflow := dbos.NewWorkflow(ctx, workflow)
 
     // Launch DBOS
     err = dbos.Launch(ctx)
@@ -88,8 +88,8 @@ func main() {
     }
     defer dbos.Shutdown(ctx, 2 * time.Second)
 
-    // Run a durable workflow and get its result
-    handle, err := dbos.RunWorkflow(ctx, workflow, "")
+    // Run the durable workflow and get its result
+    handle, err := durableWorkflow(ctx, "")
     if err != nil {
         panic(err)
     }
@@ -152,9 +152,8 @@ func main() {
         panic(err)
     }
 
-    // Register the workflow and create a durable queue
-    dbos.RegisterWorkflow(ctx, task)
-    queue := dbos.NewWorkflowQueue(ctx, "queue")
+    // Create a callable durable workflow.
+    taskWorkflow := dbos.NewWorkflow(ctx, task)
 
     // Launch DBOS
     err = dbos.Launch(ctx)
@@ -163,11 +162,11 @@ func main() {
     }
     defer dbos.Shutdown(ctx, 2 * time.Second)
 
-    // Enqueue tasks and gather results
-    fmt.Println("Enqueuing workflows")
+    // Submit tasks and gather results
+    fmt.Println("Submitting workflows")
     handles := make([]dbos.WorkflowHandle[int], 10)
     for i := range 10 {
-        handle, err := dbos.RunWorkflow(ctx, task, i, dbos.WithQueue(queue.Name))
+        handle, err := taskWorkflow(ctx, i)
         if err != nil {
             panic(fmt.Sprintf("failed to enqueue step %d: %v", i, err))
         }
@@ -207,7 +206,7 @@ _, err := dbos.RunWorkflow(ctx, task, i, dbos.WithWorkflowID(exactlyOnceEventID)
 Schedule workflows using cron syntax, or use durable sleep to pause workflows for as long as you like (even days or weeks) before executing.
 
 ```golang
-dbos.RegisterWorkflow(dbosCtx, func(ctx dbos.DBOSContext, scheduledTime time.Time) (string, error) {
+dbos.NewWorkflow(dbosCtx, func(ctx dbos.DBOSContext, scheduledTime time.Time) (string, error) {
     return fmt.Sprintf("Workflow executed at %s", scheduledTime), nil
 }, dbos.WithSchedule("* * * * * *")) // Every second
 ```

@@ -10,17 +10,16 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Global debouncer variables for test workflows
-var debouncer10sTimeout *Debouncer[string, string]
-var debouncer200msTimeout *Debouncer[string, string]
+// Callable debounced workflow shared by the debounce tests. Assigned in TestDebouncer setup.
+var debounceTestWF WorkflowDefinition[string, string]
 
 // Helper test workflows
 func debounceTestWorkflow(ctx DBOSContext, input string) (string, error) {
 	return input, nil
 }
 
-// Helper workflow that calls Debounce from within a workflow
-// Can handle both single and multiple debounce calls
+// Helper workflow that debounces from within a workflow.
+// Can handle both single and multiple debounce calls.
 type debounceCallInput struct {
 	Key    string        // Debounce key
 	Delay  time.Duration // Debounce delay
@@ -28,19 +27,19 @@ type debounceCallInput struct {
 }
 
 func workflowThatCallsDebounce(ctx DBOSContext, input debounceCallInput) (string, error) {
-	var lastHandle WorkflowHandle[string]
+	var lastHandle *WorkflowHandle[string]
 	var err error
 
 	for _, inp := range input.Inputs {
-		lastHandle, err = debouncer10sTimeout.Debounce(ctx, input.Key, input.Delay, inp, WithAssumedRole("test-role"))
+		lastHandle, err = debounceTestWF(ctx, inp,
+			WithDebounce(input.Key, input.Delay),
+			WithDebounceTimeout(10*time.Second),
+			WithAssumedRole("test-role"))
 		if err != nil {
 			return "", err
 		}
-
-		// Verify we get a polling handle
-		_, ok := lastHandle.(*workflowPollingHandle[string])
-		if !ok {
-			return "", fmt.Errorf("expected handle to be of type workflowPollingHandle, got %T", lastHandle)
+		if lastHandle == nil {
+			return "", fmt.Errorf("expected a handle from debounce call")
 		}
 	}
 
@@ -55,19 +54,9 @@ func workflowThatCallsDebounce(ctx DBOSContext, input debounceCallInput) (string
 func TestDebouncer(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
-	// Set internal queue polling interval to 100ms
-	internalQueue := dbosCtx.(*dbosContext).queueRunner.workflowQueueRegistry[_DBOS_INTERNAL_QUEUE_NAME]
-	internalQueue.basePollingInterval = 10 * time.Millisecond
-	dbosCtx.(*dbosContext).queueRunner.workflowQueueRegistry[_DBOS_INTERNAL_QUEUE_NAME] = internalQueue
-
-	// Register test workflows
-	RegisterWorkflow(dbosCtx, debounceTestWorkflow)
-	RegisterWorkflow(dbosCtx, workflowThatCallsDebounce)
-
-	// Create debouncers after Launch (each workflow debouncer can only be registered once)
-	debouncer10sTimeout = NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(10*time.Second))
-	debouncer200msTimeout = NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(200*time.Millisecond))
-	debouncer2sTimeout := NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(2*time.Second))
+	// Register callable workflows before launch.
+	debounceTestWF = NewWorkflow(dbosCtx, debounceTestWorkflow)
+	callsDebounceWF := NewWorkflow(dbosCtx, workflowThatCallsDebounce)
 
 	Launch(dbosCtx)
 	t.Run("TestSingleDebounceCall", func(t *testing.T) {
@@ -79,7 +68,7 @@ func TestDebouncer(t *testing.T) {
 		}
 
 		startTime := time.Now()
-		handle, err := RunWorkflow(dbosCtx, workflowThatCallsDebounce, parentInput)
+		handle, err := callsDebounceWF(dbosCtx, parentInput)
 		require.NoError(t, err, "failed to start workflow that calls debounce")
 
 		result, err := handle.GetResult()
@@ -110,23 +99,6 @@ func TestDebouncer(t *testing.T) {
 		}
 		assert.True(t, foundWorkflowIDStep, "should have DBOS.debounce.assignWorkflowID step")
 		assert.True(t, foundMessageIDStep, "should have DBOS.debounce.assignMessageID step")
-
-		// also verify the start time step is present in the internal debouncer workflow
-		// First find it: it should be the only workflow in the internal queue
-		workflows, err := ListWorkflows(dbosCtx, WithQueueName(_DBOS_INTERNAL_QUEUE_NAME))
-		require.NoError(t, err, "failed to list workflows")
-		require.Len(t, workflows, 1, "should have exactly one workflow in the internal queue")
-		// Now find the step in the workflow
-		steps, err = GetWorkflowSteps(dbosCtx, workflows[0].ID)
-		require.NoError(t, err, "failed to get workflow steps")
-		foundStartTimeStep := false
-		for _, step := range steps {
-			if step.StepName == "DBOS.debounce.startTime" {
-				foundStartTimeStep = true
-				break
-			}
-		}
-		assert.True(t, foundStartTimeStep, "should have DBOS.debounce.startTime step")
 	})
 
 	t.Run("TestMultipleCallsPushBackAndLatestInput", func(t *testing.T) {
@@ -138,7 +110,7 @@ func TestDebouncer(t *testing.T) {
 		}
 
 		startTime := time.Now()
-		handle, err := RunWorkflow(dbosCtx, workflowThatCallsDebounce, parentInput)
+		handle, err := callsDebounceWF(dbosCtx, parentInput)
 		require.NoError(t, err, "failed to start workflow that calls debounce multiple times")
 
 		result, err := handle.GetResult()
@@ -154,7 +126,7 @@ func TestDebouncer(t *testing.T) {
 	t.Run("TestDelayGreaterThanTimeout", func(t *testing.T) {
 		// Call Debounce directly with delay=2s (greater than timeout of 200ms)
 		startTime := time.Now()
-		handle, err := debouncer200msTimeout.Debounce(dbosCtx, "test-key-4", 2*time.Second, "timeout-input")
+		handle, err := debounceTestWF(dbosCtx, "timeout-input", WithDebounce("test-key-4", 2*time.Second), WithDebounceTimeout(200*time.Millisecond))
 		require.NoError(t, err, "failed to call Debounce with delay > timeout")
 
 		result, err := handle.GetResult()
@@ -169,12 +141,12 @@ func TestDebouncer(t *testing.T) {
 
 	t.Run("TestDelayOverride", func(t *testing.T) {
 		// First call: Debounce with a very long delay (creates debouncer workflow)
-		handle1, err := debouncer10sTimeout.Debounce(dbosCtx, "test-key-5", 10*time.Second, "first-input")
+		handle1, err := debounceTestWF(dbosCtx, "first-input", WithDebounce("test-key-5", 10*time.Second), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce from outside workflow (first call)")
 
 		// Second call: Debounce with delay=0 (should trigger immediate execution)
 		startTime := time.Now()
-		handle2, err := debouncer10sTimeout.Debounce(dbosCtx, "test-key-5", 0, "second-input")
+		handle2, err := debounceTestWF(dbosCtx, "second-input", WithDebounce("test-key-5", 0), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce from outside workflow (second call)")
 
 		// Verify both handles refer to the same workflow ID
@@ -191,13 +163,13 @@ func TestDebouncer(t *testing.T) {
 
 	t.Run("TestDifferentKeys", func(t *testing.T) {
 		// Call Debounce with different keys - each should create a separate group
-		handle1, err := debouncer10sTimeout.Debounce(dbosCtx, "different-key-1", 200*time.Millisecond, "input-key-1")
+		handle1, err := debounceTestWF(dbosCtx, "input-key-1", WithDebounce("different-key-1", 200*time.Millisecond), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce with first key")
 
-		handle2, err := debouncer10sTimeout.Debounce(dbosCtx, "different-key-2", 200*time.Millisecond, "input-key-2")
+		handle2, err := debounceTestWF(dbosCtx, "input-key-2", WithDebounce("different-key-2", 200*time.Millisecond), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce with second key")
 
-		handle3, err := debouncer10sTimeout.Debounce(dbosCtx, "different-key-3", 200*time.Millisecond, "input-key-3")
+		handle3, err := debounceTestWF(dbosCtx, "input-key-3", WithDebounce("different-key-3", 200*time.Millisecond), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce with third key")
 
 		// All handles should have different workflow IDs
@@ -221,11 +193,11 @@ func TestDebouncer(t *testing.T) {
 
 	t.Run("TestDifferentKeysExecuteIndependently", func(t *testing.T) {
 		// Call Debounce with different keys and verify they execute independently
-		handle1, err := debouncer10sTimeout.Debounce(dbosCtx, "independent-key-1", 5*time.Second, "independent-1")
+		handle1, err := debounceTestWF(dbosCtx, "independent-1", WithDebounce("independent-key-1", 5*time.Second), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce with first key")
 
 		startTime2 := time.Now()
-		handle2, err := debouncer10sTimeout.Debounce(dbosCtx, "independent-key-2", 200*time.Millisecond, "independent-2")
+		handle2, err := debounceTestWF(dbosCtx, "independent-2", WithDebounce("independent-key-2", 200*time.Millisecond), WithDebounceTimeout(10*time.Second))
 		require.NoError(t, err, "failed to call Debounce with second key")
 
 		result2, err := handle2.GetResult()
@@ -245,7 +217,7 @@ func TestDebouncer(t *testing.T) {
 
 	t.Run("TestRecoverDebouncedWorkflow", func(t *testing.T) {
 		// Call Debounce directly using the 2 second timeout debouncer
-		handle1, err := debouncer2sTimeout.Debounce(dbosCtx, "recovery-test-key", 200*time.Millisecond, "recovery-input-1")
+		handle1, err := debounceTestWF(dbosCtx, "recovery-input-1", WithDebounce("recovery-test-key", 200*time.Millisecond), WithDebounceTimeout(2*time.Second))
 		require.NoError(t, err, "failed to call Debounce")
 
 		// Wait for it to exit
@@ -284,110 +256,22 @@ func TestDebouncer(t *testing.T) {
 		require.NoError(t, err, "failed to clear queue assignment")
 		require.True(t, cleared, "should have cleared queue assignment")
 
-		debouncerWorkflowHandle := newWorkflowPollingHandle[any](dbosCtx, debouncerWorkflowID)
+		debouncerWorkflowHandle := newWorkflowHandle[any](dbosCtx, debouncerWorkflowID)
 		_, err = debouncerWorkflowHandle.GetResult()
 		require.NoError(t, err, "shouldn't have errored")
 	})
 }
 
-func TestDebouncerCannotBeCreatedAfterLaunch(t *testing.T) {
-	// Set up a new DBOS context for this test (not launched)
+func TestWorkflowCannotBeRegisteredAfterLaunch(t *testing.T) {
+	// Set up a new DBOS context for this test.
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
-	// Register a workflow for this test (reuse existing workflow)
-	RegisterWorkflow(dbosCtx, debounceTestWorkflow)
-
-	// Launch the context
+	// Launch the context.
 	err := Launch(dbosCtx)
 	require.NoError(t, err, "failed to launch DBOS context")
 
-	// Verify that creating a debouncer after launch panics
+	// Registering a workflow after launch must panic.
 	assert.Panics(t, func() {
-		NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(10*time.Second))
-	}, "creating a debouncer after launch should panic")
-
-	// Verify the panic is with the correct error type
-	var panicErr *DBOSError
-	panicked := false
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				panicked = true
-				var ok bool
-				panicErr, ok = r.(*DBOSError)
-				if !ok {
-					panic(r) // Re-panic if it's not the expected error type
-				}
-			}
-		}()
-		NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(10*time.Second))
-	}()
-
-	assert.True(t, panicked, "should have panicked")
-	require.NotNil(t, panicErr, "panic error should not be nil")
-	assert.Equal(t, InitializationError, panicErr.Code, "error code should be InitializationError")
-	assert.Contains(t, panicErr.Message, "cannot create debouncer after DBOS has launched", "error message should mention debouncer creation after launch")
-}
-
-func TestDebouncerWorkflowOptions(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
-
-	testQueue := NewWorkflowQueue(dbosCtx, "debouncer-options-test-queue", WithPriorityEnabled(), WithPartitionQueue())
-
-	RegisterWorkflow(dbosCtx, debounceTestWorkflow)
-
-	debouncer := NewDebouncer(dbosCtx, debounceTestWorkflow, WithDebouncerTimeout(10*time.Second))
-
-	Launch(dbosCtx)
-
-	// Test workflow options
-	expectedWorkflowID := "test-workflow-id-12345"
-	expectedPriority := uint(5)
-	expectedPartitionKey := "partition-key-123"
-	expectedAssumedRole := "test-assumed-role"
-	expectedAuthenticatedUser := "test-user"
-	expectedAuthenticatedRoles := []string{"role1", "role2", "role3"}
-	testInput := "test-input-with-options"
-
-	// Call Debounce with all workflow options
-	handle, err := debouncer.Debounce(
-		dbosCtx,
-		"workflow-options-key",
-		200*time.Millisecond,
-		testInput,
-		WithWorkflowID(expectedWorkflowID),
-		WithQueue(testQueue.Name),
-		WithPriority(expectedPriority),
-		WithQueuePartitionKey(expectedPartitionKey),
-		WithAssumedRole(expectedAssumedRole),
-		WithAuthenticatedUser(expectedAuthenticatedUser),
-		WithAuthenticatedRoles(expectedAuthenticatedRoles),
-	)
-	require.NoError(t, err, "failed to call Debounce with workflow options")
-
-	// Verify the handle returns the expected workflow ID
-	workflowID := handle.GetWorkflowID()
-	assert.Equal(t, expectedWorkflowID, workflowID, "handle should return the expected workflow ID")
-
-	// Wait for the workflow to execute
-	result, err := handle.GetResult()
-	require.NoError(t, err, "failed to get result")
-	assert.Equal(t, testInput, result, "result should match input")
-
-	// List the workflow to verify all options are set correctly
-	workflows, err := ListWorkflows(dbosCtx, WithWorkflowIDs([]string{workflowID}))
-	require.NoError(t, err, "failed to list workflows")
-	require.Len(t, workflows, 1, "should find exactly one workflow")
-
-	workflow := workflows[0]
-
-	// Verify all workflow options are set correctly
-	assert.Equal(t, expectedWorkflowID, workflow.ID, "workflow ID should match")
-	assert.Equal(t, testQueue.Name, workflow.QueueName, "queue name should match")
-	assert.Equal(t, int(expectedPriority), workflow.Priority, "priority should match")
-	assert.Equal(t, expectedPartitionKey, workflow.QueuePartitionKey, "queue partition key should match")
-	assert.Equal(t, expectedAssumedRole, workflow.AssumedRole, "assumed role should match")
-	assert.Equal(t, expectedAuthenticatedUser, workflow.AuthenticatedUser, "authenticated user should match")
-	assert.Equal(t, expectedAuthenticatedRoles, workflow.AuthenticatedRoles, "authenticated roles should match")
-	assert.Equal(t, WorkflowStatusSuccess, workflow.Status, "workflow should have succeeded")
+		NewWorkflow(dbosCtx, debounceTestWorkflow)
+	}, "registering a workflow after launch should panic")
 }

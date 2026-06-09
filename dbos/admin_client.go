@@ -154,10 +154,6 @@ func (c *AdminClient) RecoverWorkflows(ctx context.Context, executorIDs []string
 	return doAdminRequest[[]string](c, ctx, http.MethodPost, "/dbos-workflow-recovery", executorIDs)
 }
 
-func (c *AdminClient) ListQueues(ctx context.Context) ([]WorkflowQueue, error) {
-	return doAdminRequest[[]WorkflowQueue](c, ctx, http.MethodGet, "/dbos-workflow-queues-metadata", nil)
-}
-
 func (c *AdminClient) GarbageCollect(ctx context.Context, request AdminGarbageCollectRequest) error {
 	return doAdminRequestWithoutResponse(c, ctx, http.MethodPost, "/dbos-garbage-collect", request)
 }
@@ -170,10 +166,6 @@ func (c *AdminClient) GlobalTimeout(ctx context.Context, cutoffTime time.Time) e
 
 func (c *AdminClient) ListWorkflows(ctx context.Context, request AdminListWorkflowsRequest) ([]AdminWorkflow, error) {
 	return doAdminRequest[[]AdminWorkflow](c, ctx, http.MethodPost, "/workflows", request)
-}
-
-func (c *AdminClient) ListQueuedWorkflows(ctx context.Context, request AdminListWorkflowsRequest) ([]AdminWorkflow, error) {
-	return doAdminRequest[[]AdminWorkflow](c, ctx, http.MethodPost, "/queues", request)
 }
 
 func (c *AdminClient) GetWorkflow(ctx context.Context, workflowID string) (AdminWorkflow, error) {

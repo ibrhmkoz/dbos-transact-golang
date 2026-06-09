@@ -44,6 +44,7 @@ type systemDatabase interface {
 	deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error
 	resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error)
 	forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error)
+	upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter) error
 
 	getDeduplicatedWorkflow(ctx context.Context, queueName, deduplicationID string) (*string, error)
 
@@ -88,7 +89,6 @@ type systemDatabase interface {
 	transitionDelayedWorkflows(ctx context.Context) error
 	dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error)
 	clearQueueAssignment(ctx context.Context, workflowID string) (bool, error)
-	getQueuePartitions(ctx context.Context, queueName string) ([]string, error)
 
 	// Garbage collection
 	garbageCollectWorkflows(ctx context.Context, input garbageCollectWorkflowsInput) error
@@ -304,6 +304,9 @@ var migration36SQL string
 //go:embed migrations/37_create_started_at_index.sql
 var migration37SQL string
 
+//go:embed migrations/38_create_workflow_definitions.sql
+var migration38SQL string
+
 type migrationFile struct {
 	version int64
 	sql     string
@@ -407,6 +410,7 @@ func buildMigrations(schema string, isCockroach bool) []migrationFile {
 		{version: 35, sql: fmt.Sprintf(migration35SQL, c, sanitizedSchema), online: !isCockroach},
 		{version: 36, sql: fmt.Sprintf(migration36SQL, sanitizedSchema, sanitizedSchema)},
 		{version: 37, sql: fmt.Sprintf(migration37SQL, c, sanitizedSchema), online: !isCockroach},
+		{version: 38, sql: fmt.Sprintf(migration38SQL, sanitizedSchema, c, sanitizedSchema, c, sanitizedSchema)},
 	}
 }
 
@@ -2262,14 +2266,14 @@ func (s *sysDB) checkChildWorkflow(ctx context.Context, workflowID string, funct
 }
 
 // getDeduplicatedWorkflow returns the ID of the workflow currently holding the
-// deduplication slot for (queueName, deduplicationID), or nil if the slot is free.
-func (s *sysDB) getDeduplicatedWorkflow(ctx context.Context, queueName, deduplicationID string) (*string, error) {
+// deduplication slot for (workflowName, deduplicationID), or nil if the slot is free.
+func (s *sysDB) getDeduplicatedWorkflow(ctx context.Context, workflowName, deduplicationID string) (*string, error) {
 	query := s.renderSQL(`SELECT workflow_uuid
               FROM %sworkflow_status
-              WHERE queue_name = $1 AND deduplication_id = $2`, s.dialect.SchemaPrefix(s.schema))
+              WHERE name = $1 AND deduplication_id = $2`, s.dialect.SchemaPrefix(s.schema))
 
 	var workflowID *string
-	err := s.pool.QueryRow(ctx, query, queueName, deduplicationID).Scan(&workflowID)
+	err := s.pool.QueryRow(ctx, query, workflowName, deduplicationID).Scan(&workflowID)
 	if err != nil {
 		if err == pgx.ErrNoRows {
 			return nil, nil
@@ -3969,20 +3973,56 @@ type dequeuedWorkflow struct {
 	serialization string
 }
 
+func (s *sysDB) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter) error {
+	var globalConcurrency, rateLimit, ratePeriodMs any
+	if concurrency != nil {
+		globalConcurrency = *concurrency
+	}
+	if rl != nil {
+		rateLimit = rl.limit
+		ratePeriodMs = rl.period.Milliseconds()
+	}
+	query := s.renderSQL(`
+		INSERT INTO %sworkflow_definitions (workflow_name, global_concurrency, rate_limit, rate_period_ms)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (workflow_name) DO UPDATE SET
+			global_concurrency = EXCLUDED.global_concurrency,
+			rate_limit = EXCLUDED.rate_limit,
+			rate_period_ms = EXCLUDED.rate_period_ms`, s.dialect.SchemaPrefix(s.schema))
+	_, err := s.pool.Exec(ctx, query, workflowName, globalConcurrency, rateLimit, ratePeriodMs)
+	return err
+}
+
 type dequeueWorkflowsInput struct {
-	queue              WorkflowQueue
+	workflowName       string
 	executorID         string
 	applicationVersion string
-	workflowNames      []string
-	queuePartitionKey  string
-	localRunningCount  int
 }
 
 func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
-	// Snapshot isolation is only required for global concurrency or rate limiting.
-	// Otherwise read committed suffices: worker concurrency is enforced in-memory.
-	snapshot := input.queue.GlobalConcurrency != nil || input.queue.RateLimit != nil
-	tx, err := s.pool.BeginTx(ctx, TxOptions{IsoLevel: s.dialect.QueueDequeueIsolation(snapshot)})
+	var policyConcurrency *int
+	var policyRateLimit *rateLimiter
+	var globalConcurrency, rateLimit, ratePeriodMs *int64
+	definitionQuery := s.renderSQL(`
+		SELECT global_concurrency, rate_limit, rate_period_ms
+		FROM %sworkflow_definitions
+		WHERE workflow_name = $1`, s.dialect.SchemaPrefix(s.schema))
+	if err := s.pool.QueryRow(ctx, definitionQuery, input.workflowName).Scan(&globalConcurrency, &rateLimit, &ratePeriodMs); err != nil {
+		if err == pgx.ErrNoRows {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to load workflow definition %s: %w", input.workflowName, err)
+	}
+	if globalConcurrency != nil {
+		value := int(*globalConcurrency)
+		policyConcurrency = &value
+	}
+	if rateLimit != nil && ratePeriodMs != nil {
+		policyRateLimit = &rateLimiter{limit: int(*rateLimit), period: time.Duration(*ratePeriodMs) * time.Millisecond}
+	}
+
+	snapshot := policyConcurrency != nil || policyRateLimit != nil
+	tx, err := s.pool.BeginTx(ctx, TxOptions{IsoLevel: s.dialect.ClaimIsolation(snapshot)})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -3992,64 +4032,47 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 
 	// Rate limiter: count workflows started within the limiter period.
 	var numRecentQueries int
-	if input.queue.RateLimit != nil {
-		cutoffTimeMs := time.Now().Add(-input.queue.RateLimit.Period).UnixMilli()
+	if policyRateLimit != nil {
+		cutoffTimeMs := time.Now().Add(-policyRateLimit.period).UnixMilli()
 
 		limiterQuery := s.renderSQL(`
 		SELECT COUNT(*)
 		FROM %sworkflow_status
-		WHERE queue_name = $1
+		WHERE name = $1
 		  AND rate_limited = TRUE
 		  AND status NOT IN ($2, $3)
 		  AND started_at_epoch_ms > $4`, schemaPrefix)
 
-		limiterArgs := []any{input.queue.Name, WorkflowStatusEnqueued, WorkflowStatusDelayed, cutoffTimeMs}
-		if len(input.queuePartitionKey) > 0 {
-			limiterQuery += ` AND queue_partition_key = $5`
-			limiterArgs = append(limiterArgs, input.queuePartitionKey)
-		}
+		limiterArgs := []any{input.workflowName, WorkflowStatusEnqueued, WorkflowStatusDelayed, cutoffTimeMs}
 
 		err := tx.QueryRow(ctx, s.dialect.RewriteQuery(limiterQuery), limiterArgs...).Scan(&numRecentQueries)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query rate limiter: %w", err)
 		}
 
-		if numRecentQueries >= input.queue.RateLimit.Limit {
+		if numRecentQueries >= policyRateLimit.limit {
 			return []dequeuedWorkflow{}, nil
 		}
 	}
 
-	// Calculate max_tasks based on concurrency limits
-	maxTasks := input.queue.MaxTasksPerIteration
+	maxTasks := _DEFAULT_MAX_TASKS_PER_ITERATION
 
-	if input.queue.WorkerConcurrency != nil {
-		workerConcurrency := *input.queue.WorkerConcurrency
-		if input.localRunningCount > workerConcurrency {
-			s.logger.Warn("Local running workflows on queue exceeds worker concurrency limit", "local_running", input.localRunningCount, "queue_name", input.queue.Name, "concurrency_limit", workerConcurrency)
-		}
-		maxTasks = max(workerConcurrency-input.localRunningCount, 0)
-	}
-
-	if input.queue.GlobalConcurrency != nil {
+	if policyConcurrency != nil {
 		pendingQuery := s.renderSQL(`
 			SELECT COUNT(*)
 			FROM %sworkflow_status
-			WHERE queue_name = $1 AND status = $2`, schemaPrefix)
+			WHERE name = $1 AND status = $2`, schemaPrefix)
 
-		pendingArgs := []any{input.queue.Name, WorkflowStatusPending}
-		if len(input.queuePartitionKey) > 0 {
-			pendingQuery += ` AND queue_partition_key = $3`
-			pendingArgs = append(pendingArgs, input.queuePartitionKey)
-		}
+		pendingArgs := []any{input.workflowName, WorkflowStatusPending}
 
 		var globalCount int
 		if err := tx.QueryRow(ctx, s.dialect.RewriteQuery(pendingQuery), pendingArgs...).Scan(&globalCount); err != nil {
 			return nil, fmt.Errorf("failed to query pending workflows: %w", err)
 		}
 
-		concurrency := *input.queue.GlobalConcurrency
+		concurrency := *policyConcurrency
 		if globalCount > concurrency {
-			s.logger.Warn("Total pending workflows on queue exceeds global concurrency limit", "total_pending", globalCount, "queue_name", input.queue.Name, "concurrency_limit", concurrency)
+			s.logger.Warn("Total pending workflows exceeds global concurrency limit", "total_pending", globalCount, "workflow_name", input.workflowName, "concurrency_limit", concurrency)
 		}
 		availableTasks := max(concurrency-globalCount, 0)
 		if availableTasks < maxTasks {
@@ -4060,41 +4083,19 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 	if maxTasks <= 0 {
 		return nil, nil
 	}
-	if len(input.workflowNames) == 0 {
-		return nil, nil
-	}
-
-	// Build the SELECT for candidate workflow IDs. Always order by
-	// (priority, created_at) so the planner can satisfy the dequeue scan from
-	// idx_workflow_status_in_flight (queue_name, status, priority, created_at).
-	queryArgs := []any{input.queue.Name, WorkflowStatusEnqueued, input.applicationVersion}
+	queryArgs := []any{input.workflowName, WorkflowStatusEnqueued, input.applicationVersion}
 	query := s.renderSQL(`
 				SELECT workflow_uuid
 				FROM %sworkflow_status
-				WHERE queue_name = $1
+				WHERE name = $1
 				  AND status = $2
 				  AND (application_version = $3 OR application_version IS NULL)`, schemaPrefix)
-
-	query += ` AND name IN (`
-	for i, workflowName := range input.workflowNames {
-		if i > 0 {
-			query += ", "
-		}
-		query += fmt.Sprintf("$%d", len(queryArgs)+1)
-		queryArgs = append(queryArgs, workflowName)
-	}
-	query += ")"
-
-	if len(input.queuePartitionKey) > 0 {
-		query += fmt.Sprintf(` AND queue_partition_key = $%d`, len(queryArgs)+1)
-		queryArgs = append(queryArgs, input.queuePartitionKey)
-	}
 
 	query += ` ORDER BY priority ASC, created_at ASC`
 
 	// Use SKIP LOCKED when no global concurrency is set to avoid blocking,
 	// otherwise use NOWAIT to ensure consistent view across processes
-	if input.queue.GlobalConcurrency == nil {
+	if policyConcurrency == nil {
 		if lock := s.dialect.LockSkipLocked(); lock != "" {
 			query += " " + lock
 		}
@@ -4130,7 +4131,7 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 	}
 
 	if len(dequeuedIDs) > 0 {
-		s.logger.Debug("attempting to dequeue task(s)", "queueName", input.queue.Name, "numTasks", len(dequeuedIDs))
+		s.logger.Debug("attempting to claim workflow(s)", "workflow_name", input.workflowName, "numTasks", len(dequeuedIDs))
 	}
 
 	// Update workflows to PENDING status and get their details
@@ -4151,8 +4152,8 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 
 	var retWorkflows []dequeuedWorkflow
 	for _, id := range dequeuedIDs {
-		if input.queue.RateLimit != nil {
-			if len(retWorkflows)+numRecentQueries >= input.queue.RateLimit.Limit {
+		if policyRateLimit != nil {
+			if len(retWorkflows)+numRecentQueries >= policyRateLimit.limit {
 				break
 			}
 		}
@@ -4164,7 +4165,7 @@ func (s *sysDB) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInpu
 			input.applicationVersion,
 			input.executorID,
 			time.Now().UnixMilli(),
-			input.queue.RateLimit != nil,
+			policyRateLimit != nil,
 			id,
 			WorkflowStatusEnqueued).Scan(&retWorkflow.name, &retWorkflow.input, &serialization)
 		if err != nil {
@@ -4212,33 +4213,6 @@ func (s *sysDB) clearQueueAssignment(ctx context.Context, workflowID string) (bo
 		return false, fmt.Errorf("failed to read rows affected after clearing queue assignment for workflow %s: %w", workflowID, err)
 	}
 	return n > 0, nil
-}
-
-// getQueuePartitions returns all unique partition keys for enqueued workflows in a queue.
-func (s *sysDB) getQueuePartitions(ctx context.Context, queueName string) ([]string, error) {
-	query := s.renderSQL(`
-		SELECT DISTINCT queue_partition_key
-		FROM %sworkflow_status
-		WHERE queue_name = $1
-		  AND status = $2
-		  AND queue_partition_key IS NOT NULL`, s.dialect.SchemaPrefix(s.schema))
-
-	rows, err := s.pool.Query(ctx, query, queueName, WorkflowStatusEnqueued)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query queue partitions: %w", err)
-	}
-	defer rows.Close()
-
-	var partitions []string
-	for rows.Next() {
-		var partitionKey string
-		if err := rows.Scan(&partitionKey); err != nil {
-			return nil, fmt.Errorf("failed to scan partition key: %w", err)
-		}
-		partitions = append(partitions, partitionKey)
-	}
-
-	return partitions, nil
 }
 
 /*******************************/

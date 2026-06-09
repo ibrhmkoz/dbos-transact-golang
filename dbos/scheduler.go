@@ -49,7 +49,6 @@ type ApplySchedulesRequest struct {
 	Context           any
 	AutomaticBackfill bool
 	CronTimezone      string
-	QueueName         string
 }
 
 const (
@@ -146,11 +145,6 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 	}
 	wrappedFn := entry.wrappedFunction
 	scheduleName := schedule.ScheduleName
-	queueName := schedule.QueueName
-	if queueName == "" {
-		queueName = _DBOS_INTERNAL_QUEUE_NAME
-	}
-
 	return func(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
 		wfID := fmt.Sprintf("sched-%s-%s", scheduleName, input.ScheduledTime.Format(time.RFC3339))
 
@@ -176,7 +170,6 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 
 		opts := []WorkflowOption{
 			WithWorkflowID(wfID),
-			WithQueue(queueName),
 			withWorkflowName(entry.FQN),
 		}
 		// Scheduled workflows always run against the latest registered application version, so a stale executor does not pick them up after a new deploy.

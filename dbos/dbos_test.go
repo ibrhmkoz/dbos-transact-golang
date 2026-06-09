@@ -659,8 +659,8 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		workflowBReadyEvent = NewEvent()
 
 		// Register the test workflows
-		RegisterWorkflow(ctx, sendGetEventWorkflow)
-		RegisterWorkflow(ctx, recvSetEventWorkflow)
+		sendGetEventWF := NewWorkflow(ctx, sendGetEventWorkflow)
+		recvSetEventWF := NewWorkflow(ctx, recvSetEventWorkflow)
 
 		// Launch the DBOS context
 		Launch(ctx)
@@ -670,7 +670,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		workflowBID := uuid.NewString()
 
 		// Start workflow B first (receiver)
-		handleB, err := RunWorkflow(ctx, recvSetEventWorkflow, testWorkflowInput{
+		handleB, err := recvSetEventWF(ctx, testWorkflowInput{
 			PartnerWorkflowID: workflowAID,
 			Message:           "test-message-from-b",
 		}, WithWorkflowID(workflowBID))
@@ -680,7 +680,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		workflowBReadyEvent.Wait()
 
 		// Start workflow A (sender)
-		handleA, err := RunWorkflow(ctx, sendGetEventWorkflow, testWorkflowInput{
+		handleA, err := sendGetEventWF(ctx, testWorkflowInput{
 			PartnerWorkflowID: workflowBID,
 			Message:           "test-message-from-a",
 		}, WithWorkflowID(workflowAID))
@@ -821,8 +821,8 @@ func TestCustomPool(t *testing.T) {
 		assert.Equal(t, 10*time.Second, sysdbConfig.ConnConfig.ConnectTimeout)
 
 		// Register the test workflows
-		RegisterWorkflow(customdbosContext, sendGetEventWorkflowCustom)
-		RegisterWorkflow(customdbosContext, recvSetEventWorkflowCustom)
+		sendGetEventCustomWF := NewWorkflow(customdbosContext, sendGetEventWorkflowCustom)
+		recvSetEventCustomWF := NewWorkflow(customdbosContext, recvSetEventWorkflowCustom)
 
 		// Launch the DBOS context
 		err = Launch(customdbosContext)
@@ -834,7 +834,7 @@ func TestCustomPool(t *testing.T) {
 		workflowBID := uuid.NewString()
 
 		// Start workflow B first (receiver)
-		handleB, err := RunWorkflow(customdbosContext, recvSetEventWorkflowCustom, customPoolWorkflowInput{
+		handleB, err := recvSetEventCustomWF(customdbosContext, customPoolWorkflowInput{
 			PartnerWorkflowID: workflowAID,
 			Message:           "custom-pool-message-from-b",
 		}, WithWorkflowID(workflowBID))
@@ -844,7 +844,7 @@ func TestCustomPool(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 
 		// Start workflow A (sender)
-		handleA, err := RunWorkflow(customdbosContext, sendGetEventWorkflowCustom, customPoolWorkflowInput{
+		handleA, err := sendGetEventCustomWF(customdbosContext, customPoolWorkflowInput{
 			PartnerWorkflowID: workflowBID,
 			Message:           "custom-pool-message-from-a",
 		}, WithWorkflowID(workflowAID))
@@ -895,7 +895,7 @@ func TestCustomPool(t *testing.T) {
 		dbosCtx, err := NewDBOSContext(context.Background(), config)
 		require.NoError(t, err)
 
-		RegisterWorkflow(dbosCtx, wf)
+		wfDef := NewWorkflow(dbosCtx, wf)
 
 		// Launch the DBOS context
 		err = Launch(dbosCtx)
@@ -903,7 +903,7 @@ func TestCustomPool(t *testing.T) {
 		defer Shutdown(dbosCtx, 1*time.Minute)
 
 		// Run a workflow
-		_, err = RunWorkflow(dbosCtx, wf, "test-input")
+		_, err = wfDef(dbosCtx, "test-input")
 		require.NoError(t, err)
 	})
 
@@ -1503,14 +1503,14 @@ func TestCustomSqlitePool(t *testing.T) {
 		assert.Same(t, db, SQLDB(sysDB.pool), "sysDB should use the caller's *sql.DB instance")
 		require.Equal(t, DialectSQLite, sysDB.dialect.Name())
 
-		RegisterWorkflow(customdbosContext, sendGetEventWorkflowCustom)
-		RegisterWorkflow(customdbosContext, recvSetEventWorkflowCustom)
+		sendGetEventCustomWF := NewWorkflow(customdbosContext, sendGetEventWorkflowCustom)
+		recvSetEventCustomWF := NewWorkflow(customdbosContext, recvSetEventWorkflowCustom)
 		require.NoError(t, Launch(customdbosContext))
 
 		workflowAID := uuid.NewString()
 		workflowBID := uuid.NewString()
 
-		handleB, err := RunWorkflow(customdbosContext, recvSetEventWorkflowCustom, customPoolWorkflowInput{
+		handleB, err := recvSetEventCustomWF(customdbosContext, customPoolWorkflowInput{
 			PartnerWorkflowID: workflowAID,
 			Message:           "sqlite-custom-pool-message-from-b",
 		}, WithWorkflowID(workflowBID))
@@ -1518,7 +1518,7 @@ func TestCustomSqlitePool(t *testing.T) {
 
 		time.Sleep(100 * time.Millisecond)
 
-		handleA, err := RunWorkflow(customdbosContext, sendGetEventWorkflowCustom, customPoolWorkflowInput{
+		handleA, err := sendGetEventCustomWF(customdbosContext, customPoolWorkflowInput{
 			PartnerWorkflowID: workflowBID,
 			Message:           "sqlite-custom-pool-message-from-a",
 		}, WithWorkflowID(workflowAID))

@@ -960,7 +960,7 @@ func TestConductorAlertHandler(t *testing.T) {
 // message type the conductor can route to a DBOS node.
 func TestConductorScheduleHandlers(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, schedulerPollingInterval: 100 * time.Millisecond})
-	RegisterWorkflow(dbosCtx, testWorkflowForSchedule)
+	NewWorkflow(dbosCtx, testWorkflowForSchedule)
 	require.NoError(t, dbosCtx.Launch())
 
 	const baseSchedule = "cond-base-schedule"
@@ -1107,12 +1107,12 @@ func conductorAggregatesWorkflow(_ DBOSContext, in string) (string, error) {
 
 func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
-	RegisterWorkflow(dbosCtx, conductorAggregatesWorkflow)
+	conductorAggregatesWF := NewWorkflow(dbosCtx, conductorAggregatesWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
 	// Produce three successful workflows to be counted.
 	for i := 0; i < 3; i++ {
-		h, err := RunWorkflow(dbosCtx, conductorAggregatesWorkflow, fmt.Sprintf("ok-%d", i))
+		h, err := conductorAggregatesWF(dbosCtx, fmt.Sprintf("ok-%d", i))
 		require.NoError(t, err)
 		_, err = h.GetResult()
 		require.NoError(t, err)
@@ -1183,11 +1183,11 @@ func conductorStepAggWorkflow(ctx DBOSContext, _ string) (string, error) {
 
 func TestConductorStepAggregatesHandler(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
-	RegisterWorkflow(dbosCtx, conductorStepAggWorkflow)
+	conductorStepAggWF := NewWorkflow(dbosCtx, conductorStepAggWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
 	for i := 0; i < 3; i++ {
-		h, err := RunWorkflow(dbosCtx, conductorStepAggWorkflow, fmt.Sprintf("ok-%d", i))
+		h, err := conductorStepAggWF(dbosCtx, fmt.Sprintf("ok-%d", i))
 		require.NoError(t, err)
 		_, err = h.GetResult()
 		require.NoError(t, err)
@@ -1267,10 +1267,10 @@ func conductorPrivateModeWorkflow(ctx DBOSContext, in string) (string, error) {
 // returned by the get_workflow and list_steps handlers.
 func TestConductorPrivateMode(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
-	RegisterWorkflow(dbosCtx, conductorPrivateModeWorkflow)
+	conductorPrivateModeWF := NewWorkflow(dbosCtx, conductorPrivateModeWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
-	h, err := RunWorkflow(dbosCtx, conductorPrivateModeWorkflow, "secret")
+	h, err := conductorPrivateModeWF(dbosCtx, "secret")
 	require.NoError(t, err)
 	_, err = h.GetResult()
 	require.NoError(t, err)

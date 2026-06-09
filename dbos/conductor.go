@@ -357,8 +357,6 @@ func (c *conductor) handleMessage(data []byte) error {
 		return c.handleResumeWorkflowRequest(data, base.RequestID)
 	case listWorkflowsMessage:
 		return c.handleListWorkflowsRequest(data, base.RequestID)
-	case listQueuedWorkflowsMessage:
-		return c.handleListQueuedWorkflowsRequest(data, base.RequestID)
 	case listStepsMessage:
 		return c.handleListStepsRequest(data, base.RequestID)
 	case getWorkflowMessage:
@@ -690,9 +688,6 @@ func (c *conductor) handleListWorkflowsRequest(data []byte, requestID string) er
 	if req.Body.SortDesc {
 		opts = append(opts, WithSortDesc())
 	}
-	if req.Body.QueuesOnly {
-		opts = append(opts, WithQueuesOnly())
-	}
 	if len(req.Body.WorkflowUUIDs) > 0 {
 		opts = append(opts, WithWorkflowIDs(req.Body.WorkflowUUIDs))
 	}
@@ -748,9 +743,6 @@ func (c *conductor) handleListWorkflowsRequest(data []byte, requestID string) er
 	if req.Body.HasParent != nil {
 		opts = append(opts, WithHasParent(*req.Body.HasParent))
 	}
-	if len(req.Body.QueueName) > 0 {
-		opts = append(opts, WithQueueName(req.Body.QueueName.toSlice()...))
-	}
 	if len(req.Body.WorkflowIDPrefix) > 0 {
 		opts = append(opts, WithWorkflowIDPrefix(req.Body.WorkflowIDPrefix.toSlice()...))
 	}
@@ -792,134 +784,6 @@ func (c *conductor) handleListWorkflowsRequest(data []byte, requestID string) er
 
 	return c.sendResponse(response, string(listWorkflowsMessage))
 }
-
-func (c *conductor) handleListQueuedWorkflowsRequest(data []byte, requestID string) error {
-	var req listWorkflowsConductorRequest
-	if err := json.Unmarshal(data, &req); err != nil {
-		c.logger.Error("Failed to parse list queued workflows request", "error", err)
-		return fmt.Errorf("failed to parse list queued workflows request: %w", err)
-	}
-	c.logger.Debug("Handling list queued workflows request", "request", req)
-
-	// Build functional options for ListWorkflows
-	var opts []ListWorkflowsOption
-	opts = append(opts, WithLoadInput(req.Body.LoadInput))
-	opts = append(opts, WithLoadOutput(false)) // Don't load output for queued workflows
-	opts = append(opts, WithQueuesOnly())      // Only include workflows that are in queues
-	if len(req.Body.WorkflowUUIDs) > 0 {
-		opts = append(opts, WithWorkflowIDs(req.Body.WorkflowUUIDs))
-	}
-
-	// Add status filter for queued workflows
-	queuedStatuses := make([]WorkflowStatusType, 0)
-	if len(req.Body.Status) > 0 {
-		for _, s := range req.Body.Status {
-			status := WorkflowStatusType(s)
-			if status != WorkflowStatusPending && status != WorkflowStatusEnqueued && status != WorkflowStatusDelayed {
-				c.logger.Warn("Received unexpected filtering status for listing queued workflows", "status", status)
-			}
-			queuedStatuses = append(queuedStatuses, status)
-		}
-	}
-	if len(queuedStatuses) == 0 {
-		queuedStatuses = []WorkflowStatusType{WorkflowStatusPending, WorkflowStatusEnqueued, WorkflowStatusDelayed}
-	}
-	opts = append(opts, WithStatus(queuedStatuses))
-
-	if req.Body.SortDesc {
-		opts = append(opts, WithSortDesc())
-	}
-	if len(req.Body.WorkflowName) > 0 {
-		opts = append(opts, WithName(req.Body.WorkflowName.toSlice()...))
-	}
-	if req.Body.Limit != nil {
-		opts = append(opts, WithLimit(*req.Body.Limit))
-	}
-	if req.Body.Offset != nil {
-		opts = append(opts, WithOffset(*req.Body.Offset))
-	}
-	if req.Body.StartTime != nil {
-		opts = append(opts, WithStartTime(*req.Body.StartTime))
-	}
-	if req.Body.EndTime != nil {
-		opts = append(opts, WithEndTime(*req.Body.EndTime))
-	}
-	if req.Body.CompletedAfter != nil {
-		opts = append(opts, WithCompletedAfter(*req.Body.CompletedAfter))
-	}
-	if req.Body.CompletedBefore != nil {
-		opts = append(opts, WithCompletedBefore(*req.Body.CompletedBefore))
-	}
-	if req.Body.DequeuedAfter != nil {
-		opts = append(opts, WithDequeuedAfter(*req.Body.DequeuedAfter))
-	}
-	if req.Body.DequeuedBefore != nil {
-		opts = append(opts, WithDequeuedBefore(*req.Body.DequeuedBefore))
-	}
-	if len(req.Body.QueueName) > 0 {
-		opts = append(opts, WithQueueName(req.Body.QueueName.toSlice()...))
-	}
-	if len(req.Body.ExecutorID) > 0 {
-		opts = append(opts, WithExecutorIDs(req.Body.ExecutorID.toSlice()))
-	}
-	if len(req.Body.WorkflowIDPrefix) > 0 {
-		opts = append(opts, WithWorkflowIDPrefix(req.Body.WorkflowIDPrefix.toSlice()...))
-	}
-	if len(req.Body.ForkedFrom) > 0 {
-		opts = append(opts, WithForkedFrom(req.Body.ForkedFrom.toSlice()...))
-	}
-	if len(req.Body.ParentWorkflowID) > 0 {
-		opts = append(opts, WithParentWorkflowID(req.Body.ParentWorkflowID.toSlice()...))
-	}
-	if req.Body.WasForkedFrom != nil {
-		opts = append(opts, WithWasForkedFrom(*req.Body.WasForkedFrom))
-	}
-	if req.Body.HasParent != nil {
-		opts = append(opts, WithHasParent(*req.Body.HasParent))
-	}
-	if len(req.Body.AuthenticatedUser) > 0 {
-		opts = append(opts, WithUser(req.Body.AuthenticatedUser.toSlice()...))
-	}
-	if len(req.Body.ApplicationVersion) > 0 {
-		opts = append(opts, WithAppVersion(req.Body.ApplicationVersion.toSlice()...))
-	}
-
-	workflows, err := c.dbosCtx.ListWorkflows(c.dbosCtx, opts...)
-	if err != nil {
-		c.logger.Error("Failed to list queued workflows", "error", err)
-		errorMsg := fmt.Sprintf("failed to list queued workflows: %v", err)
-		response := listWorkflowsConductorResponse{
-			baseResponse: baseResponse{
-				baseMessage: baseMessage{
-					Type:      listQueuedWorkflowsMessage,
-					RequestID: requestID,
-				},
-				ErrorMessage: &errorMsg,
-			},
-			Output: []listWorkflowsConductorResponseBody{},
-		}
-		return c.sendResponse(response, string(listQueuedWorkflowsMessage))
-	}
-
-	// Prepare response payload
-	formattedWorkflows := make([]listWorkflowsConductorResponseBody, len(workflows))
-	for i, wf := range workflows {
-		formattedWorkflows[i] = formatListWorkflowsResponseBody(wf)
-	}
-
-	response := listWorkflowsConductorResponse{
-		baseResponse: baseResponse{
-			baseMessage: baseMessage{
-				Type:      listQueuedWorkflowsMessage,
-				RequestID: requestID,
-			},
-		},
-		Output: formattedWorkflows,
-	}
-
-	return c.sendResponse(response, string(listQueuedWorkflowsMessage))
-}
-
 func (c *conductor) handleListStepsRequest(data []byte, requestID string) error {
 	var req listStepsConductorRequest
 	if err := json.Unmarshal(data, &req); err != nil {

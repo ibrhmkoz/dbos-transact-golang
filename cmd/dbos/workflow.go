@@ -85,8 +85,6 @@ func init() {
 	workflowListCmd.Flags().StringP("name", "n", "", "Retrieve workflows with this name")
 	workflowListCmd.Flags().BoolP("sort-desc", "d", false, "Sort the results in descending order (older first)")
 	workflowListCmd.Flags().IntP("offset", "o", 0, "Offset for pagination")
-	workflowListCmd.Flags().StringP("queue", "q", "", "Retrieve workflows on this queue")
-	workflowListCmd.Flags().BoolP("queues-only", "Q", false, "Retrieve only queued workflows")
 
 	// Fork command flags
 	workflowForkCmd.Flags().IntP("step", "s", 1, "Restart from this step")
@@ -151,14 +149,6 @@ func runWorkflowList(cmd *cobra.Command, args []string) error {
 
 	if appVersion, _ := cmd.Flags().GetString("application-version"); appVersion != "" {
 		opts = append(opts, dbos.WithAppVersion(appVersion))
-	}
-
-	if queue, _ := cmd.Flags().GetString("queue"); queue != "" {
-		opts = append(opts, dbos.WithQueueName(queue))
-	}
-
-	if queuesOnly, _ := cmd.Flags().GetBool("queues-only"); queuesOnly {
-		opts = append(opts, dbos.WithQueuesOnly())
 	}
 
 	if sortDesc, _ := cmd.Flags().GetBool("sort-desc"); sortDesc {

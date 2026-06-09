@@ -135,32 +135,6 @@ func TestAdminServer(t *testing.T) {
 				expectedStatus: http.StatusBadRequest,
 			},
 			{
-				name:           "Queue metadata endpoint responds correctly",
-				method:         "GET",
-				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOW_QUEUES_METADATA_PATTERN, "GET /")),
-				expectedStatus: http.StatusOK,
-				validateResp: func(t *testing.T, resp *http.Response) {
-					var queueMetadata []WorkflowQueue
-					err := json.NewDecoder(resp.Body).Decode(&queueMetadata)
-					require.NoError(t, err, "Failed to decode response as QueueMetadata array")
-					assert.NotNil(t, queueMetadata, "Expected non-nil queue metadata array")
-					// Should contain at least the internal queue
-					assert.Greater(t, len(queueMetadata), 0, "Expected at least one queue in metadata")
-					// Verify internal queue fields
-					foundInternalQueue := false
-					for _, queue := range queueMetadata {
-						if queue.Name == _DBOS_INTERNAL_QUEUE_NAME { // Internal queue name
-							foundInternalQueue = true
-							assert.Nil(t, queue.GlobalConcurrency, "Expected internal queue to have no concurrency limit")
-							assert.Nil(t, queue.WorkerConcurrency, "Expected internal queue to have no worker concurrency limit")
-							assert.Nil(t, queue.RateLimit, "Expected internal queue to have no rate limit")
-							break
-						}
-					}
-					assert.True(t, foundInternalQueue, "Expected to find internal queue in metadata")
-				},
-			},
-			{
 				name:     "Workflows endpoint accepts all filters without error",
 				method:   "POST",
 				endpoint: fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOWS_PATTERN, "POST /")),
@@ -249,19 +223,19 @@ func TestAdminServer(t *testing.T) {
 		intWorkflow := func(dbosCtx DBOSContext, input int) (int, error) {
 			return input * 2, nil
 		}
-		RegisterWorkflow(ctx, intWorkflow)
+		intWF := NewWorkflow(ctx, intWorkflow)
 
 		// Test workflow with empty string input/output
 		emptyStringWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
 			return "", nil
 		}
-		RegisterWorkflow(ctx, emptyStringWorkflow)
+		emptyStringWF := NewWorkflow(ctx, emptyStringWorkflow)
 
 		// Test workflow with struct input/output
 		structWorkflow := func(dbosCtx DBOSContext, input TestStruct) (TestStruct, error) {
 			return TestStruct{Name: "output-" + input.Name, Value: input.Value * 2}, nil
 		}
-		RegisterWorkflow(ctx, structWorkflow)
+		structWF := NewWorkflow(ctx, structWorkflow)
 
 		err = Launch(ctx)
 		require.NoError(t, err)
@@ -281,14 +255,14 @@ func TestAdminServer(t *testing.T) {
 
 		// Create workflows with different input/output types
 		// 1. Integer workflow
-		intHandle, err := RunWorkflow(ctx, intWorkflow, 42)
+		intHandle, err := intWF(ctx, 42)
 		require.NoError(t, err, "Failed to create int workflow")
 		intResult, err := intHandle.GetResult()
 		require.NoError(t, err, "Failed to get int workflow result")
 		assert.Equal(t, 84, intResult)
 
 		// 2. Empty string workflow
-		emptyStringHandle, err := RunWorkflow(ctx, emptyStringWorkflow, "")
+		emptyStringHandle, err := emptyStringWF(ctx, "")
 		require.NoError(t, err, "Failed to create empty string workflow")
 		emptyStringResult, err := emptyStringHandle.GetResult()
 		require.NoError(t, err, "Failed to get empty string workflow result")
@@ -296,7 +270,7 @@ func TestAdminServer(t *testing.T) {
 
 		// 3. Struct workflow
 		structInput := TestStruct{Name: "test", Value: 10}
-		structHandle, err := RunWorkflow(ctx, structWorkflow, structInput)
+		structHandle, err := structWF(ctx, structInput)
 		require.NoError(t, err, "Failed to create struct workflow")
 		structResult, err := structHandle.GetResult()
 		require.NoError(t, err, "Failed to get struct workflow result")
@@ -390,7 +364,7 @@ func TestAdminServer(t *testing.T) {
 		testWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
 			return "result-" + input, nil
 		}
-		RegisterWorkflow(ctx, testWorkflow)
+		testWF := NewWorkflow(ctx, testWorkflow)
 
 		err = Launch(ctx)
 		require.NoError(t, err)
@@ -408,7 +382,7 @@ func TestAdminServer(t *testing.T) {
 		workflowIDs := make([]string, 5)
 		for i := range workflowIDs {
 			input := fmt.Sprintf("workflow-%d", i)
-			handle, err := RunWorkflow(ctx, testWorkflow, input)
+			handle, err := testWF(ctx, input)
 			require.NoError(t, err)
 			result, err := handle.GetResult()
 			require.NoError(t, err)
@@ -451,303 +425,6 @@ func TestAdminServer(t *testing.T) {
 			filteredIDs = append(filteredIDs, workflow.WorkflowUUID)
 		}
 		assert.ElementsMatch(t, workflowIDs, filteredIDs)
-	})
-
-	t.Run("ListQueuedWorkflows", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
-			AppName:         "test-app",
-			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
-		})
-		require.NoError(t, err)
-
-		// Create a workflow queue with limited concurrency to keep workflows enqueued
-		queue := NewWorkflowQueue(ctx, "test-queue", WithGlobalConcurrency(1))
-
-		// Define a blocking workflow that will hold up the queue
-		startEvent := NewEvent()
-		blockingChan := make(chan struct{})
-		blockingWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
-			startEvent.Set()
-			<-blockingChan // Block until channel is closed
-			return "blocked-" + input, nil
-		}
-		RegisterWorkflow(ctx, blockingWorkflow)
-
-		// Define a regular non-blocking workflow
-		regularWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
-			return "regular-" + input, nil
-		}
-		RegisterWorkflow(ctx, regularWorkflow)
-
-		err = Launch(ctx)
-		require.NoError(t, err)
-
-		// Ensure cleanup
-		defer func() {
-			close(blockingChan) // Unblock any blocked workflows
-			if ctx != nil {
-				Shutdown(ctx, 1*time.Minute)
-			}
-		}()
-
-		client := &http.Client{Timeout: 5 * time.Second}
-		endpoint := fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_QUEUED_WORKFLOWS_PATTERN, "POST /"))
-
-		/// Create a workflow that will not block the queue
-		h1, err := RunWorkflow(ctx, regularWorkflow, "regular", WithQueue(queue.Name))
-		require.NoError(t, err)
-		_, err = h1.GetResult()
-		require.NoError(t, err)
-
-		// Create the first queued workflow that will start processing and block
-		firstQueueHandle, err := RunWorkflow(ctx, blockingWorkflow, "blocking", WithQueue(queue.Name))
-		require.NoError(t, err)
-
-		startEvent.Wait()
-
-		// Create additional queued workflows that will remain in ENQUEUED status
-		var enqueuedHandles []WorkflowHandle[string]
-		for i := range 3 {
-			handle, err := RunWorkflow(ctx, blockingWorkflow, fmt.Sprintf("queued-%d", i), WithQueue(queue.Name))
-			require.NoError(t, err)
-			enqueuedHandles = append(enqueuedHandles, handle)
-		}
-
-		// Create non-queued workflows that should NOT appear in queues-only results
-		var regularHandles []WorkflowHandle[string]
-		for i := range 2 {
-			handle, err := RunWorkflow(ctx, regularWorkflow, fmt.Sprintf("regular-%d", i))
-			require.NoError(t, err)
-			regularHandles = append(regularHandles, handle)
-		}
-
-		// Wait for regular workflows to complete
-		for _, h := range regularHandles {
-			_, err := h.GetResult()
-			require.NoError(t, err)
-		}
-
-		// Test 1: Query with empty body (should get all enqueued/pending queue workflows)
-		reqQueuesOnly, err := http.NewRequest(http.MethodPost, endpoint, nil)
-		require.NoError(t, err, "Failed to create queues_only request")
-		reqQueuesOnly.Header.Set("Content-Type", "application/json")
-
-		respQueuesOnly, err := client.Do(reqQueuesOnly)
-		require.NoError(t, err, "Failed to make queues_only request")
-		defer respQueuesOnly.Body.Close()
-
-		assert.Equal(t, http.StatusOK, respQueuesOnly.StatusCode)
-
-		var queuesOnlyWorkflows []map[string]any
-		err = json.NewDecoder(respQueuesOnly.Body).Decode(&queuesOnlyWorkflows)
-		require.NoError(t, err, "Failed to decode queues_only workflows response")
-
-		// Should have exactly 4 workflows (1 pending + 3 enqueued)
-		assert.Equal(t, 4, len(queuesOnlyWorkflows), "Expected exactly 4 workflows")
-
-		// Verify all returned workflows are from the queue and have ENQUEUED/PENDING status
-		for _, wf := range queuesOnlyWorkflows {
-			status, ok := wf["Status"].(string)
-			require.True(t, ok, "Status should be a string")
-			assert.True(t, status == "ENQUEUED" || status == "PENDING",
-				"Expected status to be ENQUEUED or PENDING, got %s", status)
-
-			queueName, ok := wf["QueueName"].(string)
-			require.True(t, ok, "QueueName should be a string")
-			assert.NotEmpty(t, queueName, "QueueName should not be empty")
-		}
-
-		// Verify that the enqueued workflow IDs match
-		enqueuedIDs := make(map[string]bool)
-		enqueuedIDs[firstQueueHandle.GetWorkflowID()] = true
-		for _, h := range enqueuedHandles {
-			enqueuedIDs[h.GetWorkflowID()] = true
-		}
-
-		for _, wf := range queuesOnlyWorkflows {
-			id, ok := wf["WorkflowUUID"].(string)
-			require.True(t, ok, "WorkflowUUID should be a string")
-			assert.True(t, enqueuedIDs[id], "Expected workflow ID %s to be in enqueued list", id)
-		}
-
-		// Test 2: Query with queue_name filter (should get only workflows from specific queue)
-		reqBodyQueueName := map[string]any{
-			"queue_name": queue.Name,
-		}
-		reqQueueName, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(mustMarshal(reqBodyQueueName)))
-		require.NoError(t, err, "Failed to create queue_name request")
-		reqQueueName.Header.Set("Content-Type", "application/json")
-
-		respQueueName, err := client.Do(reqQueueName)
-		require.NoError(t, err, "Failed to make queue_name request")
-		defer respQueueName.Body.Close()
-
-		assert.Equal(t, http.StatusOK, respQueueName.StatusCode)
-
-		var queueNameWorkflows []map[string]any
-		err = json.NewDecoder(respQueueName.Body).Decode(&queueNameWorkflows)
-		require.NoError(t, err, "Failed to decode queue_name workflows response")
-
-		// Should have 4 workflows from the queue (1 blocking running, 3 enqueued)
-		assert.Equal(t, 4, len(queueNameWorkflows), "Expected exactly 4 workflows from test-queue")
-
-		// All should have the queue name set
-		for _, wf := range queueNameWorkflows {
-			queueName, ok := wf["QueueName"].(string)
-			require.True(t, ok, "QueueName should be a string")
-			assert.Equal(t, queue.Name, queueName, "Expected queue name to be 'test-queue'")
-			id, ok := wf["WorkflowUUID"].(string)
-			require.True(t, ok, "WorkflowUUID should be a string")
-			assert.True(t, enqueuedIDs[id], "Expected workflow ID %s to be in enqueued list", id)
-		}
-
-		// Test 3: Query with status filter for PENDING (should get only the running workflow)
-		reqBodyPending := map[string]any{
-			"status": "PENDING",
-		}
-		reqPending, err := http.NewRequest(http.MethodPost, endpoint, bytes.NewBuffer(mustMarshal(reqBodyPending)))
-		require.NoError(t, err, "Failed to create pending status request")
-		reqPending.Header.Set("Content-Type", "application/json")
-
-		respPending, err := client.Do(reqPending)
-		require.NoError(t, err, "Failed to make pending status request")
-		defer respPending.Body.Close()
-
-		assert.Equal(t, http.StatusOK, respPending.StatusCode)
-
-		var pendingWorkflows []map[string]any
-		err = json.NewDecoder(respPending.Body).Decode(&pendingWorkflows)
-		require.NoError(t, err, "Failed to decode pending workflows response")
-
-		// Should have exactly 1 PENDING workflow (the first blocking workflow that's running)
-		assert.Equal(t, 1, len(pendingWorkflows), "Expected exactly 1 PENDING workflow")
-
-		// Verify it's the first workflow with PENDING status
-		status, ok := pendingWorkflows[0]["Status"].(string)
-		require.True(t, ok, "Status should be a string")
-		assert.Equal(t, "PENDING", status, "Expected status to be PENDING")
-
-		id, ok := pendingWorkflows[0]["WorkflowUUID"].(string)
-		require.True(t, ok, "WorkflowUUID should be a string")
-		assert.Equal(t, firstQueueHandle.GetWorkflowID(), id, "Expected the PENDING workflow to be the first blocking workflow")
-
-		queueName, ok := pendingWorkflows[0]["QueueName"].(string)
-		require.True(t, ok, "QueueName should be a string")
-		assert.Equal(t, queue.Name, queueName, "Expected queue name to be 'test-queue'")
-	})
-
-	t.Run("ListQueuedWorkflowsWithAdvancedFeatures", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
-			AppName:         "test-app",
-			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
-		})
-		require.NoError(t, err)
-
-		// Create a partitioned queue for partition key test
-		partitionedQueue := NewWorkflowQueue(ctx, "partitioned-test-queue", WithPartitionQueue(), WithGlobalConcurrency(1))
-
-		// Create a priority-enabled queue for priority and deduplication tests
-		priorityQueue := NewWorkflowQueue(ctx, "priority-test-queue", WithPriorityEnabled(), WithGlobalConcurrency(1))
-
-		// Define a blocking workflow that will hold up the queue
-		blockingChan := make(chan struct{})
-		blockingWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
-			<-blockingChan // Block until channel is closed
-			return "blocked-" + input, nil
-		}
-		RegisterWorkflow(ctx, blockingWorkflow)
-
-		err = Launch(ctx)
-		require.NoError(t, err)
-
-		// Ensure cleanup
-		defer func() {
-			close(blockingChan) // Unblock any blocked workflows
-			if ctx != nil {
-				Shutdown(ctx, 1*time.Minute)
-			}
-		}()
-
-		client := &http.Client{Timeout: 5 * time.Second}
-		endpoint := fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_QUEUED_WORKFLOWS_PATTERN, "POST /"))
-
-		// Create workflow with partition key
-		partitionHandle, err := RunWorkflow(ctx, blockingWorkflow, "partition-test", WithQueue(partitionedQueue.Name), WithQueuePartitionKey("partition-1"))
-		require.NoError(t, err, "Failed to create workflow with partition key")
-
-		// Create workflow with deduplication ID
-		dedupID := "test-dedup-id"
-		dedupHandle, err := RunWorkflow(ctx, blockingWorkflow, "dedup-test", WithQueue(priorityQueue.Name), WithDeduplicationID(dedupID))
-		require.NoError(t, err, "Failed to create workflow with deduplication ID")
-
-		// Create workflow with priority
-		priorityHandle, err := RunWorkflow(ctx, blockingWorkflow, "priority-test", WithQueue(priorityQueue.Name), WithPriority(5))
-		require.NoError(t, err, "Failed to create workflow with priority")
-
-		// Query with empty body to get all enqueued/pending queue workflows
-		reqQueuesOnly, err := http.NewRequest(http.MethodPost, endpoint, nil)
-		require.NoError(t, err, "Failed to create queues_only request")
-		reqQueuesOnly.Header.Set("Content-Type", "application/json")
-
-		respQueuesOnly, err := client.Do(reqQueuesOnly)
-		require.NoError(t, err, "Failed to make queues_only request")
-		defer respQueuesOnly.Body.Close()
-
-		assert.Equal(t, http.StatusOK, respQueuesOnly.StatusCode)
-
-		var queuesOnlyWorkflows []map[string]any
-		err = json.NewDecoder(respQueuesOnly.Body).Decode(&queuesOnlyWorkflows)
-		require.NoError(t, err, "Failed to decode queues_only workflows response")
-
-		// Find our test workflows in the response
-		var foundPartition, foundDedup, foundPriority bool
-		for _, wf := range queuesOnlyWorkflows {
-			wfID, ok := wf["WorkflowUUID"].(string)
-			require.True(t, ok, "WorkflowUUID should be a string")
-
-			// Verify QueuePartitionKey field is present (may be empty string for non-partitioned workflows)
-			_, hasPartitionKey := wf["QueuePartitionKey"]
-			assert.True(t, hasPartitionKey, "QueuePartitionKey field should be present for workflow %s", wfID)
-
-			// Verify DeduplicationID field is present (may be empty string for workflows without dedup ID)
-			_, hasDedupID := wf["DeduplicationID"]
-			assert.True(t, hasDedupID, "DeduplicationID field should be present for workflow %s", wfID)
-
-			// Verify Priority field is present (may be 0 for workflows without priority)
-			_, hasPriority := wf["Priority"]
-			assert.True(t, hasPriority, "Priority field should be present for workflow %s", wfID)
-
-			// Verify specific values for our test workflows
-			if wfID == partitionHandle.GetWorkflowID() {
-				foundPartition = true
-				partitionKey, ok := wf["QueuePartitionKey"].(string)
-				require.True(t, ok, "QueuePartitionKey should be a string")
-				assert.Equal(t, "partition-1", partitionKey, "Expected partition key to be 'partition-1'")
-			} else if wfID == dedupHandle.GetWorkflowID() {
-				foundDedup = true
-				dedupIDResp, ok := wf["DeduplicationID"].(string)
-				require.True(t, ok, "DeduplicationID should be a string")
-				assert.Equal(t, dedupID, dedupIDResp, "Expected deduplication ID to match")
-			} else if wfID == priorityHandle.GetWorkflowID() {
-				foundPriority = true
-				priority, ok := wf["Priority"].(float64) // JSON numbers decode as float64
-				require.True(t, ok, "Priority should be a number")
-				assert.Equal(t, float64(5), priority, "Expected priority to be 5")
-			}
-		}
-
-		// Verify all three workflows were found
-		assert.True(t, foundPartition, "Expected to find workflow with partition key")
-		assert.True(t, foundDedup, "Expected to find workflow with deduplication ID")
-		assert.True(t, foundPriority, "Expected to find workflow with priority")
 	})
 
 	t.Run("WorkflowSteps", func(t *testing.T) {
@@ -799,7 +476,7 @@ func TestAdminServer(t *testing.T) {
 			return fmt.Sprintf("workflow complete: %s, struct(%s,%d,%v), %s", stepResult1, stepResult2.Message, stepResult2.Count, stepResult2.Success, stepResult4), nil
 		}
 
-		RegisterWorkflow(ctx, testWorkflow)
+		testWF := NewWorkflow(ctx, testWorkflow)
 
 		err = Launch(ctx)
 		require.NoError(t, err)
@@ -817,7 +494,7 @@ func TestAdminServer(t *testing.T) {
 		client := &http.Client{Timeout: 5 * time.Second}
 
 		// Create and run the workflow
-		handle, err := RunWorkflow(ctx, testWorkflow, "test-input")
+		handle, err := testWF(ctx, "test-input")
 		require.NoError(t, err, "Failed to create workflow")
 
 		// Wait for workflow to complete
@@ -921,7 +598,7 @@ func TestAdminServer(t *testing.T) {
 		var executionCount atomic.Int32
 
 		// Register a scheduled workflow that runs every second
-		RegisterWorkflow(ctx, func(dbosCtx DBOSContext, scheduledTime time.Time) (string, error) {
+		NewWorkflow(ctx, func(dbosCtx DBOSContext, scheduledTime time.Time) (string, error) {
 			executionCount.Add(1)
 			return fmt.Sprintf("executed at %v", scheduledTime), nil
 		}, WithSchedule("* * * * * *")) // Every second

@@ -14,19 +14,17 @@ import (
 
 const (
 	// HTTP handler patterns with verbs
-	_HEALTHCHECK_PATTERN              = "GET /dbos-healthz"
-	_WORKFLOW_RECOVERY_PATTERN        = "POST /dbos-workflow-recovery"
-	_DEACTIVATE_PATTERN               = "GET /deactivate"
-	_WORKFLOW_QUEUES_METADATA_PATTERN = "GET /dbos-workflow-queues-metadata"
-	_GARBAGE_COLLECT_PATTERN          = "POST /dbos-garbage-collect"
-	_GLOBAL_TIMEOUT_PATTERN           = "POST /dbos-global-timeout"
-	_QUEUED_WORKFLOWS_PATTERN         = "POST /queues"
-	_WORKFLOWS_PATTERN                = "POST /workflows"
-	_WORKFLOW_PATTERN                 = "GET /workflows/{id}"
-	_WORKFLOW_STEPS_PATTERN           = "GET /workflows/{id}/steps"
-	_WORKFLOW_CANCEL_PATTERN          = "POST /workflows/{id}/cancel"
-	_WORKFLOW_RESUME_PATTERN          = "POST /workflows/{id}/resume"
-	_WORKFLOW_FORK_PATTERN            = "POST /workflows/{id}/fork"
+	_HEALTHCHECK_PATTERN       = "GET /dbos-healthz"
+	_WORKFLOW_RECOVERY_PATTERN = "POST /dbos-workflow-recovery"
+	_DEACTIVATE_PATTERN        = "GET /deactivate"
+	_GARBAGE_COLLECT_PATTERN   = "POST /dbos-garbage-collect"
+	_GLOBAL_TIMEOUT_PATTERN    = "POST /dbos-global-timeout"
+	_WORKFLOWS_PATTERN         = "POST /workflows"
+	_WORKFLOW_PATTERN          = "GET /workflows/{id}"
+	_WORKFLOW_STEPS_PATTERN    = "GET /workflows/{id}/steps"
+	_WORKFLOW_CANCEL_PATTERN   = "POST /workflows/{id}/cancel"
+	_WORKFLOW_RESUME_PATTERN   = "POST /workflows/{id}/resume"
+	_WORKFLOW_FORK_PATTERN     = "POST /workflows/{id}/fork"
 
 	_ADMIN_SERVER_READ_HEADER_TIMEOUT = 5 * time.Second
 )
@@ -46,7 +44,6 @@ type listWorkflowsRequest struct {
 	WorkflowIDPrefix   *string    `json:"workflow_id_prefix"`  // Filter by workflow ID prefix
 	LoadInput          *bool      `json:"load_input"`          // Include workflow input in response
 	LoadOutput         *bool      `json:"load_output"`         // Include workflow output in response
-	QueueName          *string    `json:"queue_name"`          // Filter by queue name (for queued workflows)
 }
 
 // buildOptions converts the request struct into a slice of ListWorkflowsOption
@@ -92,9 +89,6 @@ func (req *listWorkflowsRequest) toListWorkflowsOptions() []ListWorkflowsOption 
 	}
 	if req.LoadOutput != nil {
 		opts = append(opts, WithLoadOutput(*req.LoadOutput))
-	}
-	if req.QueueName != nil {
-		opts = append(opts, WithQueueName(*req.QueueName))
 	}
 	return opts
 }
@@ -244,18 +238,6 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 		}
 	})
 
-	ctx.logger.Debug("Registering admin server endpoint", "pattern", _WORKFLOW_QUEUES_METADATA_PATTERN)
-	mux.HandleFunc(_WORKFLOW_QUEUES_METADATA_PATTERN, func(w http.ResponseWriter, r *http.Request) {
-		queueMetadataArray := ctx.queueRunner.listQueues()
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(queueMetadataArray); err != nil {
-			ctx.logger.Error("Error encoding queue metadata response", "error", err)
-			http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
-			return
-		}
-	})
-
 	ctx.logger.Debug("Registering admin server endpoint", "pattern", _GARBAGE_COLLECT_PATTERN)
 	mux.HandleFunc(_GARBAGE_COLLECT_PATTERN, func(w http.ResponseWriter, r *http.Request) {
 		var inputs struct {
@@ -370,46 +352,6 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 		w.Header().Set("Content-Type", "application/json")
 		if err := json.NewEncoder(w).Encode(workflow); err != nil {
 			ctx.logger.Error("Error encoding workflow response", "error", err)
-			http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
-		}
-	})
-
-	ctx.logger.Debug("Registering admin server endpoint", "pattern", _QUEUED_WORKFLOWS_PATTERN)
-	mux.HandleFunc(_QUEUED_WORKFLOWS_PATTERN, func(w http.ResponseWriter, r *http.Request) {
-		var req listWorkflowsRequest
-		if r.ContentLength > 0 {
-			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-				http.Error(w, fmt.Sprintf("Invalid JSON input: %v", err), http.StatusBadRequest)
-				return
-			}
-		}
-
-		filters := req.toListWorkflowsOptions()
-		if len(req.Status) == 0 {
-			filters = append(filters, WithStatus([]WorkflowStatusType{WorkflowStatusEnqueued, WorkflowStatusPending, WorkflowStatusDelayed}))
-		}
-		filters = append(filters, WithQueuesOnly())
-		workflows, err := ListWorkflows(ctx, filters...)
-		if err != nil {
-			ctx.logger.Error("Failed to list queued workflows", "error", err)
-			http.Error(w, fmt.Sprintf("Failed to list queued workflows: %v", err), http.StatusInternalServerError)
-			return
-		}
-
-		// Transform to UNIX timestamps before encoding
-		responseWorkflows := make([]map[string]any, len(workflows))
-		for i, wf := range workflows {
-			responseWorkflows[i], err = toListWorkflowResponse(wf)
-			if err != nil {
-				ctx.logger.Error("Error transforming workflow response", "error", err)
-				http.Error(w, fmt.Sprintf("Failed to format workflow response: %v", err), http.StatusInternalServerError)
-				return
-			}
-		}
-
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(responseWorkflows); err != nil {
-			ctx.logger.Error("Error encoding queued workflows response", "error", err)
 			http.Error(w, fmt.Sprintf("Failed to encode response: %v", err), http.StatusInternalServerError)
 		}
 	})

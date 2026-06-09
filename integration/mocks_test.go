@@ -139,7 +139,7 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 
 func aRealProgramFunction(dbosCtx dbos.DBOSContext) error {
 
-	dbos.RegisterWorkflow(dbosCtx, workflow)
+	dbos.NewWorkflow(dbosCtx, workflow)
 
 	err := dbos.Launch(dbosCtx)
 	if err != nil {
@@ -242,9 +242,6 @@ func clientMethodsFunction(ctx dbos.DBOSContext) error {
 	if timeoutCtx == nil || timeoutCancel == nil {
 		return fmt.Errorf("WithTimeout returned nil")
 	}
-
-	// ListenQueues
-	dbos.ListenQueues(ctx, dbos.WorkflowQueue{Name: "queue1"}, dbos.WorkflowQueue{Name: "queue2"})
 
 	// DeleteWorkflows
 	err = dbos.DeleteWorkflows(ctx, []string{"wf-to-delete"})
@@ -390,11 +387,6 @@ func TestMocks(t *testing.T) {
 		{Name: "Workflow1", FQN: "workflow1"},
 	}, nil).Once()
 
-	// ListRegisteredQueues
-	mockCtx2.On("ListRegisteredQueues", mockCtx2).Return([]dbos.WorkflowQueue{
-		{Name: "queue1"},
-	}, nil).Once()
-
 	// From
 	mockFromCtx := mocks.NewMockDBOSContext(t)
 	mockCtx2.On("From", mockCtx2, mock.Anything).Return(mockFromCtx, nil).Once()
@@ -407,11 +399,6 @@ func TestMocks(t *testing.T) {
 	mockTimeoutCtx := mocks.NewMockDBOSContext(t)
 	var timeoutCancelFunc context.CancelFunc = func() {}
 	mockCtx2.On("WithTimeout", mockCtx2, 5*time.Minute).Return(mockTimeoutCtx, timeoutCancelFunc, nil).Once()
-
-	// ListenQueues
-	mockCtx2.On("ListenQueues", mockCtx2, mock.MatchedBy(func(qs []dbos.WorkflowQueue) bool {
-		return len(qs) == 2
-	})).Return(nil).Once()
 
 	// DeleteWorkflows
 	mockCtx2.On("DeleteWorkflows", mockCtx2, []string{"wf-to-delete"}, mock.Anything).Return(nil).Once()

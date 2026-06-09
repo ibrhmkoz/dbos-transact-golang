@@ -1,8 +1,30 @@
 package dbos
 
-import "sync"
+import (
+	"fmt"
+	"sync"
+	"time"
+)
 
-type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization string, opts ...WorkflowOption) (WorkflowHandle[any], error)
+type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
+
+// persistWorkflowDefinitions writes the execution limits of every worker-dispatched
+// workflow to the system database. Called once at launch.
+func (c *dbosContext) persistWorkflowDefinitions() error {
+	for _, entry := range c.workflowRegistry.List(false) {
+		if err := c.systemDB.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit); err != nil {
+			return fmt.Errorf("persist workflow definition %s: %w", entry.Name, err)
+		}
+	}
+	return nil
+}
+
+// rateLimiter configures workflow execution rate limiting.
+// Rate limits prevent overwhelming external services and provide backpressure.
+type rateLimiter struct {
+	limit  int           // Maximum number of workflows to start within the period
+	period time.Duration // Time period for the rate limit
+}
 
 type WorkflowRegistryEntry struct {
 	wrappedFunction wrappedWorkflowFunc
@@ -10,6 +32,10 @@ type WorkflowRegistryEntry struct {
 	Name            string
 	FQN             string // Fully qualified name of the workflow function
 	CronSchedule    string // Empty string for non-scheduled workflows
+
+	// Execution limits applied when the workflow is claimed by a worker.
+	GlobalConcurrency *int
+	RateLimit         *rateLimiter
 }
 
 type WorkflowRegistry struct {
@@ -62,6 +88,21 @@ func (wf *WorkflowRegistry) SetCronSchedule(workflowName, cronSchedule string) b
 	}
 
 	entry.CronSchedule = cronSchedule
+	wf.store[workflowName] = entry
+	return true
+}
+
+// SetExecutionLimits attaches the global concurrency and rate-limit caps to a workflow.
+func (wf *WorkflowRegistry) SetExecutionLimits(workflowName string, globalConcurrency *int, rateLimit *rateLimiter) bool {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	entry, exists := wf.store[workflowName]
+	if !exists {
+		return false
+	}
+
+	entry.GlobalConcurrency = globalConcurrency
+	entry.RateLimit = rateLimit
 	wf.store[workflowName] = entry
 	return true
 }
