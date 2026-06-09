@@ -24,7 +24,7 @@ var (
 
 func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 	// Test RunAsStep
-	a, err := dbos.RunAsStep(ctx, step)
+	a, err := dbos.Run(ctx, step)
 	if err != nil {
 		return 0, err
 	}

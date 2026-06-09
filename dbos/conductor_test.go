@@ -1178,7 +1178,7 @@ func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 
 // conductorStepAggWorkflow runs a single named step for the conductor handler test.
 func conductorStepAggWorkflow(ctx DBOSContext, _ string) (string, error) {
-	return RunAsStep(ctx, stepAggOK, WithStepName("condAggStep"))
+	return Run(ctx, stepAggOK, WithStepName("condAggStep"))
 }
 
 func TestConductorStepAggregatesHandler(t *testing.T) {
@@ -1257,7 +1257,7 @@ func conductorPrivateModeStep(_ context.Context, in string) (string, error) {
 
 // conductorPrivateModeWorkflow runs a single step and returns its output.
 func conductorPrivateModeWorkflow(ctx DBOSContext, in string) (string, error) {
-	return RunAsStep(ctx, func(c context.Context) (string, error) {
+	return Run(ctx, func(c context.Context) (string, error) {
 		return conductorPrivateModeStep(c, in)
 	})
 }

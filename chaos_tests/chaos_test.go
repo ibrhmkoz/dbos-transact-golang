@@ -316,7 +316,7 @@ func TestChaosWorkflow(t *testing.T) {
 	// Define workflow function
 	workflow := func(ctx dbos.DBOSContext, x int) (int, error) {
 		// Execute step one
-		x, err := dbos.RunAsStep(ctx, func(context context.Context) (int, error) {
+		x, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return stepOne(context, x)
 		})
 		if err != nil {
@@ -324,7 +324,7 @@ func TestChaosWorkflow(t *testing.T) {
 		}
 
 		// Execute step two
-		x, err = dbos.RunAsStep(ctx, func(context context.Context) (int, error) {
+		x, err = dbos.Run(ctx, func(context context.Context) (int, error) {
 			return stepTwo(context, x)
 		})
 		if err != nil {
@@ -507,7 +507,7 @@ func TestChaosQueues(t *testing.T) {
 	// Define step functions
 	stepOne := func(ctx dbos.DBOSContext, x int) (int, error) {
 		// Run as a step
-		result, err := dbos.RunAsStep(ctx, func(context context.Context) (int, error) {
+		result, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return x + 1, nil
 		})
 		if err != nil {
@@ -518,7 +518,7 @@ func TestChaosQueues(t *testing.T) {
 
 	stepTwo := func(ctx dbos.DBOSContext, x int) (int, error) {
 		// Run as a step
-		result, err := dbos.RunAsStep(ctx, func(context context.Context) (int, error) {
+		result, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return x + 2, nil
 		})
 		if err != nil {

@@ -21,13 +21,13 @@ func TestGetMetrics(t *testing.T) {
 
 	// Define test workflows
 	testWorkflowA := func(ctx DBOSContext, input string) (string, error) {
-		_, err := RunAsStep(ctx, func(_ context.Context) (string, error) {
+		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "x", nil
 		}, WithStepName("testStepX"))
 		if err != nil {
 			return "", err
 		}
-		_, err = RunAsStep(ctx, func(_ context.Context) (string, error) {
+		_, err = Run(ctx, func(_ context.Context) (string, error) {
 			return "x", nil
 		}, WithStepName("testStepX"))
 		if err != nil {
@@ -37,7 +37,7 @@ func TestGetMetrics(t *testing.T) {
 	}
 
 	testWorkflowB := func(ctx DBOSContext, input string) (string, error) {
-		_, err := RunAsStep(ctx, func(_ context.Context) (string, error) {
+		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "y", nil
 		}, WithStepName("testStepY"))
 		if err != nil {

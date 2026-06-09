@@ -30,7 +30,7 @@ func simpleWorkflowError(dbosCtx DBOSContext, input string) (int, error) {
 }
 
 func simpleWorkflowWithStep(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return simpleStep(ctx)
 	})
 }
@@ -54,7 +54,7 @@ func stepWithSleep(_ context.Context, duration time.Duration) (string, error) {
 }
 
 func simpleWorkflowWithStepError(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return simpleStepError(ctx)
 	})
 }
@@ -446,7 +446,7 @@ func stepWithinAStep(ctx context.Context) (string, error) {
 }
 
 func stepWithinAStepWorkflow(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return stepWithinAStep(ctx)
 	})
 }
@@ -467,11 +467,11 @@ func stepIdempotencyTest(_ context.Context) (string, error) {
 }
 
 func stepRetryWorkflow(dbosCtx DBOSContext, input string) (string, error) {
-	RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return stepIdempotencyTest(ctx)
 	})
 
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return stepRetryAlwaysFailsStep(ctx)
 	}, WithStepMaxRetries(5), WithBaseInterval(1*time.Millisecond), WithMaxInterval(10*time.Millisecond))
 }
@@ -481,7 +481,7 @@ func step1(_ context.Context) (string, error) {
 }
 
 func testStepWf1(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, step1)
+	return Run(dbosCtx, step1)
 }
 
 func step2(_ context.Context) (string, error) {
@@ -489,7 +489,7 @@ func step2(_ context.Context) (string, error) {
 }
 
 func testStepWf2(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, step2)
+	return Run(dbosCtx, step2)
 }
 
 // genericStep is a generic step function that processes a value of any type
@@ -500,7 +500,7 @@ func genericStep[T any](_ context.Context, value T) (T, error) {
 // genericStepWorkflow uses a generic step function with both string and int types
 func genericStepWorkflow(dbosCtx DBOSContext, input string) (string, error) {
 	// Use the generic step with a string type
-	result1, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return genericStep(ctx, input+"-processed")
 	})
 	if err != nil {
@@ -508,7 +508,7 @@ func genericStepWorkflow(dbosCtx DBOSContext, input string) (string, error) {
 	}
 
 	// Use the generic step with an int type
-	result2, err := RunAsStep(dbosCtx, func(ctx context.Context) (int, error) {
+	result2, err := Run(dbosCtx, func(ctx context.Context) (int, error) {
 		return genericStep(ctx, 21)
 	})
 	if err != nil {
@@ -532,7 +532,7 @@ func TestSteps(t *testing.T) {
 	// Create a workflow that uses custom step names
 	customNameWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
 		// Run a step with a custom name
-		result1, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+		result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return "custom-step-1-result", nil
 		}, WithStepName("MyCustomStep1"))
 		if err != nil {
@@ -540,7 +540,7 @@ func TestSteps(t *testing.T) {
 		}
 
 		// Run another step with a different custom name
-		result2, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+		result2, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return "custom-step-2-result", nil
 		}, WithStepName("MyCustomStep2"))
 		if err != nil {
@@ -603,7 +603,7 @@ func TestSteps(t *testing.T) {
 		}
 
 		// Run the step with user-defined input and output
-		output, err := RunAsStep(dbosCtx, func(ctx context.Context) (StepOutput, error) {
+		output, err := Run(dbosCtx, func(ctx context.Context) (StepOutput, error) {
 			return processUserObjectStep(ctx, stepInput)
 		})
 		if err != nil {
@@ -631,7 +631,7 @@ func TestSteps(t *testing.T) {
 
 	t.Run("StepsMustRunInsideWorkflows", func(t *testing.T) {
 		// Attempt to run a step outside of a workflow context
-		_, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+		_, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return simpleStep(ctx)
 		})
 		require.Error(t, err, "expected error when running step outside of workflow context, but got none")
@@ -1122,7 +1122,7 @@ func TestChildWorkflow(t *testing.T) {
 			return "", fmt.Errorf("expected childWf workflow ID to be %s, got %s", expectedCurrentID, workflowID)
 		}
 		// Steps of a child workflow start with an incremented step ID, because the first step ID is allocated to the child workflow
-		return RunAsStep(ctx, func(ctx context.Context) (string, error) {
+		return Run(ctx, func(ctx context.Context) (string, error) {
 			return simpleStep(ctx)
 		})
 	}
@@ -1294,7 +1294,7 @@ func TestChildWorkflow(t *testing.T) {
 
 	// Register workflows needed for ChildWorkflowWithCustomID test
 	simpleChildWf := func(dbosCtx DBOSContext, input string) (string, error) {
-		return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+		return Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return simpleStep(ctx)
 		})
 	}
@@ -1346,7 +1346,7 @@ func TestChildWorkflow(t *testing.T) {
 	childWfForStepTestD := NewWorkflow(dbosCtx, childWfForStepTest)
 
 	parentWfForStepTest := func(ctx DBOSContext, input string) (string, error) {
-		return RunAsStep(ctx, func(context context.Context) (string, error) {
+		return Run(ctx, func(context context.Context) (string, error) {
 			dbosCtx := context.(DBOSContext)
 			_, err := childWfForStepTestD(dbosCtx, input)
 			if err != nil {
@@ -1817,7 +1817,7 @@ func TestChildWorkflow(t *testing.T) {
 // Idempotency workflows moved to test functions
 
 func idempotencyWorkflow(dbosCtx DBOSContext, input string) (string, error) {
-	RunAsStep(dbosCtx, func(ctx context.Context) (int64, error) {
+	Run(dbosCtx, func(ctx context.Context) (int64, error) {
 		return incrementCounter(ctx, int64(1))
 	})
 	return input, nil
@@ -1866,7 +1866,7 @@ func TestNoConcurrentWorkflowSameID(t *testing.T) {
 	var runCount int64
 
 	blockingWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
-		_, err := RunAsStep(dbosCtx, func(ctx context.Context) (int64, error) {
+		_, err := Run(dbosCtx, func(ctx context.Context) (int64, error) {
 			n := atomic.AddInt64(&runCount, 1)
 			startedEvent.Set()
 			return n, nil
@@ -1915,7 +1915,7 @@ func TestWorkflowRecovery(t *testing.T) {
 
 	recoveryWorkflow := func(dbosCtx DBOSContext, index int) (int64, error) {
 		// First step - increments the counter
-		_, err := RunAsStep(dbosCtx, func(ctx context.Context) (int64, error) {
+		_, err := Run(dbosCtx, func(ctx context.Context) (int64, error) {
 			recoveryCounters[index]++
 			return recoveryCounters[index], nil
 		}, WithStepName("step-one"))
@@ -1924,7 +1924,7 @@ func TestWorkflowRecovery(t *testing.T) {
 		}
 
 		// Second step
-		_, err = RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+		_, err = Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return fmt.Sprintf("completed-%d", index), nil
 		}, WithStepName("step-two"))
 		if err != nil {
@@ -2368,7 +2368,7 @@ func stepThatCallsSend(ctx context.Context, input sendWorkflowInput) (string, er
 }
 
 func workflowThatCallsSendInStep(ctx DBOSContext, input sendWorkflowInput) (string, error) {
-	return RunAsStep(ctx, func(context context.Context) (string, error) {
+	return Run(ctx, func(context context.Context) (string, error) {
 		return stepThatCallsSend(context, input)
 	})
 }
@@ -3203,13 +3203,13 @@ func TestSetGetEvent(t *testing.T) {
 
 // Test workflows and steps for parameter mismatch validation
 func conflictWorkflowA(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepA(ctx)
 	})
 }
 
 func conflictWorkflowB(dbosCtx DBOSContext, input string) (string, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepB(ctx)
 	})
 }
@@ -3224,7 +3224,7 @@ func conflictStepB(_ context.Context) (string, error) {
 
 func workflowWithMultipleSteps(dbosCtx DBOSContext, input string) (string, error) {
 	// First step
-	result1, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepA(ctx)
 	})
 	if err != nil {
@@ -3232,7 +3232,7 @@ func workflowWithMultipleSteps(dbosCtx DBOSContext, input string) (string, error
 	}
 
 	// Second step - this is where we'll test step name conflicts
-	result2, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+	result2, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepB(ctx)
 	})
 	if err != nil {
@@ -3454,7 +3454,7 @@ func TestWorkflowTimeout(t *testing.T) {
 	}
 
 	waitForCancelWorkflowWithStep := func(ctx DBOSContext, _ string) (string, error) {
-		return RunAsStep(ctx, func(context context.Context) (string, error) {
+		return Run(ctx, func(context context.Context) (string, error) {
 			return waitForCancelStep(context)
 		})
 	}
@@ -3512,7 +3512,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// After cancellation, try to run a simple step
 		// This should return a WorkflowCancelled error
-		return RunAsStep(ctx, simpleStep)
+		return Run(ctx, simpleStep)
 	}
 	waitForCancelWorkflowWithStepAfterCancelD := NewWorkflow(dbosCtx, waitForCancelWorkflowWithStepAfterCancel)
 
@@ -3543,7 +3543,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		// The timeout will trigger a step error, the workflow can do whatever it wants with that error
 		stepCtx, stepCancelFunc := WithTimeout(ctx, 1*time.Millisecond)
 		defer stepCancelFunc() // Ensure we clean up the context
-		_, err := RunAsStep(stepCtx, func(context context.Context) (string, error) {
+		_, err := Run(stepCtx, func(context context.Context) (string, error) {
 			return waitForCancelStep(context)
 		})
 		assert.True(t, errors.Is(err, context.DeadlineExceeded), "expected step to timeout, got: %v", err)
@@ -3580,7 +3580,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		// This workflow will run a step that is not cancelable.
 		// What this means is the workflow *will* be cancelled, but the step will run normally
 		stepCtx := WithoutCancel(ctx)
-		res, err := RunAsStep(stepCtx, func(context context.Context) (string, error) {
+		res, err := Run(stepCtx, func(context context.Context) (string, error) {
 			return detachedStep(context, timeout*2)
 		})
 		require.NoError(t, err, "failed to run detached step")
@@ -3782,7 +3782,7 @@ func sendRecvSenderWorkflow(ctx DBOSContext, pairID int) (string, error) {
 }
 
 func concurrentSimpleWorkflow(dbosCtx DBOSContext, input int) (int, error) {
-	return RunAsStep(dbosCtx, func(ctx context.Context) (int, error) {
+	return Run(dbosCtx, func(ctx context.Context) (int, error) {
 		return input * 2, nil
 	})
 }
@@ -4170,7 +4170,7 @@ func gcTestStep(_ context.Context, x int) (int, error) {
 }
 
 func gcTestWorkflow(dbosCtx DBOSContext, x int) (int, error) {
-	result, err := RunAsStep(dbosCtx, func(ctx context.Context) (int, error) {
+	result, err := Run(dbosCtx, func(ctx context.Context) (int, error) {
 		return gcTestStep(ctx, x)
 	})
 	if err != nil {
@@ -5144,18 +5144,18 @@ func TestPatching(t *testing.T) {
 
 		wf := func(ctx DBOSContext, input int) (int, error) {
 			// step < step to patch
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("firstStep"))
 			// step to patch
-			res, err := RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			res, err := Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("patch-step"))
 			if err != nil {
 				return 0, err
 			}
 			// step > step to patch
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("lastStep"))
 			return res, nil
@@ -5172,7 +5172,7 @@ func TestPatching(t *testing.T) {
 
 		wfPatched := func(ctx DBOSContext, input int) (int, error) {
 			// step < step to patch
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("firstStep"))
 
@@ -5183,14 +5183,14 @@ func TestPatching(t *testing.T) {
 			}
 			var res int
 			if patched {
-				res, err = RunAsStep(ctx, func(ctx context.Context) (int, error) {
+				res, err = Run(ctx, func(ctx context.Context) (int, error) {
 					return stepPatched(input)
 				}, WithStepName("patched-step"))
 				if err != nil {
 					return 0, err
 				}
 			} else {
-				res, err = RunAsStep(ctx, func(ctx context.Context) (int, error) {
+				res, err = Run(ctx, func(ctx context.Context) (int, error) {
 					return step(input)
 				}, WithStepName("patch-step"))
 				if err != nil {
@@ -5199,7 +5199,7 @@ func TestPatching(t *testing.T) {
 			}
 
 			// step > step to patch
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("lastStep"))
 
@@ -5249,17 +5249,17 @@ func TestPatching(t *testing.T) {
 		}
 
 		wfDeprecatePatch := func(ctx DBOSContext, input int) (int, error) {
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("firstStep"))
 			DeprecatePatch(ctx, "my-patch")
-			res, err := RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			res, err := Run(ctx, func(ctx context.Context) (int, error) {
 				return stepPatched(input)
 			}, WithStepName("patched-step"))
 			if err != nil {
 				return 0, err
 			}
-			RunAsStep(ctx, func(ctx context.Context) (int, error) {
+			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("lastStep"))
 			return res, nil
@@ -5455,7 +5455,7 @@ func writeStreamWorkflow(ctx DBOSContext, input struct {
 	}
 
 	// Write from step level with custom step name
-	_, err := RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+	_, err := Run(ctx, func(stepCtx context.Context) (string, error) {
 		return "", WriteStream(stepCtx.(DBOSContext), input.StreamKey, "step-value")
 	}, WithStepName("not-just-write"))
 	if err != nil {
@@ -6007,7 +6007,7 @@ func TestExportImportWorkflow(t *testing.T) {
 
 		// Steps 2-6: run 5 steps
 		for i := 0; i < 5; i++ {
-			_, err := RunAsStep(ctx, func(sctx context.Context) (string, error) {
+			_, err := Run(ctx, func(sctx context.Context) (string, error) {
 				return exportStep(sctx)
 			})
 			if err != nil {
@@ -6468,13 +6468,13 @@ func stepAggBad(_ context.Context) (string, error) { return "", errors.New("boom
 // (aggStepBad, whose error is caught) so the operation_outputs table holds a known mix
 // of SUCCESS and ERROR steps.
 func stepAggregatesWorkflow(ctx DBOSContext, _ string) (string, error) {
-	if _, err := RunAsStep(ctx, stepAggOK, WithStepName("aggStepOK")); err != nil {
+	if _, err := Run(ctx, stepAggOK, WithStepName("aggStepOK")); err != nil {
 		return "", err
 	}
-	if _, err := RunAsStep(ctx, stepAggOK, WithStepName("aggStepOK")); err != nil {
+	if _, err := Run(ctx, stepAggOK, WithStepName("aggStepOK")); err != nil {
 		return "", err
 	}
-	_, _ = RunAsStep(ctx, stepAggBad, WithStepName("aggStepBad"))
+	_, _ = Run(ctx, stepAggBad, WithStepName("aggStepBad"))
 	return "done", nil
 }
 

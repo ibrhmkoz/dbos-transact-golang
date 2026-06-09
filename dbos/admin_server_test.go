@@ -440,7 +440,7 @@ func TestAdminServer(t *testing.T) {
 		// Test workflow with multiple steps - simpler version that won't fail on serialization
 		testWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
 			// Step 1: Return a string
-			stepResult1, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+			stepResult1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "step1-output", nil
 			}, WithStepName("stringStep"))
 			if err != nil {
@@ -448,7 +448,7 @@ func TestAdminServer(t *testing.T) {
 			}
 
 			// Step 2: Return a user-defined struct
-			stepResult2, err := RunAsStep(dbosCtx, func(ctx context.Context) (TestStepResult, error) {
+			stepResult2, err := Run(dbosCtx, func(ctx context.Context) (TestStepResult, error) {
 				return TestStepResult{
 					Message: "structured data",
 					Count:   100,
@@ -460,12 +460,12 @@ func TestAdminServer(t *testing.T) {
 			}
 
 			// Step 3: Return an error - but we don't abort on error to test error marshaling
-			_, _ = RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+			_, _ = Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "", fmt.Errorf("deliberate error for testing")
 			}, WithStepName("errorStep"))
 
 			// Step 4: Return empty string (to test empty value handling)
-			stepResult4, err := RunAsStep(dbosCtx, func(ctx context.Context) (string, error) {
+			stepResult4, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "", nil
 			}, WithStepName("emptyStep"))
 			if err != nil {

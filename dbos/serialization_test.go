@@ -430,7 +430,7 @@ func makeGetEventWorkflow[T any]() Workflow[string, T] {
 // makeTestWorkflow creates a generic workflow that simply returns the input.
 func makeTestWorkflow[T any]() Workflow[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
-		return RunAsStep(ctx, func(context context.Context) (T, error) {
+		return Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
 		})
 	}
@@ -441,7 +441,7 @@ func serializerErrorStep(_ context.Context, _ TestWorkflowData) (TestWorkflowDat
 }
 
 func serializerErrorWorkflow(ctx DBOSContext, input TestWorkflowData) (TestWorkflowData, error) {
-	return RunAsStep(ctx, func(context context.Context) (TestWorkflowData, error) {
+	return Run(ctx, func(context context.Context) (TestWorkflowData, error) {
 		return serializerErrorStep(context, input)
 	})
 }
@@ -459,7 +459,7 @@ var recoveryEventRegistry = make(map[string]struct {
 func makeRecoveryWorkflow[T any]() Workflow[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
 		// First step: return the input (tests encoding/decoding of type T)
-		firstStepOutput, err := RunAsStep(ctx, func(context context.Context) (T, error) {
+		firstStepOutput, err := Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
 		}, WithStepName("FirstStep"))
 		if err != nil {
@@ -470,7 +470,7 @@ func makeRecoveryWorkflow[T any]() Workflow[T, T] {
 		// Second step: blocking step that uses the first step's output
 		// This tests that the first step's output is correctly decoded
 		// If decoding fails or is incorrect, this step will fail
-		return RunAsStep(ctx, func(context context.Context) (T, error) {
+		return Run(ctx, func(context context.Context) (T, error) {
 			workflowID, err := GetWorkflowID(ctx)
 			if err != nil {
 				return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
@@ -1220,7 +1220,7 @@ func TestPortableInterop(t *testing.T) {
 	// step output, send/recv, set_event/get_event, and write_stream/read_stream.
 	portableWf := func(ctx DBOSContext, input InteropArgs) (InteropResult, error) {
 		// 1. Step: encode/decode step output
-		stepOut, err := RunAsStep(ctx, func(_ context.Context) (InteropArgs, error) {
+		stepOut, err := Run(ctx, func(_ context.Context) (InteropArgs, error) {
 			return input, nil
 		})
 		if err != nil {
@@ -1600,7 +1600,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// Simple workflow that returns its input through a step (exercises encode/decode).
 	portableEchoWf := func(ctx DBOSContext, input InteropInput) (InteropInput, error) {
-		stepOut, err := RunAsStep(ctx, func(_ context.Context) (InteropInput, error) {
+		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
 		if err != nil {
@@ -1612,7 +1612,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// Workflow that accepts the full PortableWorkflowArgs envelope directly.
 	portableEnvelopeWf := func(ctx DBOSContext, input PortableWorkflowArgs) (PortableWorkflowArgs, error) {
-		stepOut, err := RunAsStep(ctx, func(_ context.Context) (PortableWorkflowArgs, error) {
+		stepOut, err := Run(ctx, func(_ context.Context) (PortableWorkflowArgs, error) {
 			return input, nil
 		})
 		if err != nil {
@@ -1624,12 +1624,12 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// Workflows for primitive input tests (int, string).
 	portableIntEchoWf := func(ctx DBOSContext, input int) (int, error) {
-		return RunAsStep(ctx, func(_ context.Context) (int, error) { return input, nil })
+		return Run(ctx, func(_ context.Context) (int, error) { return input, nil })
 	}
 	portableIntEchoWfD := NewWorkflow(executor, portableIntEchoWf, WithWorkflowName("portable_int_echo"))
 
 	portableStringEchoWf := func(ctx DBOSContext, input string) (string, error) {
-		return RunAsStep(ctx, func(_ context.Context) (string, error) { return input, nil })
+		return Run(ctx, func(_ context.Context) (string, error) { return input, nil })
 	}
 	portableStringEchoWfD := NewWorkflow(executor, portableStringEchoWf, WithWorkflowName("portable_string_echo"))
 
@@ -1640,7 +1640,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		EventOut InteropInput `json:"eventOut"`
 	}
 	multiStepWf := func(ctx DBOSContext, input InteropInput) (PartialRecoveryResult, error) {
-		stepOut, err := RunAsStep(ctx, func(_ context.Context) (InteropInput, error) {
+		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
 		if err != nil {
@@ -1903,7 +1903,7 @@ func TestPortableWorkflowError(t *testing.T) {
 
 	// Workflow that runs a step then raises a PortableWorkflowError with all fields set.
 	portableErrWf := func(ctx DBOSContext, input string) (string, error) {
-		_, err := RunAsStep(ctx, func(_ context.Context) (string, error) {
+		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})
 		if err != nil {
@@ -1920,7 +1920,7 @@ func TestPortableWorkflowError(t *testing.T) {
 
 	// Workflow that runs a step that itself fails with a PortableWorkflowError.
 	portableStepErrWf := func(ctx DBOSContext, input string) (string, error) {
-		return RunAsStep(ctx, func(_ context.Context) (string, error) {
+		return Run(ctx, func(_ context.Context) (string, error) {
 			return "", &PortableWorkflowError{
 				Name:    "StepError",
 				Message: "step failed: " + input,
@@ -1932,7 +1932,7 @@ func TestPortableWorkflowError(t *testing.T) {
 
 	// Workflow that runs a step then raises a plain Go error (triggers best-effort conversion).
 	plainErrWf := func(ctx DBOSContext, input string) (string, error) {
-		_, err := RunAsStep(ctx, func(_ context.Context) (string, error) {
+		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})
 		if err != nil {

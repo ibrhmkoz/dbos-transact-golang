@@ -43,7 +43,7 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 	}
 	if options.WorkflowID == "" {
 		if isWithinWorkflow {
-			workflowID, err := RunAsStep(ctx, func(ctx context.Context) (string, error) {
+			workflowID, err := Run(ctx, func(ctx context.Context) (string, error) {
 				return uuid.New().String(), nil
 			}, WithStepName("DBOS.debounce.assignWorkflowID"))
 			if err != nil {
@@ -59,7 +59,7 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 	// Generate a message ID if communicating with an existing internal debouncing workflow.
 	var messageID string
 	if isWithinWorkflow {
-		msgID, err := RunAsStep(ctx, func(ctx context.Context) (string, error) {
+		msgID, err := Run(ctx, func(ctx context.Context) (string, error) {
 			return uuid.New().String(), nil
 		}, WithStepName("DBOS.debounce.assignMessageID"))
 		if err != nil {
@@ -292,7 +292,7 @@ func internalDebouncerWF[P any, R any](ctx DBOSContext, input debouncerInput[P])
 	}
 
 	// Track the first creation time and current input
-	startTime, err := RunAsStep(ctx, func(ctx context.Context) (time.Time, error) {
+	startTime, err := Run(ctx, func(ctx context.Context) (time.Time, error) {
 		return time.Now(), nil
 	}, WithStepName("DBOS.debounce.startTime"))
 	if err != nil {
@@ -316,7 +316,7 @@ func internalDebouncerWF[P any, R any](ctx DBOSContext, input debouncerInput[P])
 	// Loop until we reach the target start time
 	for {
 		var now time.Time
-		now, err = RunAsStep(ctx, func(ctx context.Context) (time.Time, error) {
+		now, err = Run(ctx, func(ctx context.Context) (time.Time, error) {
 			return time.Now(), nil
 		}, WithStepName("DBOS.debounce.loopTime"))
 		if err != nil {

@@ -306,7 +306,7 @@ func (c *dbosContext) Value(key any) any {
 }
 
 // From returns a copy of the current DBOSContext with the underlying context.Context set to the provided ctx.
-// The provided context must be a child of a context.Context that was provided by DBOS (e.g., the first argument of RunWorkflow or RunAsStep)
+// The provided context must be a child of a context.Context that was provided by DBOS (e.g., the first argument of RunWorkflow or Run)
 // That is because such context embeds important metadata necessary for DBOS to function correctly.
 func (c *dbosContext) From(_ DBOSContext, ctx context.Context) DBOSContext {
 	if ctx == nil {

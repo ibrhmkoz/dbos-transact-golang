@@ -145,7 +145,7 @@ func (h *workflowHandle) GetStatus() (WorkflowStatus, error) {
 	var workflowStatuses []WorkflowStatus
 	var err error
 	if isWithinWorkflow {
-		workflowStatuses, err = RunAsStep(c, func(ctx context.Context) ([]WorkflowStatus, error) {
+		workflowStatuses, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
 			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
 				return c.systemDB.listWorkflows(ctx, listWorkflowsDBInput{
 					workflowIDs: []string{h.workflowID},
@@ -1451,7 +1451,7 @@ func executeStepWithRetry(c *dbosContext, workflowID string, stepOpts *stepOptio
 	return stepOutput, stepError
 }
 
-// RunAsStep executes a function as a durable step within a workflow.
+// Run executes a function as a durable step within a workflow.
 // Steps provide at-least-once execution guarantees and automatic retry capabilities.
 // If a step has already been executed (e.g., during workflow recovery), its recorded
 // result is returned instead of re-executing the function.
@@ -1488,10 +1488,10 @@ func executeStepWithRetry(c *dbosContext, workflowID string, stepOpts *stepOptio
 //	    return nil, err
 //	}
 //
-// Note that the function passed to RunAsStep must accept a context.Context as its first parameter
-// and this context *must* be the one specified in the function's signature (not the context passed to RunAsStep).
+// Note that the function passed to Run must accept a context.Context as its first parameter
+// and this context *must* be the one specified in the function's signature (not the context passed to Run).
 // Under the hood, DBOS uses the provided context to manage durable execution.
-func RunAsStep[R any](ctx DBOSContext, fn Step[R], opts ...StepOption) (R, error) {
+func Run[R any](ctx DBOSContext, fn Step[R], opts ...StepOption) (R, error) {
 	if ctx == nil {
 		return *new(R), newStepExecutionError("", "", fmt.Errorf("ctx cannot be nil"))
 	}
@@ -1592,7 +1592,7 @@ func (c *dbosContext) RunAsStep(_ DBOSContext, fn StepFunc, opts ...StepOption) 
 
 // runAsTxn executes a step function that receives a transaction when run on its own.
 // The step body and checkpoint share one transaction, so system DB writes and recordOperationResult commit together.
-// Like RunAsStep but uses txn[R] / txnFunc; transaction is begun and committed inside this function.
+// Like Run but uses txn[R] / txnFunc; transaction is begun and committed inside this function.
 func runAsTxn[R any](ctx DBOSContext, fn txn[R], opts ...StepOption) (R, error) {
 	if ctx == nil {
 		return *new(R), newStepExecutionError("", "", fmt.Errorf("ctx cannot be nil"))
@@ -2895,7 +2895,7 @@ func (c *dbosContext) RetrieveWorkflow(_ DBOSContext, workflowID string) (*Workf
 	var workflowStatus []WorkflowStatus
 	var err error
 	if isWithinWorkflow {
-		workflowStatus, err = RunAsStep(c, func(ctx context.Context) ([]WorkflowStatus, error) {
+		workflowStatus, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
 			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
 				return c.systemDB.listWorkflows(ctx, listWorkflowsDBInput{
 					workflowIDs: []string{workflowID},
@@ -3669,7 +3669,7 @@ func (c *dbosContext) ListWorkflows(_ DBOSContext, opts ...ListWorkflowsOption) 
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		workflows, err = RunAsStep(c, func(ctx context.Context) ([]WorkflowStatus, error) {
+		workflows, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
 			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
 				return c.systemDB.listWorkflows(ctx, dbInput)
 			}, withRetrierLogger(c.logger))
@@ -3841,7 +3841,7 @@ func (c *dbosContext) GetWorkflowSteps(_ DBOSContext, workflowID string, opts ..
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		steps, err = RunAsStep(c, func(ctx context.Context) ([]stepInfo, error) {
+		steps, err = Run(c, func(ctx context.Context) ([]stepInfo, error) {
 			return retryWithResult(ctx, func() ([]stepInfo, error) {
 				return c.systemDB.getWorkflowSteps(ctx, getWorkflowStepsInput)
 			}, withRetrierLogger(c.logger))
