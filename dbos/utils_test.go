@@ -278,9 +278,9 @@ func setWorkflowStatusPending(t *testing.T, dbosCtx DBOSContext, workflowID stri
 	c, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected DBOSContext to be *dbosContext")
 	SystemDatabase := c.systemDB
-	updateQuery := SystemDatabase.dialect.RewriteQuery(fmt.Sprintf(`UPDATE %sworkflow_status
+	updateQuery := fmt.Sprintf(`UPDATE %sworkflow_status
 		SET status = $1, output = NULL, error = NULL, started_at_epoch_ms = NULL, updated_at = $2
-		WHERE workflow_uuid = $3`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)))
+		WHERE workflow_uuid = $3`, "")
 	_, err := SystemDatabase.pool.Exec(context.Background(), updateQuery,
 		WorkflowStatusPending, time.Now().UnixMilli(), workflowID)
 	require.NoError(t, err, "failed to set workflow status to PENDING")
@@ -301,11 +301,11 @@ func queueEntriesAreCleanedUp(ctx DBOSContext) bool {
 			return false
 		}
 
-		query := sdb.dialect.RewriteQuery(fmt.Sprintf(`SELECT COUNT(*)
+		query := fmt.Sprintf(`SELECT COUNT(*)
 				  FROM %sworkflow_status
 				  WHERE queue_name IS NOT NULL
 					AND queue_name != $1
-					AND status IN ('ENQUEUED', 'PENDING')`, sdb.dialect.SchemaPrefix(sdb.schema)))
+					AND status IN ('ENQUEUED', 'PENDING')`, "")
 
 		var count int
 		err = tx.QueryRow(ctx, query, _DBOS_INTERNAL_QUEUE_NAME).Scan(&count)

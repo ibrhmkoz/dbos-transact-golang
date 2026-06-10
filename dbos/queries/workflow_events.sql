@@ -17,3 +17,8 @@ WHERE workflow_uuid = $1 AND key = $2;
 -- name: GetAllEvents :many
 SELECT key, value, serialization FROM workflow_events
 WHERE workflow_uuid = $1;
+
+-- name: HasWorkflowEvent :one
+SELECT EXISTS (
+    SELECT 1 FROM workflow_events WHERE workflow_uuid = $1 AND key = $2
+);

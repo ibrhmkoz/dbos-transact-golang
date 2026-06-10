@@ -60,7 +60,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 		return nil, fmt.Errorf("missing required config field: appName")
 	}
 	if inputConfig.SystemDBPool == nil && inputConfig.SystemDatabase == nil {
-		if _, err := detectDialect(inputConfig.DatabaseURL); err != nil {
+		if err := validateDatabaseURL(inputConfig.DatabaseURL); err != nil {
 			return nil, err
 		}
 	}

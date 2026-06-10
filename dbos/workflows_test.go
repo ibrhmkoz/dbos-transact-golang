@@ -1327,7 +1327,7 @@ func TestChildWorkflow(t *testing.T) {
 
 		// Verify events, streams, notifications, and steps exist via direct DB query
 		SystemDatabase := dbosCtx.(*dbosContext).systemDB
-		schemaPrefix := SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)
+		schemaPrefix := ""
 
 		var eventCount, streamCount, notifCount, stepCount int
 		err = SystemDatabase.pool.QueryRow(dbosCtx,
@@ -3200,7 +3200,7 @@ func TestWorkflowTimeout(t *testing.T) {
 			return "", fmt.Errorf("failed to cast DBOSContext to dbosContext")
 		}
 		SystemDatabase := dbosCtxInternal.systemDB
-		query := SystemDatabase.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+		query := SystemDatabase.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, "")
 		require.Eventually(t, func() bool {
 			var status WorkflowStatusType
 			err := SystemDatabase.pool.QueryRow(uncancellableCtx, query, wfid).Scan(&status)
@@ -3908,7 +3908,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		expiredAt := time.Now().Add(-2 * retention).UnixMilli()
 		SystemDatabase := dbosCtx.(*dbosContext).systemDB
-		query := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+		query := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, "")
 		_, err = SystemDatabase.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
 		require.NoError(t, err)
 
@@ -5926,7 +5926,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		require.Len(t, importedGrandchildSteps, 0, "imported grandchild should have 0 steps")
 
 		// Verify events, streams, and history via direct DB queries
-		schemaPrefix := sdb.dialect.SchemaPrefix(sdb.schema)
+		schemaPrefix := ""
 
 		var eventCount int
 		err = sdb.pool.QueryRow(dbosCtx,

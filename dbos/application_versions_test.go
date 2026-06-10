@@ -72,7 +72,7 @@ func TestApplicationVersions(t *testing.T) {
 		require.NoError(t, dbosCtx.Launch())
 		c := dbosCtx.(*dbosContext)
 		s := c.systemDB
-		_, err := s.pool.Exec(c, s.renderSQL("DELETE FROM %sapplication_versions", s.dialect.SchemaPrefix(s.schema)))
+		_, err := s.pool.Exec(c, s.renderSQL("DELETE FROM %sapplication_versions", ""))
 		require.NoError(t, err)
 
 		_, err = GetLatestApplicationVersion(dbosCtx)

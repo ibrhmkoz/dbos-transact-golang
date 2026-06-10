@@ -195,7 +195,7 @@ func testAllSerializationPaths[T any](
 
 			// Query the database directly to check for the marker
 			ctx := context.Background()
-			schemaPrefix := SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)
+			schemaPrefix := ""
 			query := SystemDatabase.renderSQL(`SELECT inputs, output FROM %sworkflow_status WHERE workflow_uuid = $1`, schemaPrefix)
 
 			var inputString, outputString *string
@@ -1289,7 +1289,7 @@ func TestPortableInterop(t *testing.T) {
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		now := time.Now().UnixMilli()
 		_, err := SystemDatabase.pool.Exec(context.Background(), insertQuery,
 			workflowID, status, "interop_workflow", goldenInputsJSON, PortableSerializerName, queueName,
@@ -1389,7 +1389,7 @@ func TestPortableInterop(t *testing.T) {
 		SystemDatabase := c.systemDB
 		var storedInputs, storedSerialization string
 		selectQuery := SystemDatabase.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		err = SystemDatabase.pool.QueryRow(context.Background(), selectQuery, handle.GetWorkflowID()).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
@@ -1422,7 +1422,7 @@ func TestPortableInterop(t *testing.T) {
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		now := time.Now().UnixMilli()
 		_, err := SystemDatabase.pool.Exec(context.Background(), insertQuery,
 			workflowID, string(WorkflowStatusEnqueued), "interop_workflow", badInputsJSON, PortableSerializerName, &queueName,
@@ -1462,7 +1462,7 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		t.Helper()
 		var ser string
 		q := SystemDatabase.renderSQL(`SELECT serialization FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_name = 'DBOS.recv' ORDER BY function_id ASC LIMIT 1`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&ser))
 		return ser
 	}
@@ -1472,7 +1472,7 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		t.Helper()
 		var ser string
 		q := SystemDatabase.renderSQL(`SELECT serialization FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, key).Scan(&ser))
 		return ser
 	}
@@ -1482,7 +1482,7 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		t.Helper()
 		var ser string
 		q := SystemDatabase.renderSQL(`SELECT serialization FROM %sstreams WHERE workflow_uuid = $1 AND key = $2 AND value != $3 ORDER BY "offset" LIMIT 1`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, key, _DBOS_STREAM_CLOSED_SENTINEL).Scan(&ser))
 		return ser
 	}
@@ -1681,7 +1681,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		t.Helper()
 		var storedInputs, storedSerialization string
 		q := SystemDatabase.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		err := SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		return storedInputs, storedSerialization
@@ -1690,7 +1690,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	// Helper: flip a completed workflow back to PENDING for recovery.
 	resetToPending := func(t *testing.T, workflowID string) {
 		t.Helper()
-		schemaPrefix := SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)
+		schemaPrefix := ""
 		q := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
 		_, err := SystemDatabase.pool.Exec(context.Background(), q, string(WorkflowStatusPending), workflowID)
 		require.NoError(t, err)
@@ -1870,7 +1870,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 		// Verify operation_outputs exist for this workflow.
 		var stepCount int
-		schemaPrefix := SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)
+		schemaPrefix := ""
 		countQ := SystemDatabase.renderSQL(`SELECT count(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), countQ, workflowID).Scan(&stepCount))
 		require.Greater(t, stepCount, 0, "expected operation_outputs rows from first execution")
@@ -1951,7 +1951,7 @@ func TestPortableWorkflowError(t *testing.T) {
 		t.Helper()
 		var storedError *string
 		q := SystemDatabase.renderSQL(`SELECT error FROM %sworkflow_status WHERE workflow_uuid = $1`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError
@@ -1961,7 +1961,7 @@ func TestPortableWorkflowError(t *testing.T) {
 		t.Helper()
 		var storedError *string
 		q := SystemDatabase.renderSQL(`SELECT error FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_id = $2`,
-			SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+			"")
 		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, stepID).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError

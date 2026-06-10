@@ -78,3 +78,44 @@ WHERE workflow_uuid = @workflow_uuid AND status = @status::text;
 UPDATE workflow_status
 SET status = @new_status::text
 WHERE status = @old_status::text AND delay_until_epoch_ms <= @now_ms::bigint;
+
+-- name: InsertWorkflowStatus :one
+INSERT INTO workflow_status (
+    workflow_uuid, status, name, queue_name, authenticated_user, assumed_role,
+    authenticated_roles, executor_id, application_version, application_id,
+    created_at, recovery_attempts, updated_at, workflow_timeout_ms,
+    workflow_deadline_epoch_ms, inputs, deduplication_id, priority,
+    queue_partition_key, owner_xid, parent_workflow_id, class_name, config_name,
+    serialization, delay_until_epoch_ms
+) VALUES (
+    @workflow_uuid, @status::text, @name::text, @queue_name::text, @authenticated_user::text, @assumed_role::text,
+    @authenticated_roles::text, @executor_id::text, @application_version, @application_id::text,
+    @created_at::bigint, @recovery_attempts::bigint, @updated_at::bigint, @workflow_timeout_ms,
+    @workflow_deadline_epoch_ms, @inputs, @deduplication_id, @priority::int,
+    @queue_partition_key, @owner_xid, @parent_workflow_id, @class_name, @config_name,
+    @serialization::text, @delay_until_epoch_ms
+)
+ON CONFLICT (workflow_uuid) DO UPDATE SET
+    recovery_attempts = CASE
+        WHEN EXCLUDED.status NOT IN (@enqueued_status::text, @delayed_status::text)
+        THEN workflow_status.recovery_attempts + @recovery_increment::bigint
+        ELSE workflow_status.recovery_attempts
+    END,
+    updated_at = EXCLUDED.updated_at,
+    executor_id = CASE
+        WHEN EXCLUDED.status IN (@enqueued_status::text, @delayed_status::text)
+        THEN workflow_status.executor_id
+        ELSE EXCLUDED.executor_id
+    END
+RETURNING recovery_attempts, status, name, queue_name, queue_partition_key,
+          workflow_timeout_ms, workflow_deadline_epoch_ms, owner_xid;
+
+-- name: MarkWorkflowMaxRecoveryExceeded :exec
+UPDATE workflow_status
+SET status = @new_status::text, started_at_epoch_ms = NULL, queue_name = NULL
+WHERE workflow_uuid = @workflow_uuid AND status = @pending_status::text;
+
+-- name: ClearQueueAssignment :execrows
+UPDATE workflow_status
+SET status = @enqueued_status::text, started_at_epoch_ms = NULL
+WHERE workflow_uuid = @workflow_uuid AND queue_name IS NOT NULL AND status = @pending_status::text;

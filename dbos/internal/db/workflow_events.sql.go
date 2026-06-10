@@ -62,6 +62,24 @@ func (q *Queries) GetWorkflowEvent(ctx context.Context, arg GetWorkflowEventPara
 	return i, err
 }
 
+const hasWorkflowEvent = `-- name: HasWorkflowEvent :one
+SELECT EXISTS (
+    SELECT 1 FROM workflow_events WHERE workflow_uuid = $1 AND key = $2
+)
+`
+
+type HasWorkflowEventParams struct {
+	WorkflowUuid string
+	Key          string
+}
+
+func (q *Queries) HasWorkflowEvent(ctx context.Context, arg HasWorkflowEventParams) (bool, error) {
+	row := q.db.QueryRow(ctx, hasWorkflowEvent, arg.WorkflowUuid, arg.Key)
+	var exists bool
+	err := row.Scan(&exists)
+	return exists, err
+}
+
 const insertWorkflowEventHistory = `-- name: InsertWorkflowEventHistory :exec
 INSERT INTO workflow_events_history (workflow_uuid, function_id, key, value, serialization)
 VALUES ($1, $2, $3, $4::text, $5::text)

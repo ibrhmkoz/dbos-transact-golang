@@ -15,6 +15,8 @@ import (
 	"sync"
 	"time"
 
+	"strconv"
+
 	"github.com/dbos-inc/dbos-transact-golang/dbos/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -35,7 +37,6 @@ type ExportedWorkflow struct {
 type SystemDatabase struct {
 	pool                          Pool
 	queries                       *db.Queries
-	dialect                       Dialect
 	notificationLoopDone          chan struct{}
 	workflowNotificationsMap      *sync.Map
 	workflowNotificationRepollMap *sync.Map
@@ -552,12 +553,6 @@ type newSystemDatabaseInput struct {
 	applicationName string
 }
 
-// New creates a new SystemDatabase instance and runs migrations
-// renderSQL formats a PostgreSQL query.
-func (s *SystemDatabase) renderSQL(format string, args ...any) string {
-	return s.dialect.RewriteQuery(fmt.Sprintf(format, args...))
-}
-
 func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*SystemDatabase, error) {
 	// Dereference fields from inputs
 	databaseURL := inputs.databaseURL
@@ -570,7 +565,7 @@ func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*Sys
 		return nil, fmt.Errorf("database schema cannot be empty")
 	}
 	if customPool == nil {
-		if _, err := detectDialect(databaseURL); err != nil {
+		if err := validateDatabaseURL(databaseURL); err != nil {
 			return nil, err
 		}
 	}
@@ -680,7 +675,6 @@ func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*Sys
 	return &SystemDatabase{
 		pool:                          newPgxPool(pool),
 		queries:                       db.New(pool),
-		dialect:                       postgresDialect{},
 		workflowNotificationsMap:      workflowNotificationsMap,
 		workflowNotificationRepollMap: workflowNotificationRepollMap,
 		workflowEventsMap:             workflowEventsMap,
@@ -843,120 +837,88 @@ func (s *SystemDatabase) insertWorkflowStatus(ctx context.Context, input insertW
 		className = &input.status.ClassName
 	}
 
-	query := s.renderSQL(`INSERT INTO %sworkflow_status (
-        workflow_uuid,
-        status,
-        name,
-        queue_name,
-        authenticated_user,
-        assumed_role,
-        authenticated_roles,
-        executor_id,
-        application_version,
-        application_id,
-        created_at,
-        recovery_attempts,
-        updated_at,
-        workflow_timeout_ms,
-        workflow_deadline_epoch_ms,
-        inputs,
-        deduplication_id,
-        priority,
-        queue_partition_key,
-        owner_xid,
-        parent_workflow_id,
-        class_name,
-        config_name,
-        serialization,
-        delay_until_epoch_ms
-    ) VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25)
-    ON CONFLICT (workflow_uuid)
-        DO UPDATE SET
-			recovery_attempts = CASE
-                WHEN EXCLUDED.status NOT IN ($26, $27) THEN workflow_status.recovery_attempts + $28
-                ELSE workflow_status.recovery_attempts
-            END,
-            updated_at = EXCLUDED.updated_at,
-            executor_id = CASE
-                WHEN EXCLUDED.status IN ($26, $27) THEN workflow_status.executor_id
-                ELSE EXCLUDED.executor_id
-            END
-        RETURNING recovery_attempts, status, name, queue_name, queue_partition_key, workflow_timeout_ms, workflow_deadline_epoch_ms, owner_xid`, s.dialect.SchemaPrefix(s.schema))
-
-	var result insertWorkflowResult
-	var timeoutMSResult *int64
-	var workflowDeadlineEpochMS *int64
-	var ownerXIDReturn *string
-
 	// Marshal authenticated roles (slice of strings) to JSON for TEXT column
 	authenticatedRoles, err := json.Marshal(input.status.AuthenticatedRoles)
-
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal the authenticated roles: %w", err)
 	}
 
-	recoveryIncrement := 0
+	recoveryIncrement := int64(0)
 	if input.incrementAttempts {
 		recoveryIncrement = 1
 	}
-	err = input.tx.QueryRow(ctx, query,
-		input.status.ID,
-		input.status.Status,
-		input.status.Name,
-		input.status.QueueName,
-		input.status.AuthenticatedUser,
-		input.status.AssumedRole,
-		authenticatedRoles,
-		input.status.ExecutorID,
-		applicationVersion,
-		input.status.ApplicationID,
-		input.status.CreatedAt.Round(time.Millisecond).UnixMilli(), // slightly reduce the likelihood of collisions
-		attempts,
-		updatedAt.UnixMilli(),
-		timeoutMs,
-		deadline,
-		input.status.Input,
-		deduplicationID,
-		input.status.Priority,
-		queuePartitionKey,
-		input.ownerXID,
-		parentWorkflowID,
-		className,
-		input.status.ConfigName,
-		input.status.Serialization,
-		delayUntilEpochMs,
-		WorkflowStatusEnqueued,
-		WorkflowStatusDelayed,
-		recoveryIncrement,
-	).Scan(
-		&result.attempts,
-		&result.status,
-		&result.name,
-		&result.queueName,
-		&result.queuePartitionKey,
-		&timeoutMSResult,
-		&workflowDeadlineEpochMS,
-		&ownerXIDReturn,
-	)
-	if ownerXIDReturn != nil {
-		result.ownerXID = *ownerXIDReturn
+
+	// input.status.Input holds the encoded input (a *string).
+	var inputs *string
+	switch v := input.status.Input.(type) {
+	case *string:
+		inputs = v
+	case string:
+		inputs = &v
 	}
+
+	row, err := s.queries.WithTx(PgxTx(input.tx)).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
+		WorkflowUuid:            input.status.ID,
+		Status:                  string(input.status.Status),
+		Name:                    input.status.Name,
+		QueueName:               input.status.QueueName,
+		AuthenticatedUser:       input.status.AuthenticatedUser,
+		AssumedRole:             input.status.AssumedRole,
+		AuthenticatedRoles:      string(authenticatedRoles),
+		ExecutorID:              input.status.ExecutorID,
+		ApplicationVersion:      applicationVersion,
+		ApplicationID:           input.status.ApplicationID,
+		CreatedAt:               input.status.CreatedAt.Round(time.Millisecond).UnixMilli(),
+		RecoveryAttempts:        int64(attempts),
+		UpdatedAt:               updatedAt.UnixMilli(),
+		WorkflowTimeoutMs:       timeoutMs,
+		WorkflowDeadlineEpochMs: deadline,
+		Inputs:                  inputs,
+		DeduplicationID:         deduplicationID,
+		Priority:                int32(input.status.Priority),
+		QueuePartitionKey:       queuePartitionKey,
+		OwnerXid:                input.ownerXID,
+		ParentWorkflowID:        parentWorkflowID,
+		ClassName:               className,
+		ConfigName:              input.status.ConfigName,
+		Serialization:           input.status.Serialization,
+		DelayUntilEpochMs:       delayUntilEpochMs,
+		EnqueuedStatus:          string(WorkflowStatusEnqueued),
+		DelayedStatus:           string(WorkflowStatusDelayed),
+		RecoveryIncrement:       recoveryIncrement,
+	})
 	if err != nil {
 		// Deduplication collisions are resolved by attaching to the existing workflow.
-		if s.dialect.IsUniqueViolation(err) {
+		if isUniqueViolation(err) {
 			return nil, errDeduplicationCollision
 		}
 		return nil, fmt.Errorf("failed to insert workflow status: %w", err)
 	}
 
+	var result insertWorkflowResult
+	if row.RecoveryAttempts != nil {
+		result.attempts = int(*row.RecoveryAttempts)
+	}
+	if row.Status != nil {
+		result.status = WorkflowStatusType(*row.Status)
+	}
+	if row.Name != nil {
+		result.name = *row.Name
+	}
+	result.queueName = row.QueueName
+	result.queuePartitionKey = row.QueuePartitionKey
+	if row.OwnerXid != nil {
+		result.ownerXID = *row.OwnerXid
+	}
+
 	// Convert timeout milliseconds to time.Duration
-	if timeoutMSResult != nil && *timeoutMSResult > 0 {
-		result.timeout = time.Duration(*timeoutMSResult) * time.Millisecond
+	if row.WorkflowTimeoutMs != nil && *row.WorkflowTimeoutMs > 0 {
+		result.timeout = time.Duration(*row.WorkflowTimeoutMs) * time.Millisecond
 	}
 
 	// Convert deadline milliseconds to time.Time
-	if workflowDeadlineEpochMS != nil {
-		result.workflowDeadline = time.Unix(0, *workflowDeadlineEpochMS*int64(time.Millisecond))
+	if row.WorkflowDeadlineEpochMs != nil {
+		result.workflowDeadline = time.Unix(0, *row.WorkflowDeadlineEpochMs*int64(time.Millisecond))
 	}
 
 	if len(input.status.Name) > 0 && result.name != input.status.Name {
@@ -972,16 +934,11 @@ func (s *SystemDatabase) insertWorkflowStatus(ctx context.Context, input insertW
 		input.maxRetries > 0 && result.attempts > input.maxRetries+1 {
 
 		// Update workflow status to MAX_RECOVERY_ATTEMPTS_EXCEEDED and clear execution fields.
-		dlqQuery := s.renderSQL(`UPDATE %sworkflow_status
-					 SET status = $1, started_at_epoch_ms = NULL, queue_name = NULL
-					 WHERE workflow_uuid = $2 AND status = $3`, s.dialect.SchemaPrefix(s.schema))
-
-		_, err = input.tx.Exec(ctx, dlqQuery,
-			WorkflowStatusMaxRecoveryAttemptsExceeded,
-			input.status.ID,
-			WorkflowStatusPending)
-
-		if err != nil {
+		if err := s.queries.WithTx(PgxTx(input.tx)).MarkWorkflowMaxRecoveryExceeded(ctx, db.MarkWorkflowMaxRecoveryExceededParams{
+			NewStatus:     string(WorkflowStatusMaxRecoveryAttemptsExceeded),
+			WorkflowUuid:  input.status.ID,
+			PendingStatus: string(WorkflowStatusPending),
+		}); err != nil {
 			return nil, fmt.Errorf("failed to update workflow to %s: %w", WorkflowStatusMaxRecoveryAttemptsExceeded, err)
 		}
 
@@ -1028,280 +985,159 @@ type listWorkflowsDBInput struct {
 
 // ListWorkflows retrieves a list of workflows based on the provided filters
 func (s *SystemDatabase) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
-	qb := newQueryBuilder(s.dialect)
-
-	// Build the base query with conditional column selection
-	loadColumns := []string{
-		"workflow_uuid", "status", "name", "authenticated_user", "assumed_role", "authenticated_roles",
-		"executor_id", "created_at", "updated_at", "application_version", "application_id",
-		"recovery_attempts", "queue_name", "workflow_timeout_ms", "workflow_deadline_epoch_ms", "started_at_epoch_ms",
-		"deduplication_id", "priority", "queue_partition_key", "forked_from", "parent_workflow_id",
-		"serialization", "delay_until_epoch_ms", "was_forked_from", "completed_at",
+	idPrefixes := make([]string, len(input.workflowIDPrefix))
+	for i, p := range input.workflowIDPrefix {
+		idPrefixes[i] = p + "%"
+	}
+	statuses := make([]string, len(input.status))
+	for i, st := range input.status {
+		statuses[i] = string(st)
 	}
 
-	if input.loadOutput {
-		loadColumns = append(loadColumns, "output", "error")
-	}
-	if input.loadInput {
-		loadColumns = append(loadColumns, "inputs")
-	}
-
-	baseQuery := fmt.Sprintf("SELECT %s FROM %sworkflow_status", strings.Join(loadColumns, ", "), s.dialect.SchemaPrefix(s.schema))
-
-	// Add filters using query builder
-	if len(input.workflowName) > 0 {
-		qb.addWhereAny("name", input.workflowName)
-	}
-	if len(input.queueName) > 0 {
-		qb.addWhereAny("queue_name", input.queueName)
-	}
-	if input.queuesOnly {
-		qb.addWhereIsNotNull("queue_name")
-	}
-	if len(input.workflowIDPrefix) > 0 {
-		qb.addWhereLikeAny("workflow_uuid", input.workflowIDPrefix, "%")
-	}
-	if len(input.workflowIDs) > 0 {
-		qb.addWhereAny("workflow_uuid", input.workflowIDs)
-	}
-	if len(input.authenticatedUser) > 0 {
-		qb.addWhereAny("authenticated_user", input.authenticatedUser)
-	}
-	if !input.startTime.IsZero() {
-		qb.addWhereGreaterEqual("created_at", input.startTime.UnixMilli())
-	}
-	if !input.endTime.IsZero() {
-		qb.addWhereLessEqual("created_at", input.endTime.UnixMilli())
-	}
-	if len(input.status) > 0 {
-		qb.addWhereAny("status", input.status)
-	}
-	if len(input.applicationVersion) > 0 {
-		qb.addWhereAny("application_version", input.applicationVersion)
-	}
-	if len(input.executorIDs) > 0 {
-		qb.addWhereAny("executor_id", input.executorIDs)
-	}
-	if len(input.forkedFrom) > 0 {
-		qb.addWhereAny("forked_from", input.forkedFrom)
-	}
-	if len(input.parentWorkflowID) > 0 {
-		qb.addWhereAny("parent_workflow_id", input.parentWorkflowID)
-	}
-	if len(input.deduplicationID) > 0 {
-		qb.addWhereAny("deduplication_id", input.deduplicationID)
-	}
-	if !input.completedAfter.IsZero() {
-		qb.addWhereGreaterEqual("completed_at", input.completedAfter.UnixMilli())
-	}
-	if !input.completedBefore.IsZero() {
-		qb.addWhereLessEqual("completed_at", input.completedBefore.UnixMilli())
-	}
-	// dequeued_after/before filter on started_at_epoch_ms: that column records
-	// when a workflow was dequeued and began executing.
-	if !input.dequeuedAfter.IsZero() {
-		qb.addWhereGreaterEqual("started_at_epoch_ms", input.dequeuedAfter.UnixMilli())
-	}
-	if !input.dequeuedBefore.IsZero() {
-		qb.addWhereLessEqual("started_at_epoch_ms", input.dequeuedBefore.UnixMilli())
-	}
-	if input.wasForkedFrom != nil {
-		qb.addWhere("was_forked_from", *input.wasForkedFrom)
-	}
-	if input.hasParent != nil {
-		if *input.hasParent {
-			qb.addWhereIsNotNull("parent_workflow_id")
-		} else {
-			qb.addWhereIsNull("parent_workflow_id")
-		}
-	}
-
-	// Build complete query
-	var query string
-	if len(qb.whereClauses) > 0 {
-		query = fmt.Sprintf("%s WHERE %s", baseQuery, strings.Join(qb.whereClauses, " AND "))
-	} else {
-		query = baseQuery
-	}
-
-	// Add sorting
-	if input.sortDesc {
-		query += " ORDER BY created_at DESC"
-	} else {
-		query += " ORDER BY created_at ASC"
-	}
-
-	// Add limit and offset
+	lim := int64(-1) // NULLIF(-1) disables the limit
 	if input.limit != nil {
-		qb.argCounter++
-		query += fmt.Sprintf(" LIMIT $%d", qb.argCounter)
-		qb.args = append(qb.args, *input.limit)
+		lim = int64(*input.limit)
 	}
-
+	var off int64
 	if input.offset != nil {
-		qb.argCounter++
-		query += fmt.Sprintf(" OFFSET $%d", qb.argCounter)
-		qb.args = append(qb.args, *input.offset)
+		off = int64(*input.offset)
 	}
 
-	// Execute the query against the input tx if provided, else the pool.
-	query = s.dialect.RewriteQuery(query)
-	var rows Rows
-	var err error
-	if input.tx != nil {
-		rows, err = input.tx.Query(ctx, query, qb.args...)
-	} else {
-		rows, err = s.pool.Query(ctx, query, qb.args...)
+	params := db.ListWorkflowsParams{
+		FilterName:            len(input.workflowName) > 0,
+		Names:                 input.workflowName,
+		FilterQueue:           len(input.queueName) > 0,
+		QueueNames:            input.queueName,
+		QueuesOnly:            input.queuesOnly,
+		FilterIDPrefix:        len(idPrefixes) > 0,
+		IDPrefixes:            idPrefixes,
+		FilterIds:             len(input.workflowIDs) > 0,
+		Ids:                   input.workflowIDs,
+		FilterAuthUser:        len(input.authenticatedUser) > 0,
+		AuthUsers:             input.authenticatedUser,
+		FilterStart:           !input.startTime.IsZero(),
+		StartMs:               input.startTime.UnixMilli(),
+		FilterEnd:             !input.endTime.IsZero(),
+		EndMs:                 input.endTime.UnixMilli(),
+		FilterStatus:          len(statuses) > 0,
+		Statuses:              statuses,
+		FilterAppVersion:      len(input.applicationVersion) > 0,
+		AppVersions:           input.applicationVersion,
+		FilterExecutor:        len(input.executorIDs) > 0,
+		ExecutorIds:           input.executorIDs,
+		FilterForked:          len(input.forkedFrom) > 0,
+		ForkedFroms:           input.forkedFrom,
+		FilterParent:          len(input.parentWorkflowID) > 0,
+		ParentIds:             input.parentWorkflowID,
+		FilterDedup:           len(input.deduplicationID) > 0,
+		DedupIds:              input.deduplicationID,
+		FilterCompletedAfter:  !input.completedAfter.IsZero(),
+		CompletedAfter:        input.completedAfter.UnixMilli(),
+		FilterCompletedBefore: !input.completedBefore.IsZero(),
+		CompletedBefore:       input.completedBefore.UnixMilli(),
+		FilterDequeuedAfter:   !input.dequeuedAfter.IsZero(),
+		DequeuedAfter:         input.dequeuedAfter.UnixMilli(),
+		FilterDequeuedBefore:  !input.dequeuedBefore.IsZero(),
+		DequeuedBefore:        input.dequeuedBefore.UnixMilli(),
+		FilterWasForked:       input.wasForkedFrom != nil,
+		WasForked:             input.wasForkedFrom != nil && *input.wasForkedFrom,
+		FilterHasParent:       input.hasParent != nil,
+		HasParent:             input.hasParent != nil && *input.hasParent,
+		SortDesc:              input.sortDesc,
+		Off:                   off,
+		Lim:                   lim,
 	}
 
+	rows, err := s.q(input.tx).ListWorkflows(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute ListWorkflows query: %w", err)
 	}
-	defer rows.Close()
 
-	var workflows []WorkflowStatus
-	for rows.Next() {
-		var wf WorkflowStatus
-		var queueName *string
-		var createdAtMs, updatedAtMs int64
-		var timeoutMs *int64
-		var deadlineMs, startedAtMs *int64
-		var outputString, inputString *string
-		var errorStr *string
-		var deduplicationID *string
-		var applicationVersion *string
-		var executorID *string
-		var authenticatedRoles *string
-		var queuePartitionKey *string
-		var forkedFrom *string
-		var parentWorkflowID *string
-		var serialization *string
-		var authenticatedUser *string
-		var assumedRole *string
-		var applicationID *string
-		var delayUntilEpochMs *int64
-		var completedAtMs *int64
-
-		// Build scan arguments dynamically based on loaded columns.
-		scanArgs := []any{
-			&wf.ID, &wf.Status, &wf.Name, &authenticatedUser, &assumedRole,
-			&authenticatedRoles, &executorID, &createdAtMs,
-			&updatedAtMs, &applicationVersion, &applicationID,
-			&wf.Attempts, &queueName, &timeoutMs,
-			&deadlineMs, &startedAtMs, &deduplicationID, &wf.Priority, &queuePartitionKey, &forkedFrom, &parentWorkflowID,
-			&serialization, &delayUntilEpochMs, &wf.WasForkedFrom, &completedAtMs,
+	workflows := make([]WorkflowStatus, 0, len(rows))
+	for _, r := range rows {
+		wf := WorkflowStatus{
+			ID:            r.WorkflowUuid,
+			Priority:      int(r.Priority),
+			WasForkedFrom: r.WasForkedFrom,
 		}
-
-		if input.loadOutput {
-			scanArgs = append(scanArgs, &outputString, &errorStr)
+		if r.Status != nil {
+			wf.Status = WorkflowStatusType(*r.Status)
 		}
-		if input.loadInput {
-			scanArgs = append(scanArgs, &inputString)
+		if r.Name != nil {
+			wf.Name = *r.Name
 		}
-
-		err := rows.Scan(scanArgs...)
-		if err != nil {
-			return nil, fmt.Errorf("failed to scan workflow row: %w", err)
+		if r.RecoveryAttempts != nil {
+			wf.Attempts = int(*r.RecoveryAttempts)
 		}
-
-		if authenticatedUser != nil {
-			wf.AuthenticatedUser = *authenticatedUser
+		if r.AuthenticatedUser != nil {
+			wf.AuthenticatedUser = *r.AuthenticatedUser
 		}
-		if assumedRole != nil {
-			wf.AssumedRole = *assumedRole
+		if r.AssumedRole != nil {
+			wf.AssumedRole = *r.AssumedRole
 		}
-		if applicationID != nil {
-			wf.ApplicationID = *applicationID
+		if r.ApplicationID != nil {
+			wf.ApplicationID = *r.ApplicationID
 		}
-
-		if authenticatedRoles != nil && *authenticatedRoles != "" {
-			if err := json.Unmarshal([]byte(*authenticatedRoles), &wf.AuthenticatedRoles); err != nil {
+		if r.AuthenticatedRoles != nil && *r.AuthenticatedRoles != "" {
+			if err := json.Unmarshal([]byte(*r.AuthenticatedRoles), &wf.AuthenticatedRoles); err != nil {
 				return nil, fmt.Errorf("failed to unmarshal authenticated_roles: %w", err)
 			}
 		}
-
-		if queueName != nil && len(*queueName) > 0 {
-			wf.QueueName = *queueName
+		if r.QueueName != nil && len(*r.QueueName) > 0 {
+			wf.QueueName = *r.QueueName
+		}
+		if r.ExecutorID != nil && len(*r.ExecutorID) > 0 {
+			wf.ExecutorID = *r.ExecutorID
+		}
+		if r.ApplicationVersion != nil && len(*r.ApplicationVersion) > 0 {
+			wf.ApplicationVersion = *r.ApplicationVersion
+		}
+		if r.DeduplicationID != nil && len(*r.DeduplicationID) > 0 {
+			wf.DeduplicationID = *r.DeduplicationID
+		}
+		if r.QueuePartitionKey != nil && len(*r.QueuePartitionKey) > 0 {
+			wf.QueuePartitionKey = *r.QueuePartitionKey
+		}
+		if r.ForkedFrom != nil && len(*r.ForkedFrom) > 0 {
+			wf.ForkedFrom = *r.ForkedFrom
+		}
+		if r.ParentWorkflowID != nil && len(*r.ParentWorkflowID) > 0 {
+			wf.ParentWorkflowID = *r.ParentWorkflowID
+		}
+		if r.Serialization != nil && len(*r.Serialization) > 0 {
+			wf.Serialization = *r.Serialization
 		}
 
-		if executorID != nil && len(*executorID) > 0 {
-			wf.ExecutorID = *executorID
+		wf.CreatedAt = time.Unix(0, r.CreatedAt*int64(time.Millisecond))
+		wf.UpdatedAt = time.Unix(0, r.UpdatedAt*int64(time.Millisecond))
+		if r.WorkflowTimeoutMs != nil && *r.WorkflowTimeoutMs > 0 {
+			wf.Timeout = time.Duration(*r.WorkflowTimeoutMs) * time.Millisecond
+		}
+		if r.WorkflowDeadlineEpochMs != nil {
+			wf.Deadline = time.Unix(0, *r.WorkflowDeadlineEpochMs*int64(time.Millisecond))
+		}
+		if r.StartedAtEpochMs != nil {
+			wf.StartedAt = time.Unix(0, *r.StartedAtEpochMs*int64(time.Millisecond))
+		}
+		if r.DelayUntilEpochMs != nil {
+			wf.DelayUntil = time.Unix(0, *r.DelayUntilEpochMs*int64(time.Millisecond))
+		}
+		if r.CompletedAt != nil {
+			wf.CompletedAt = time.Unix(0, *r.CompletedAt*int64(time.Millisecond))
 		}
 
-		if applicationVersion != nil && len(*applicationVersion) > 0 {
-			wf.ApplicationVersion = *applicationVersion
-		}
-
-		if deduplicationID != nil && len(*deduplicationID) > 0 {
-			wf.DeduplicationID = *deduplicationID
-		}
-
-		if queuePartitionKey != nil && len(*queuePartitionKey) > 0 {
-			wf.QueuePartitionKey = *queuePartitionKey
-		}
-
-		if forkedFrom != nil && len(*forkedFrom) > 0 {
-			wf.ForkedFrom = *forkedFrom
-		}
-
-		if parentWorkflowID != nil && len(*parentWorkflowID) > 0 {
-			wf.ParentWorkflowID = *parentWorkflowID
-		}
-
-		if serialization != nil && len(*serialization) > 0 {
-			wf.Serialization = *serialization
-		}
-
-		// Convert milliseconds to time.Time
-		wf.CreatedAt = time.Unix(0, createdAtMs*int64(time.Millisecond))
-		wf.UpdatedAt = time.Unix(0, updatedAtMs*int64(time.Millisecond))
-
-		// Convert timeout milliseconds to time.Duration
-		if timeoutMs != nil && *timeoutMs > 0 {
-			wf.Timeout = time.Duration(*timeoutMs) * time.Millisecond
-		}
-
-		// Convert deadline milliseconds to time.Time
-		if deadlineMs != nil {
-			wf.Deadline = time.Unix(0, *deadlineMs*int64(time.Millisecond))
-		}
-
-		// Convert started at milliseconds to time.Time
-		if startedAtMs != nil {
-			wf.StartedAt = time.Unix(0, *startedAtMs*int64(time.Millisecond))
-		}
-
-		// Convert delay_until_epoch_ms to time.Time
-		if delayUntilEpochMs != nil {
-			wf.DelayUntil = time.Unix(0, *delayUntilEpochMs*int64(time.Millisecond))
-		}
-
-		// Convert completed_at milliseconds to time.Time
-		if completedAtMs != nil {
-			wf.CompletedAt = time.Unix(0, *completedAtMs*int64(time.Millisecond))
-		}
-
-		// Handle output and error only if loadOutput is true
+		// Output/error/inputs are always selected; only surface them when requested.
 		if input.loadOutput {
-			// Convert error string to error type if present
-			if errorStr != nil && *errorStr != "" {
-				wf.Error = errors.New(*errorStr)
+			if r.Error != nil && *r.Error != "" {
+				wf.Error = errors.New(*r.Error)
 			}
-
-			// Return output as encoded *string
-			wf.Output = outputString
+			wf.Output = r.Output
 		}
-
-		// Return input as encoded *string
 		if input.loadInput {
-			wf.Input = inputString
+			wf.Input = r.Inputs
 		}
 
 		workflows = append(workflows, wf)
-	}
-
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over workflow rows: %w", err)
 	}
 
 	return workflows, nil
@@ -1600,7 +1436,7 @@ func (s *SystemDatabase) forkWorkflow(ctx context.Context, input forkWorkflowDBI
 		}
 		defer tx.Rollback(ctx)
 	}
-	execCtx := tx.Exec
+	txq := s.queries.WithTx(PgxTx(tx))
 
 	// Get the original workflow status. Use the same tx so the read sees the
 	// pre-fork state consistently with the writes below.
@@ -1631,117 +1467,83 @@ func (s *SystemDatabase) forkWorkflow(ctx context.Context, input forkWorkflowDBI
 		queueName = _DBOS_INTERNAL_QUEUE_NAME
 	}
 
-	// Create an entry for the forked workflow with the same initial values as the original
-	insertQuery := s.renderSQL(`INSERT INTO %sworkflow_status (
-		workflow_uuid,
-		status,
-		name,
-		authenticated_user,
-		assumed_role,
-		authenticated_roles,
-		application_version,
-		application_id,
-		queue_name,
-		queue_partition_key,
-		inputs,
-		created_at,
-		updated_at,
-		recovery_attempts,
-		forked_from,
-		serialization
-	) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`, s.dialect.SchemaPrefix(s.schema))
-
 	// Marshal authenticated roles (slice of strings) to JSON for TEXT column
 	authenticatedRoles, err := json.Marshal(originalWorkflow.AuthenticatedRoles)
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal the authenticated roles: %w", err)
 	}
 
-	var queuePartitionKey any
+	var queuePartitionKey *string
 	if input.queuePartitionKey != "" {
-		queuePartitionKey = input.queuePartitionKey
+		queuePartitionKey = &input.queuePartitionKey
 	}
 
-	_, err = execCtx(ctx, insertQuery,
-		forkedWorkflowID,
-		WorkflowStatusEnqueued,
-		originalWorkflow.Name,
-		originalWorkflow.AuthenticatedUser,
-		originalWorkflow.AssumedRole,
-		authenticatedRoles,
-		&appVersion,
-		originalWorkflow.ApplicationID,
-		queueName,
-		queuePartitionKey,
-		originalWorkflow.Input, // encoded
-		time.Now().UnixMilli(),
-		time.Now().UnixMilli(),
-		0,
-		input.originalWorkflowID,       // forked_from
-		originalWorkflow.Serialization) // serialization
+	// originalWorkflow.Input holds the loaded encoded input (a *string).
+	var inputs *string
+	switch v := originalWorkflow.Input.(type) {
+	case *string:
+		inputs = v
+	case string:
+		inputs = &v
+	}
 
-	if err != nil {
+	now := time.Now().UnixMilli()
+	// Create an entry for the forked workflow with the same initial values as the original
+	if err := txq.ForkInsertWorkflowStatus(ctx, db.ForkInsertWorkflowStatusParams{
+		WorkflowUuid:       forkedWorkflowID,
+		Status:             string(WorkflowStatusEnqueued),
+		Name:               originalWorkflow.Name,
+		AuthenticatedUser:  originalWorkflow.AuthenticatedUser,
+		AssumedRole:        originalWorkflow.AssumedRole,
+		AuthenticatedRoles: string(authenticatedRoles),
+		ApplicationVersion: appVersion,
+		ApplicationID:      originalWorkflow.ApplicationID,
+		QueueName:          queueName,
+		QueuePartitionKey:  queuePartitionKey,
+		Inputs:             inputs,
+		CreatedAt:          now,
+		UpdatedAt:          now,
+		RecoveryAttempts:   0,
+		ForkedFrom:         input.originalWorkflowID,
+		Serialization:      originalWorkflow.Serialization,
+	}); err != nil {
 		return "", fmt.Errorf("failed to insert forked workflow status: %w", err)
 	}
 
 	// Mark the original workflow as having been forked from.
-	markForkedQuery := s.renderSQL(`UPDATE %sworkflow_status SET was_forked_from = TRUE WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-	if _, err = execCtx(ctx, markForkedQuery, input.originalWorkflowID); err != nil {
+	if err := txq.MarkWorkflowForked(ctx, input.originalWorkflowID); err != nil {
 		return "", fmt.Errorf("failed to mark original workflow as forked: %w", err)
 	}
 
-	// If startStep > 0, copy the original workflow's outputs into the forked workflow
+	// If startStep > 0, copy the original workflow's state up to startStep into the fork.
 	if input.startStep > 0 {
-		copyOutputsQuery := s.renderSQL(`INSERT INTO %soperation_outputs
-			(workflow_uuid, function_id, output, error, function_name, started_at_epoch_ms, completed_at_epoch_ms)
-			SELECT $1, function_id, output, error, function_name, started_at_epoch_ms, completed_at_epoch_ms
-			FROM %soperation_outputs
-			WHERE workflow_uuid = $2 AND function_id < $3`, s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
-
-		_, err = execCtx(ctx, copyOutputsQuery, forkedWorkflowID, input.originalWorkflowID, input.startStep)
-		if err != nil {
+		startStep := int32(input.startStep)
+		if err := txq.ForkCopyOperationOutputs(ctx, db.ForkCopyOperationOutputsParams{
+			ForkedID:   forkedWorkflowID,
+			OriginalID: input.originalWorkflowID,
+			StartStep:  startStep,
+		}); err != nil {
 			return "", fmt.Errorf("failed to copy operation outputs: %w", err)
 		}
-
-		// Copy workflow events history for steps before startStep
-		copyEventsHistoryQuery := s.renderSQL(`INSERT INTO %sworkflow_events_history
-			(workflow_uuid, function_id, key, value)
-			SELECT $1, function_id, key, value
-			FROM %sworkflow_events_history
-			WHERE workflow_uuid = $2 AND function_id < $3`, s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
-
-		_, err = execCtx(ctx, copyEventsHistoryQuery, forkedWorkflowID, input.originalWorkflowID, input.startStep)
-		if err != nil {
+		if err := txq.ForkCopyEventsHistory(ctx, db.ForkCopyEventsHistoryParams{
+			ForkedID:   forkedWorkflowID,
+			OriginalID: input.originalWorkflowID,
+			StartStep:  startStep,
+		}); err != nil {
 			return "", fmt.Errorf("failed to copy workflow events history: %w", err)
 		}
-
-		// Copy the latest version of each event (highest function_id for each key) into workflow_events.
-		copyLatestEventsQuery := s.renderSQL(`INSERT INTO %sworkflow_events (workflow_uuid, key, value)
-			SELECT $1, h.key, h.value
-			FROM %sworkflow_events_history h
-			INNER JOIN (
-				SELECT key, MAX(function_id) AS max_fid
-				FROM %sworkflow_events_history
-				WHERE workflow_uuid = $2 AND function_id < $3
-				GROUP BY key
-			) latest ON h.key = latest.key AND h.function_id = latest.max_fid
-			WHERE h.workflow_uuid = $2 AND h.function_id < $3`,
-			s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
-
-		_, err = execCtx(ctx, copyLatestEventsQuery, forkedWorkflowID, input.originalWorkflowID, input.startStep)
-		if err != nil {
+		if err := txq.ForkCopyLatestEvents(ctx, db.ForkCopyLatestEventsParams{
+			ForkedID:   forkedWorkflowID,
+			OriginalID: input.originalWorkflowID,
+			StartStep:  startStep,
+		}); err != nil {
 			return "", fmt.Errorf("failed to copy latest workflow events: %w", err)
 		}
-
-		// Copy streams for steps before startStep
-		copyStreamsQuery := s.renderSQL(`INSERT INTO %sstreams
-			(workflow_uuid, key, value, "offset", function_id)
-			SELECT $1, key, value, "offset", function_id
-			FROM %sstreams
-			WHERE workflow_uuid = $2 AND function_id < $3`, s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
-
-		_, err = execCtx(ctx, copyStreamsQuery, forkedWorkflowID, input.originalWorkflowID, input.startStep)
-		if err != nil {
+		if err := txq.ForkCopyStreams(ctx, db.ForkCopyStreamsParams{
+			ForkedID:   forkedWorkflowID,
+			OriginalID: input.originalWorkflowID,
+			StartStep:  startStep,
+		}); err != nil {
 			return "", fmt.Errorf("failed to copy streams: %w", err)
 		}
 	}
@@ -1838,7 +1640,7 @@ func (s *SystemDatabase) recordOperationResult(ctx context.Context, input record
 		Serialization:      &input.serialization,
 	})
 	if err != nil {
-		if s.dialect.IsUniqueViolation(err) {
+		if isUniqueViolation(err) {
 			return newWorkflowConflictIDError(input.workflowID)
 		}
 		return err
@@ -2029,135 +1831,195 @@ type getWorkflowAggregatesDBInput struct {
 	tx                        Tx
 }
 
+// aggGroupString normalizes an aggregate group column (scanned as interface{},
+// holding string/int64/nil) to a *string for the group map.
+func aggGroupString(v any) *string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case string:
+		return &t
+	case int64:
+		s := strconv.FormatInt(t, 10)
+		return &s
+	default:
+		s := fmt.Sprintf("%v", t)
+		return &s
+	}
+}
+
+// impStr coerces an exported map value (which may be *string, string, or nil —
+// JSON round-trips strings as string) to a nullable *string for import.
+func impStr(v any) *string {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case *string:
+		return t
+	case string:
+		return &t
+	default:
+		s := fmt.Sprintf("%v", t)
+		return &s
+	}
+}
+
+// impStrNonNull coerces to a non-null string (for NOT NULL columns / keys).
+func impStrNonNull(v any) string {
+	if p := impStr(v); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// impInt64Ptr coerces an exported map value to *int64. JSON round-trips numbers
+// as float64 (or json.Number), so all numeric forms are handled.
+func impInt64Ptr(v any) *int64 {
+	switch t := v.(type) {
+	case nil:
+		return nil
+	case *int64:
+		return t
+	case int64:
+		return &t
+	case int32:
+		x := int64(t)
+		return &x
+	case *int32:
+		if t == nil {
+			return nil
+		}
+		x := int64(*t)
+		return &x
+	case int:
+		x := int64(t)
+		return &x
+	case *int:
+		if t == nil {
+			return nil
+		}
+		x := int64(*t)
+		return &x
+	case float64:
+		x := int64(t)
+		return &x
+	case json.Number:
+		if n, err := t.Int64(); err == nil {
+			return &n
+		}
+		return nil
+	default:
+		return nil
+	}
+}
+
+func impInt64NonNull(v any) int64 {
+	if p := impInt64Ptr(v); p != nil {
+		return *p
+	}
+	return 0
+}
+
+func impInt32(v any) int32 {
+	if p := impInt64Ptr(v); p != nil {
+		return int32(*p)
+	}
+	return 0
+}
+
+// aggInt64 normalizes an aggregate value column (interface{}, holding int64/nil) to *int64.
+func aggInt64(v any) *int64 {
+	switch t := v.(type) {
+	case int64:
+		return &t
+	case int32:
+		x := int64(t)
+		return &x
+	default:
+		return nil
+	}
+}
+
 func (s *SystemDatabase) getWorkflowAggregates(ctx context.Context, input getWorkflowAggregatesDBInput) ([]WorkflowAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
-
-	// Build group columns from boolean flags
-	type groupCol struct {
-		name string
-		expr string
-	}
-	var groups []groupCol
-	if input.groupByStatus {
-		groups = append(groups, groupCol{name: "status", expr: "status"})
-	}
-	if input.groupByName {
-		groups = append(groups, groupCol{name: "name", expr: "name"})
-	}
-	if input.groupByQueueName {
-		groups = append(groups, groupCol{name: "queue_name", expr: "queue_name"})
-	}
-	if input.groupByExecutorID {
-		groups = append(groups, groupCol{name: "executor_id", expr: "executor_id"})
-	}
-	if input.groupByApplicationVersion {
-		groups = append(groups, groupCol{name: "application_version", expr: "application_version"})
-	}
-
-	qb := newQueryBuilder(s.dialect)
-
-	if input.timeBucketSizeMs > 0 {
-		qb.argCounter++
-		divArg := qb.argCounter
-		qb.args = append(qb.args, input.timeBucketSizeMs)
-		qb.argCounter++
-		mulArg := qb.argCounter
-		qb.args = append(qb.args, input.timeBucketSizeMs)
-		expr := fmt.Sprintf("(CAST(FLOOR(created_at::numeric / $%d) AS BIGINT) * $%d)", divArg, mulArg)
-		groups = append(groups, groupCol{name: "time_bucket", expr: expr})
-	}
-
-	if len(groups) == 0 {
+	groupByTimeBucket := input.timeBucketSizeMs > 0
+	if !input.groupByStatus && !input.groupByName && !input.groupByQueueName &&
+		!input.groupByExecutorID && !input.groupByApplicationVersion && !groupByTimeBucket {
 		return nil, errors.New("at least one group_by flag must be set, or a time bucket size provided")
 	}
 
-	// Apply filters using the query builder
-	if len(input.status) > 0 {
-		qb.addWhereAny("status", input.status)
+	statuses := make([]string, len(input.status))
+	for i, st := range input.status {
+		statuses[i] = string(st)
 	}
-	if !input.startTime.IsZero() {
-		qb.addWhereGreaterEqual("created_at", input.startTime.UnixMilli())
+	idPrefixes := make([]string, len(input.workflowIDPrefix))
+	for i, p := range input.workflowIDPrefix {
+		idPrefixes[i] = p + "%"
 	}
-	if !input.endTime.IsZero() {
-		qb.addWhereLessEqual("created_at", input.endTime.UnixMilli())
-	}
-	if len(input.workflowName) > 0 {
-		qb.addWhereAny("name", input.workflowName)
-	}
-	if len(input.applicationVersion) > 0 {
-		qb.addWhereAny("application_version", input.applicationVersion)
-	}
-	if len(input.executorID) > 0 {
-		qb.addWhereAny("executor_id", input.executorID)
-	}
-	if len(input.queueName) > 0 {
-		qb.addWhereAny("queue_name", input.queueName)
-	}
-	if len(input.workflowIDPrefix) > 0 {
-		qb.addWhereLikeAny("workflow_uuid", input.workflowIDPrefix, "%")
-	}
-
-	// Build SELECT clause: each group expression aliased to "g0", "g1", ... so the position is stable
-	// regardless of whether the expression is a column or a CAST(...) expression.
-	selectParts := make([]string, 0, len(groups)+1)
-	groupParts := make([]string, 0, len(groups))
-	for i, g := range groups {
-		alias := fmt.Sprintf("g%d", i)
-		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", g.expr, alias))
-		groupParts = append(groupParts, g.expr)
-	}
-	selectParts = append(selectParts, "COUNT(*) AS cnt")
-
-	query := fmt.Sprintf("SELECT %s FROM %sworkflow_status",
-		strings.Join(selectParts, ", "),
-		s.dialect.SchemaPrefix(s.schema))
-	if len(qb.whereClauses) > 0 {
-		query += " WHERE " + strings.Join(qb.whereClauses, " AND ")
-	}
-	query += " GROUP BY " + strings.Join(groupParts, ", ")
 	limit := input.limit
 	if limit <= 0 {
 		limit = _DEFAULT_AGGREGATES_LIMIT
 	}
-	query += fmt.Sprintf(" LIMIT %d", limit)
-
-	var rows Rows
-	var err error
-	if input.tx != nil {
-		rows, err = input.tx.Query(ctx, query, qb.args...)
-	} else {
-		rows, err = s.pool.Query(ctx, query, qb.args...)
+	bucketSize := input.timeBucketSizeMs
+	if bucketSize <= 0 {
+		bucketSize = 1 // unused when groupByTimeBucket is false; avoids divide-by-zero
 	}
+
+	rows, err := s.q(input.tx).GetWorkflowAggregates(ctx, db.GetWorkflowAggregatesParams{
+		GroupStatus:      input.groupByStatus,
+		GroupName:        input.groupByName,
+		GroupQueue:       input.groupByQueueName,
+		GroupExecutor:    input.groupByExecutorID,
+		GroupAppVersion:  input.groupByApplicationVersion,
+		GroupTimeBucket:  groupByTimeBucket,
+		BucketSize:       bucketSize,
+		FilterStatus:     len(statuses) > 0,
+		Statuses:         statuses,
+		FilterStart:      !input.startTime.IsZero(),
+		StartMs:          input.startTime.UnixMilli(),
+		FilterEnd:        !input.endTime.IsZero(),
+		EndMs:            input.endTime.UnixMilli(),
+		FilterName:       len(input.workflowName) > 0,
+		Names:            input.workflowName,
+		FilterAppVersion: len(input.applicationVersion) > 0,
+		AppVersions:      input.applicationVersion,
+		FilterExecutor:   len(input.executorID) > 0,
+		ExecutorIds:      input.executorID,
+		FilterQueue:      len(input.queueName) > 0,
+		QueueNames:       input.queueName,
+		FilterIDPrefix:   len(idPrefixes) > 0,
+		IDPrefixes:       idPrefixes,
+		Lim:              limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute getWorkflowAggregates query: %w", err)
 	}
-	defer rows.Close()
 
-	results := make([]WorkflowAggregateRow, 0)
-	for rows.Next() {
-		// Scan each group column as nullable string, plus the count.
-		groupVals := make([]any, len(groups))
-		for i := range groups {
-			var v *string
-			groupVals[i] = &v
+	results := make([]WorkflowAggregateRow, 0, len(rows))
+	for _, r := range rows {
+		groupMap := make(map[string]*string)
+		if input.groupByStatus {
+			groupMap["status"] = aggGroupString(r.GStatus)
 		}
-		var count int64
-		scanArgs := append(append([]any{}, groupVals...), &count)
-		if err := rows.Scan(scanArgs...); err != nil {
-			return nil, fmt.Errorf("failed to scan workflow aggregate row: %w", err)
+		if input.groupByName {
+			groupMap["name"] = aggGroupString(r.GName)
 		}
-		groupMap := make(map[string]*string, len(groups))
-		for i, g := range groups {
-			groupMap[g.name] = *(groupVals[i].(**string))
+		if input.groupByQueueName {
+			groupMap["queue_name"] = aggGroupString(r.GQueueName)
 		}
-		results = append(results, WorkflowAggregateRow{Group: groupMap, Count: count})
+		if input.groupByExecutorID {
+			groupMap["executor_id"] = aggGroupString(r.GExecutorID)
+		}
+		if input.groupByApplicationVersion {
+			groupMap["application_version"] = aggGroupString(r.GAppVersion)
+		}
+		if groupByTimeBucket {
+			groupMap["time_bucket"] = aggGroupString(r.GTimeBucket)
+		}
+		results = append(results, WorkflowAggregateRow{Group: groupMap, Count: r.Cnt})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over workflow aggregate rows: %w", err)
-	}
-
 	return results, nil
 }
 
@@ -2197,142 +2059,70 @@ func (s *SystemDatabase) getStepAggregates(ctx context.Context, input getStepAgg
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
 
-	type groupCol struct {
-		name string
-		expr string
-	}
-	var groups []groupCol
-	if input.groupByFunctionName {
-		groups = append(groups, groupCol{name: "function_name", expr: "function_name"})
-	}
-	if input.groupByStatus {
-		groups = append(groups, groupCol{name: "status", expr: stepStatusExpr})
-	}
-
-	qb := newQueryBuilder(s.dialect)
-
-	if input.timeBucketSizeMs > 0 {
-		qb.argCounter++
-		divArg := qb.argCounter
-		qb.args = append(qb.args, input.timeBucketSizeMs)
-		qb.argCounter++
-		mulArg := qb.argCounter
-		qb.args = append(qb.args, input.timeBucketSizeMs)
-		expr := fmt.Sprintf("(CAST(FLOOR(completed_at_epoch_ms::numeric / $%d) AS BIGINT) * $%d)", divArg, mulArg)
-		groups = append(groups, groupCol{name: "time_bucket", expr: expr})
-	}
-
-	if len(groups) == 0 {
+	groupByTimeBucket := input.timeBucketSizeMs > 0
+	if !input.groupByFunctionName && !input.groupByStatus && !groupByTimeBucket {
 		return nil, errors.New("at least one group_by flag must be set, or a time bucket size provided")
 	}
-
-	// Build select aggregates. MAX ignores NULLs, so rows without start/complete
-	// timestamps (child-workflow and getResult markers) drop out of the duration max.
-	type selectCol struct {
-		name string
-		expr string
-	}
-	var selects []selectCol
-	if input.selectCount {
-		selects = append(selects, selectCol{name: "count", expr: "COUNT(*)"})
-	}
-	if input.selectMaxDurationMs {
-		selects = append(selects, selectCol{name: "max_duration_ms", expr: "MAX(completed_at_epoch_ms - started_at_epoch_ms)"})
-	}
-	if len(selects) == 0 {
+	if !input.selectCount && !input.selectMaxDurationMs {
 		return nil, errors.New("at least one select_ flag must be set")
 	}
 
-	// Apply filters
-	if len(input.status) > 0 {
-		qb.addWhereAny(stepStatusExpr, input.status)
+	idPrefixes := make([]string, len(input.workflowIDPrefix))
+	for i, p := range input.workflowIDPrefix {
+		idPrefixes[i] = p + "%"
 	}
-	if len(input.functionName) > 0 {
-		qb.addWhereAny("function_name", input.functionName)
-	}
-	if len(input.workflowIDPrefix) > 0 {
-		qb.addWhereLikeAny("workflow_uuid", input.workflowIDPrefix, "%")
-	}
-	if !input.completedAfter.IsZero() {
-		qb.addWhereGreaterEqual("completed_at_epoch_ms", input.completedAfter.UnixMilli())
-	}
-	if !input.completedBefore.IsZero() {
-		qb.addWhereLessEqual("completed_at_epoch_ms", input.completedBefore.UnixMilli())
-	}
-
-	// Build SELECT clause: group expressions aliased to "g0", "g1", ... so position is stable.
-	selectParts := make([]string, 0, len(groups)+len(selects))
-	groupParts := make([]string, 0, len(groups))
-	for i, g := range groups {
-		alias := fmt.Sprintf("g%d", i)
-		selectParts = append(selectParts, fmt.Sprintf("%s AS %s", g.expr, alias))
-		groupParts = append(groupParts, g.expr)
-	}
-	for i, sel := range selects {
-		selectParts = append(selectParts, fmt.Sprintf("%s AS s%d", sel.expr, i))
-	}
-
-	query := fmt.Sprintf("SELECT %s FROM %soperation_outputs",
-		strings.Join(selectParts, ", "),
-		s.dialect.SchemaPrefix(s.schema))
-	if len(qb.whereClauses) > 0 {
-		query += " WHERE " + strings.Join(qb.whereClauses, " AND ")
-	}
-	query += " GROUP BY " + strings.Join(groupParts, ", ")
 	limit := input.limit
 	if limit <= 0 {
 		limit = _DEFAULT_AGGREGATES_LIMIT
 	}
-	query += fmt.Sprintf(" LIMIT %d", limit)
-
-	var rows Rows
-	var err error
-	if input.tx != nil {
-		rows, err = input.tx.Query(ctx, query, qb.args...)
-	} else {
-		rows, err = s.pool.Query(ctx, query, qb.args...)
+	bucketSize := input.timeBucketSizeMs
+	if bucketSize <= 0 {
+		bucketSize = 1 // unused when groupByTimeBucket is false; avoids divide-by-zero
 	}
+
+	rows, err := s.q(input.tx).GetStepAggregates(ctx, db.GetStepAggregatesParams{
+		GroupFunctionName:     input.groupByFunctionName,
+		GroupStatus:           input.groupByStatus,
+		GroupTimeBucket:       groupByTimeBucket,
+		BucketSize:            bucketSize,
+		FilterStatus:          len(input.status) > 0,
+		Statuses:              input.status,
+		FilterFunctionName:    len(input.functionName) > 0,
+		FunctionNames:         input.functionName,
+		FilterIDPrefix:        len(idPrefixes) > 0,
+		IDPrefixes:            idPrefixes,
+		FilterCompletedAfter:  !input.completedAfter.IsZero(),
+		CompletedAfter:        input.completedAfter.UnixMilli(),
+		FilterCompletedBefore: !input.completedBefore.IsZero(),
+		CompletedBefore:       input.completedBefore.UnixMilli(),
+		Lim:                   limit,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute getStepAggregates query: %w", err)
 	}
-	defer rows.Close()
 
-	results := make([]StepAggregateRow, 0)
-	for rows.Next() {
-		groupVals := make([]any, len(groups))
-		for i := range groups {
-			var v *string
-			groupVals[i] = &v
+	results := make([]StepAggregateRow, 0, len(rows))
+	for _, r := range rows {
+		groupMap := make(map[string]*string)
+		if input.groupByFunctionName {
+			groupMap["function_name"] = aggGroupString(r.GFunctionName)
 		}
-		selectVals := make([]any, len(selects))
-		for i := range selects {
-			var v *int64
-			selectVals[i] = &v
+		if input.groupByStatus {
+			groupMap["status"] = aggGroupString(r.GStatus)
 		}
-		scanArgs := append(append([]any{}, groupVals...), selectVals...)
-		if err := rows.Scan(scanArgs...); err != nil {
-			return nil, fmt.Errorf("failed to scan step aggregate row: %w", err)
-		}
-		groupMap := make(map[string]*string, len(groups))
-		for i, g := range groups {
-			groupMap[g.name] = *(groupVals[i].(**string))
+		if groupByTimeBucket {
+			groupMap["time_bucket"] = aggGroupString(r.GTimeBucket)
 		}
 		row := StepAggregateRow{Group: groupMap}
-		for i, sel := range selects {
-			val := *(selectVals[i].(**int64))
-			switch sel.name {
-			case "count":
-				row.Count = val
-			case "max_duration_ms":
-				row.MaxDurationMs = val
-			}
+		if input.selectCount {
+			c := r.Cnt
+			row.Count = &c
+		}
+		if input.selectMaxDurationMs {
+			row.MaxDurationMs = aggInt64(r.MaxDurationMs)
 		}
 		results = append(results, row)
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating over step aggregate rows: %w", err)
-	}
-
 	return results, nil
 }
 
@@ -2658,9 +2448,10 @@ func (s *SystemDatabase) pollNotifications(ctx context.Context) {
 		topic := parts[1]
 
 		// Query database to check if an unconsumed notification exists
-		query := s.renderSQL(`SELECT EXISTS (SELECT 1 FROM %snotifications WHERE destination_uuid = $1 AND topic = $2 AND consumed = false)`, s.dialect.SchemaPrefix(s.schema))
-		var exists bool
-		err := s.pool.QueryRow(ctx, query, destinationID, topic).Scan(&exists)
+		exists, err := s.queries.HasUnconsumedMessage(ctx, db.HasUnconsumedMessageParams{
+			DestinationUuid: destinationID,
+			Topic:           topic,
+		})
 		if err != nil {
 			s.logger.Warn("Failed to poll notification", "payload", payload, "error", err)
 			return true // Continue to next item
@@ -2698,9 +2489,10 @@ func (s *SystemDatabase) pollEvents(ctx context.Context) {
 		eventKey := parts[1]
 
 		// Query database to check if event exists
-		query := s.renderSQL(`SELECT EXISTS (SELECT 1 FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2)`, s.dialect.SchemaPrefix(s.schema))
-		var exists bool
-		err := s.pool.QueryRow(ctx, query, targetWorkflowID, eventKey).Scan(&exists)
+		exists, err := s.queries.HasWorkflowEvent(ctx, db.HasWorkflowEventParams{
+			WorkflowUuid: targetWorkflowID,
+			Key:          eventKey,
+		})
 		if err != nil {
 			s.logger.Warn("Failed to poll event", "payload", payload, "error", err)
 			return true // Continue to next item
@@ -2754,7 +2546,7 @@ func (s *SystemDatabase) send(ctx context.Context, input WorkflowSendInput) erro
 	if err != nil {
 		s.logger.Error("failed to insert notification", "error", err, "destination_id", input.DestinationID, "topic", topic, "message", input.Message)
 		// Check for foreign key violation (destination workflow doesn't exist)
-		if s.dialect.IsForeignKeyViolation(err) {
+		if isForeignKeyViolation(err) {
 			return newNonExistentWorkflowError(input.DestinationID)
 		}
 		return fmt.Errorf("failed to insert notification: %w", err)
@@ -3430,79 +3222,66 @@ type dequeueWorkflowsInput struct {
 func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
 	var policyConcurrency *int
 	var policyRateLimit *rateLimiter
-	var globalConcurrency, rateLimit, ratePeriodMs *int64
-	definitionQuery := s.renderSQL(`
-		SELECT global_concurrency, rate_limit, rate_period_ms
-		FROM %sworkflow_definitions
-		WHERE workflow_name = $1`, s.dialect.SchemaPrefix(s.schema))
-	if err := s.pool.QueryRow(ctx, definitionQuery, input.workflowName).Scan(&globalConcurrency, &rateLimit, &ratePeriodMs); err != nil {
-		if err == pgx.ErrNoRows {
+
+	def, err := s.queries.GetWorkflowDefinition(ctx, input.workflowName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("failed to load workflow definition %s: %w", input.workflowName, err)
 	}
-	if globalConcurrency != nil {
-		value := int(*globalConcurrency)
+	if def.GlobalConcurrency != nil {
+		value := int(*def.GlobalConcurrency)
 		policyConcurrency = &value
 	}
-	if rateLimit != nil && ratePeriodMs != nil {
-		policyRateLimit = &rateLimiter{limit: int(*rateLimit), period: time.Duration(*ratePeriodMs) * time.Millisecond}
+	if def.RateLimit != nil && def.RatePeriodMs != nil {
+		policyRateLimit = &rateLimiter{limit: int(*def.RateLimit), period: time.Duration(*def.RatePeriodMs) * time.Millisecond}
 	}
 
-	snapshot := policyConcurrency != nil || policyRateLimit != nil
-	tx, err := s.pool.BeginTx(ctx, TxOptions{IsoLevel: s.dialect.ClaimIsolation(snapshot)})
+	// Snapshot isolation when a concurrency/rate policy applies, else read committed.
+	iso := IsoLevelReadCommitted
+	if policyConcurrency != nil || policyRateLimit != nil {
+		iso = IsoLevelRepeatableRead
+	}
+	tx, err := s.pool.BeginTx(ctx, TxOptions{IsoLevel: iso})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-
-	schemaPrefix := s.dialect.SchemaPrefix(s.schema)
+	txq := s.queries.WithTx(PgxTx(tx))
 
 	// Rate limiter: count workflows started within the limiter period.
-	var numRecentQueries int
+	var numRecentQueries int64
 	if policyRateLimit != nil {
 		cutoffTimeMs := time.Now().Add(-policyRateLimit.period).UnixMilli()
-
-		limiterQuery := s.renderSQL(`
-		SELECT COUNT(*)
-		FROM %sworkflow_status
-		WHERE name = $1
-		  AND rate_limited = TRUE
-		  AND status NOT IN ($2, $3)
-		  AND started_at_epoch_ms > $4`, schemaPrefix)
-
-		limiterArgs := []any{input.workflowName, WorkflowStatusEnqueued, WorkflowStatusDelayed, cutoffTimeMs}
-
-		err := tx.QueryRow(ctx, s.dialect.RewriteQuery(limiterQuery), limiterArgs...).Scan(&numRecentQueries)
+		numRecentQueries, err = txq.CountRateLimitedWorkflows(ctx, db.CountRateLimitedWorkflowsParams{
+			Name:           input.workflowName,
+			EnqueuedStatus: string(WorkflowStatusEnqueued),
+			DelayedStatus:  string(WorkflowStatusDelayed),
+			CutoffMs:       cutoffTimeMs,
+		})
 		if err != nil {
 			return nil, fmt.Errorf("failed to query rate limiter: %w", err)
 		}
-
-		if numRecentQueries >= policyRateLimit.limit {
+		if int(numRecentQueries) >= policyRateLimit.limit {
 			return []dequeuedWorkflow{}, nil
 		}
 	}
 
 	maxTasks := _DEFAULT_MAX_TASKS_PER_ITERATION
-
 	if policyConcurrency != nil {
-		pendingQuery := s.renderSQL(`
-			SELECT COUNT(*)
-			FROM %sworkflow_status
-			WHERE name = $1 AND status = $2`, schemaPrefix)
-
-		pendingArgs := []any{input.workflowName, WorkflowStatusPending}
-
-		var globalCount int
-		if err := tx.QueryRow(ctx, s.dialect.RewriteQuery(pendingQuery), pendingArgs...).Scan(&globalCount); err != nil {
+		globalCount, err := txq.CountPendingWorkflows(ctx, db.CountPendingWorkflowsParams{
+			Name:          input.workflowName,
+			PendingStatus: string(WorkflowStatusPending),
+		})
+		if err != nil {
 			return nil, fmt.Errorf("failed to query pending workflows: %w", err)
 		}
-
 		concurrency := *policyConcurrency
-		if globalCount > concurrency {
+		if int(globalCount) > concurrency {
 			s.logger.Warn("Total pending workflows exceeds global concurrency limit", "total_pending", globalCount, "workflow_name", input.workflowName, "concurrency_limit", concurrency)
 		}
-		availableTasks := max(concurrency-globalCount, 0)
+		availableTasks := max(concurrency-int(globalCount), 0)
 		if availableTasks < maxTasks {
 			maxTasks = availableTasks
 		}
@@ -3511,51 +3290,27 @@ func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWork
 	if maxTasks <= 0 {
 		return nil, nil
 	}
-	queryArgs := []any{input.workflowName, WorkflowStatusEnqueued, input.applicationVersion}
-	query := s.renderSQL(`
-				SELECT workflow_uuid
-				FROM %sworkflow_status
-				WHERE name = $1
-				  AND status = $2
-				  AND (application_version = $3 OR application_version IS NULL)`, schemaPrefix)
 
-	query += ` ORDER BY priority ASC, created_at ASC`
-
-	// Use SKIP LOCKED when no global concurrency is set to avoid blocking,
-	// otherwise use NOWAIT to ensure consistent view across processes
+	// SKIP LOCKED when no global concurrency is set to avoid blocking, otherwise
+	// NOWAIT to ensure a consistent view across processes.
+	var dequeuedIDs []string
 	if policyConcurrency == nil {
-		if lock := s.dialect.LockSkipLocked(); lock != "" {
-			query += " " + lock
-		}
+		dequeuedIDs, err = txq.DequeueCandidatesSkipLocked(ctx, db.DequeueCandidatesSkipLockedParams{
+			Name:           input.workflowName,
+			EnqueuedStatus: string(WorkflowStatusEnqueued),
+			AppVersion:     input.applicationVersion,
+			MaxTasks:       int32(maxTasks),
+		})
 	} else {
-		if lock := s.dialect.LockNoWait(); lock != "" {
-			query += " " + lock
-		}
+		dequeuedIDs, err = txq.DequeueCandidatesNoWait(ctx, db.DequeueCandidatesNoWaitParams{
+			Name:           input.workflowName,
+			EnqueuedStatus: string(WorkflowStatusEnqueued),
+			AppVersion:     input.applicationVersion,
+			MaxTasks:       int32(maxTasks),
+		})
 	}
-
-	if maxTasks >= 0 {
-		query += fmt.Sprintf(" LIMIT %d", int(maxTasks))
-	}
-
-	rows, err := tx.Query(ctx, s.dialect.RewriteQuery(query), queryArgs...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query enqueued workflows: %w", err)
-	}
-	defer rows.Close()
-
-	var dequeuedIDs []string
-	for rows.Next() {
-		select {
-		case <-ctx.Done():
-			s.logger.Warn("DequeueWorkflows context cancelled while reading dequeue results", "cause", context.Cause(ctx))
-			return nil, ctx.Err()
-		default:
-		}
-		var workflowID string
-		if err := rows.Scan(&workflowID); err != nil {
-			return nil, fmt.Errorf("failed to scan workflow ID: %w", err)
-		}
-		dequeuedIDs = append(dequeuedIDs, workflowID)
 	}
 
 	if len(dequeuedIDs) > 0 {
@@ -3563,49 +3318,41 @@ func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWork
 	}
 
 	// Update workflows to PENDING status and get their details
-	updateQuery := s.renderSQL(`
-		UPDATE %sworkflow_status
-		SET status = $1,
-		    application_version = $2,
-		    executor_id = $3,
-		    started_at_epoch_ms = $4,
-		    rate_limited = $5,
-		    workflow_deadline_epoch_ms = CASE
-		        WHEN workflow_timeout_ms IS NOT NULL AND workflow_deadline_epoch_ms IS NULL
-		        THEN $4 + workflow_timeout_ms
-		        ELSE workflow_deadline_epoch_ms
-		    END
-		WHERE workflow_uuid = $6 AND status = $7
-		RETURNING name, inputs, serialization`, schemaPrefix)
-
 	var retWorkflows []dequeuedWorkflow
 	for _, id := range dequeuedIDs {
+		select {
+		case <-ctx.Done():
+			s.logger.Warn("DequeueWorkflows context cancelled while claiming dequeue results", "cause", context.Cause(ctx))
+			return nil, ctx.Err()
+		default:
+		}
 		if policyRateLimit != nil {
-			if len(retWorkflows)+numRecentQueries >= policyRateLimit.limit {
+			if int64(len(retWorkflows))+numRecentQueries >= int64(policyRateLimit.limit) {
 				break
 			}
 		}
-		retWorkflow := dequeuedWorkflow{id: id}
-
-		var serialization *string
-		err := tx.QueryRow(ctx, updateQuery,
-			WorkflowStatusPending,
-			input.applicationVersion,
-			input.executorID,
-			time.Now().UnixMilli(),
-			policyRateLimit != nil,
-			id,
-			WorkflowStatusEnqueued).Scan(&retWorkflow.name, &retWorkflow.input, &serialization)
+		claimed, err := txq.DequeueClaimWorkflow(ctx, db.DequeueClaimWorkflowParams{
+			PendingStatus:  string(WorkflowStatusPending),
+			AppVersion:     input.applicationVersion,
+			ExecutorID:     input.executorID,
+			StartedAt:      time.Now().UnixMilli(),
+			RateLimited:    policyRateLimit != nil,
+			WorkflowUuid:   id,
+			EnqueuedStatus: string(WorkflowStatusEnqueued),
+		})
 		if err != nil {
-			if err == pgx.ErrNoRows {
+			if errors.Is(err, pgx.ErrNoRows) {
 				continue
 			}
 			return nil, fmt.Errorf("failed to update workflow %s during dequeue: %w", id, err)
 		}
-		if serialization != nil {
-			retWorkflow.serialization = *serialization
+		retWorkflow := dequeuedWorkflow{id: id, input: claimed.Inputs}
+		if claimed.Name != nil {
+			retWorkflow.name = *claimed.Name
 		}
-
+		if claimed.Serialization != nil {
+			retWorkflow.serialization = *claimed.Serialization
+		}
 		retWorkflows = append(retWorkflows, retWorkflow)
 	}
 
@@ -3620,26 +3367,15 @@ func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWork
 }
 
 func (s *SystemDatabase) clearQueueAssignment(ctx context.Context, workflowID string) (bool, error) {
-	query := s.renderSQL(`UPDATE %sworkflow_status
-			  SET status = $1, started_at_epoch_ms = NULL
-			  WHERE workflow_uuid = $2
-			    AND queue_name IS NOT NULL
-			    AND status = $3`, s.dialect.SchemaPrefix(s.schema))
-
-	commandTag, err := s.pool.Exec(ctx, query,
-		WorkflowStatusEnqueued,
-		workflowID,
-		WorkflowStatusPending)
-
+	n, err := s.queries.ClearQueueAssignment(ctx, db.ClearQueueAssignmentParams{
+		EnqueuedStatus: string(WorkflowStatusEnqueued),
+		WorkflowUuid:   workflowID,
+		PendingStatus:  string(WorkflowStatusPending),
+	})
 	if err != nil {
 		return false, fmt.Errorf("failed to clear queue assignment for workflow %s: %w", workflowID, err)
 	}
-
-	// If no rows were affected, the workflow is not anymore in the queue or was already completed
-	n, err := commandTag.RowsAffected()
-	if err != nil {
-		return false, fmt.Errorf("failed to read rows affected after clearing queue assignment for workflow %s: %w", workflowID, err)
-	}
+	// If no rows were affected, the workflow is no longer in the queue or was already completed.
 	return n > 0, nil
 }
 
@@ -3688,70 +3424,44 @@ func (s *SystemDatabase) getMetrics(ctx context.Context, startTime, endTime stri
 }
 
 func (s *SystemDatabase) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
-	workflowQuery := s.renderSQL(`
-		SELECT name, COUNT(workflow_uuid) as count
-		FROM %sworkflow_status
-		WHERE created_at >= $1 AND created_at < $2
-		GROUP BY name
-	`, s.dialect.SchemaPrefix(s.schema))
-
-	rows, err := s.pool.Query(ctx, workflowQuery, startEpochMs, endEpochMs)
+	rows, err := s.queries.GetMetricWorkflowCount(ctx, db.GetMetricWorkflowCountParams{
+		StartMs: startEpochMs,
+		EndMs:   endEpochMs,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workflow metrics: %w", err)
 	}
-	defer rows.Close()
-
-	var metrics []metricData
-	for rows.Next() {
-		var workflowName string
-		var workflowCount int64
-		if err := rows.Scan(&workflowName, &workflowCount); err != nil {
-			return nil, fmt.Errorf("failed to scan workflow metric: %w", err)
+	metrics := make([]metricData, 0, len(rows))
+	for _, r := range rows {
+		var name string
+		if r.Name != nil {
+			name = *r.Name
 		}
 		metrics = append(metrics, metricData{
 			MetricType: "workflow_count",
-			MetricName: workflowName,
-			Value:      float64(workflowCount),
+			MetricName: name,
+			Value:      float64(r.Count),
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating workflow metrics: %w", err)
-	}
-
 	return metrics, nil
 }
 
 func (s *SystemDatabase) getMetricStepCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
-	stepQuery := s.renderSQL(`
-		SELECT function_name, COUNT(*) as count
-		FROM %soperation_outputs
-		WHERE completed_at_epoch_ms >= $1 AND completed_at_epoch_ms < $2
-		GROUP BY function_name
-	`, s.dialect.SchemaPrefix(s.schema))
-
-	rows, err := s.pool.Query(ctx, stepQuery, startEpochMs, endEpochMs)
+	rows, err := s.queries.GetMetricStepCount(ctx, db.GetMetricStepCountParams{
+		StartMs: startEpochMs,
+		EndMs:   endEpochMs,
+	})
 	if err != nil {
 		return nil, fmt.Errorf("failed to query step metrics: %w", err)
 	}
-	defer rows.Close()
-
-	var metrics []metricData
-	for rows.Next() {
-		var stepName string
-		var stepCount int64
-		if err := rows.Scan(&stepName, &stepCount); err != nil {
-			return nil, fmt.Errorf("failed to scan step metric: %w", err)
-		}
+	metrics := make([]metricData, 0, len(rows))
+	for _, r := range rows {
 		metrics = append(metrics, metricData{
 			MetricType: "step_count",
-			MetricName: stepName,
-			Value:      float64(stepCount),
+			MetricName: r.FunctionName,
+			Value:      float64(r.Count),
 		})
 	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("error iterating step metrics: %w", err)
-	}
-
 	return metrics, nil
 }
 
@@ -4225,86 +3935,6 @@ func (s *SystemDatabase) resetSystemDB(ctx context.Context) error {
 	return nil
 }
 
-type queryBuilder struct {
-	setClauses   []string
-	whereClauses []string
-	args         []any
-	argCounter   int
-	dialect      Dialect
-}
-
-func newQueryBuilder(dialect Dialect) *queryBuilder {
-	return &queryBuilder{
-		setClauses:   make([]string, 0),
-		whereClauses: make([]string, 0),
-		args:         make([]any, 0),
-		argCounter:   0,
-		dialect:      dialect,
-	}
-}
-
-func (qb *queryBuilder) addSet(column string, value any) {
-	qb.argCounter++
-	qb.setClauses = append(qb.setClauses, fmt.Sprintf("%s=$%d", column, qb.argCounter))
-	qb.args = append(qb.args, value)
-}
-
-func (qb *queryBuilder) addSetRaw(clause string) {
-	qb.setClauses = append(qb.setClauses, clause)
-}
-
-func (qb *queryBuilder) addWhere(column string, value any) {
-	qb.argCounter++
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s=$%d", column, qb.argCounter))
-	qb.args = append(qb.args, value)
-}
-
-func (qb *queryBuilder) addWhereIsNotNull(column string) {
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s IS NOT NULL", column))
-}
-
-func (qb *queryBuilder) addWhereIsNull(column string) {
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s IS NULL", column))
-}
-
-func (qb *queryBuilder) addWhereLike(column string, value any) {
-	qb.argCounter++
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s LIKE $%d", column, qb.argCounter))
-	qb.args = append(qb.args, value)
-}
-
-func (qb *queryBuilder) addWhereAny(column string, values any) {
-	qb.argCounter++
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s = ANY($%d)", column, qb.argCounter))
-	qb.args = append(qb.args, values)
-}
-
-// addWhereLikeAny adds (column LIKE $n OR column LIKE $n+1 OR ...) for each prefix+suffix pattern.
-func (qb *queryBuilder) addWhereLikeAny(column string, prefixes []string, suffix string) {
-	if len(prefixes) == 0 {
-		return
-	}
-	ors := make([]string, len(prefixes))
-	for i, p := range prefixes {
-		qb.argCounter++
-		ors[i] = fmt.Sprintf("%s LIKE $%d", column, qb.argCounter)
-		qb.args = append(qb.args, p+suffix)
-	}
-	qb.whereClauses = append(qb.whereClauses, "("+strings.Join(ors, " OR ")+")")
-}
-
-func (qb *queryBuilder) addWhereGreaterEqual(column string, value any) {
-	qb.argCounter++
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s >= $%d", column, qb.argCounter))
-	qb.args = append(qb.args, value)
-}
-
-func (qb *queryBuilder) addWhereLessEqual(column string, value any) {
-	qb.argCounter++
-	qb.whereClauses = append(qb.whereClauses, fmt.Sprintf("%s <= $%d", column, qb.argCounter))
-	qb.args = append(qb.args, value)
-}
-
 func backoffWithJitter(retryAttempt int) time.Duration {
 	exp := float64(_DB_CONNECTION_RETRY_BASE_DELAY) * math.Pow(_DB_CONNECTION_RETRY_FACTOR, float64(retryAttempt))
 	// cap backoff to max number of retries, then do a fixed time delay
@@ -4402,7 +4032,7 @@ func retry(ctx context.Context, fn func() error, options ...retryOption) error {
 		jitterMin:     0.95,
 		jitterMax:     1.05,
 		retryConditionChain: []func(error, *slog.Logger) bool{
-			postgresDialect{}.IsRetryable,
+			isRetryable,
 		},
 	}
 
@@ -4520,211 +4150,110 @@ func (s *SystemDatabase) exportWorkflow(ctx context.Context, workflowID string, 
 		}
 	}
 
+	txq := s.queries.WithTx(PgxTx(tx))
 	exported := make([]ExportedWorkflow, 0, len(workflowIDs))
 
 	for _, wfID := range workflowIDs {
 		// Export workflow_status
-		statusQuery := s.renderSQL(`SELECT
-				workflow_uuid, status, name, authenticated_user, assumed_role, authenticated_roles,
-				output, error, executor_id, created_at, updated_at, application_version, application_id,
-				class_name, config_name, recovery_attempts, queue_name, workflow_timeout_ms,
-				workflow_deadline_epoch_ms, started_at_epoch_ms, deduplication_id, inputs, priority,
-				queue_partition_key, forked_from, parent_workflow_id, delay_until_epoch_ms, serialization
-			FROM %sworkflow_status WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-
-		row := tx.QueryRow(ctx, statusQuery, wfID)
-		var (
-			wfUUID, status, name                                         *string
-			authUser, assumedRole, authRoles, output, errStr, executorID *string
-			appVersion, appID, className, configName, queueName          *string
-			dedupID, inputs, queuePartitionKey, forkedFrom               *string
-			parentWorkflowID                                             *string
-			createdAt, updatedAt, recoveryAttempts                       *int64
-			workflowTimeoutMs, workflowDeadlineEpochMs, startedAtEpochMs *int64
-			priority                                                     *int
-			delayUntilEpochMs                                            *int64
-			serialization                                                *string
-		)
-		err := row.Scan(
-			&wfUUID, &status, &name, &authUser, &assumedRole, &authRoles,
-			&output, &errStr, &executorID, &createdAt, &updatedAt, &appVersion, &appID,
-			&className, &configName, &recoveryAttempts, &queueName, &workflowTimeoutMs,
-			&workflowDeadlineEpochMs, &startedAtEpochMs, &dedupID, &inputs, &priority,
-			&queuePartitionKey, &forkedFrom, &parentWorkflowID, &delayUntilEpochMs, &serialization,
-		)
+		st, err := txq.ExportWorkflowStatus(ctx, wfID)
 		if err != nil {
-			if err == pgx.ErrNoRows {
+			if errors.Is(err, pgx.ErrNoRows) {
 				return nil, newNonExistentWorkflowError(wfID)
 			}
 			return nil, fmt.Errorf("failed to export workflow_status for %s: %w", wfID, err)
 		}
-
 		workflowStatus := map[string]any{
-			"workflow_uuid":              wfUUID,
-			"status":                     status,
-			"name":                       name,
-			"authenticated_user":         authUser,
-			"assumed_role":               assumedRole,
-			"authenticated_roles":        authRoles,
-			"output":                     output,
-			"error":                      errStr,
-			"executor_id":                executorID,
-			"created_at":                 createdAt,
-			"updated_at":                 updatedAt,
-			"application_version":        appVersion,
-			"application_id":             appID,
-			"class_name":                 className,
-			"config_name":                configName,
-			"recovery_attempts":          recoveryAttempts,
-			"queue_name":                 queueName,
-			"workflow_timeout_ms":        workflowTimeoutMs,
-			"workflow_deadline_epoch_ms": workflowDeadlineEpochMs,
-			"started_at_epoch_ms":        startedAtEpochMs,
-			"deduplication_id":           dedupID,
-			"inputs":                     inputs,
-			"priority":                   priority,
-			"queue_partition_key":        queuePartitionKey,
-			"forked_from":                forkedFrom,
-			"parent_workflow_id":         parentWorkflowID,
-			"delay_until_epoch_ms":       delayUntilEpochMs,
-			"serialization":              serialization,
+			"workflow_uuid":              st.WorkflowUuid,
+			"status":                     st.Status,
+			"name":                       st.Name,
+			"authenticated_user":         st.AuthenticatedUser,
+			"assumed_role":               st.AssumedRole,
+			"authenticated_roles":        st.AuthenticatedRoles,
+			"output":                     st.Output,
+			"error":                      st.Error,
+			"executor_id":                st.ExecutorID,
+			"created_at":                 st.CreatedAt,
+			"updated_at":                 st.UpdatedAt,
+			"application_version":        st.ApplicationVersion,
+			"application_id":             st.ApplicationID,
+			"class_name":                 st.ClassName,
+			"config_name":                st.ConfigName,
+			"recovery_attempts":          st.RecoveryAttempts,
+			"queue_name":                 st.QueueName,
+			"workflow_timeout_ms":        st.WorkflowTimeoutMs,
+			"workflow_deadline_epoch_ms": st.WorkflowDeadlineEpochMs,
+			"started_at_epoch_ms":        st.StartedAtEpochMs,
+			"deduplication_id":           st.DeduplicationID,
+			"inputs":                     st.Inputs,
+			"priority":                   st.Priority,
+			"queue_partition_key":        st.QueuePartitionKey,
+			"forked_from":                st.ForkedFrom,
+			"parent_workflow_id":         st.ParentWorkflowID,
+			"delay_until_epoch_ms":       st.DelayUntilEpochMs,
+			"serialization":              st.Serialization,
 		}
 
 		// Export operation_outputs
-		outputsQuery := s.renderSQL(`SELECT workflow_uuid, function_id, function_name, output, error,
-				started_at_epoch_ms, completed_at_epoch_ms
-			FROM %soperation_outputs WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-
-		outputRows, err := tx.Query(ctx, outputsQuery, wfID)
+		ops, err := txq.ExportOperationOutputs(ctx, wfID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export operation_outputs for %s: %w", wfID, err)
 		}
 		var operationOutputs []map[string]any
-		for outputRows.Next() {
-			var opWfUUID, opFuncName *string
-			var opFuncID *int
-			var opOutput, opError *string
-			var opStartedAt, opCompletedAt *int64
-			if err := outputRows.Scan(&opWfUUID, &opFuncID, &opFuncName, &opOutput, &opError, &opStartedAt, &opCompletedAt); err != nil {
-				scanErr := fmt.Errorf("failed to scan operation_outputs row for %s: %w", wfID, err)
-				if cerr := outputRows.Close(); cerr != nil {
-					return nil, errors.Join(scanErr, fmt.Errorf("close operation_outputs rows: %w", cerr))
-				}
-				return nil, scanErr
-			}
+		for _, op := range ops {
 			operationOutputs = append(operationOutputs, map[string]any{
-				"workflow_uuid":         opWfUUID,
-				"function_id":           opFuncID,
-				"function_name":         opFuncName,
-				"output":                opOutput,
-				"error":                 opError,
-				"started_at_epoch_ms":   opStartedAt,
-				"completed_at_epoch_ms": opCompletedAt,
+				"workflow_uuid":         op.WorkflowUuid,
+				"function_id":           op.FunctionID,
+				"function_name":         op.FunctionName,
+				"output":                op.Output,
+				"error":                 op.Error,
+				"started_at_epoch_ms":   op.StartedAtEpochMs,
+				"completed_at_epoch_ms": op.CompletedAtEpochMs,
 			})
-		}
-		if cerr := outputRows.Close(); cerr != nil {
-			return nil, fmt.Errorf("failed to close operation_outputs rows for %s: %w", wfID, cerr)
-		}
-		if err := outputRows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating operation_outputs for %s: %w", wfID, err)
 		}
 
 		// Export workflow_events
-		eventsQuery := s.renderSQL(`SELECT workflow_uuid, key, value
-			FROM %sworkflow_events WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-
-		eventRows, err := tx.Query(ctx, eventsQuery, wfID)
+		evs, err := txq.ExportWorkflowEvents(ctx, wfID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export workflow_events for %s: %w", wfID, err)
 		}
 		var workflowEvents []map[string]any
-		for eventRows.Next() {
-			var evWfUUID, evKey, evValue *string
-			if err := eventRows.Scan(&evWfUUID, &evKey, &evValue); err != nil {
-				scanErr := fmt.Errorf("failed to scan workflow_events row for %s: %w", wfID, err)
-				if cerr := eventRows.Close(); cerr != nil {
-					return nil, errors.Join(scanErr, fmt.Errorf("close workflow_events rows: %w", cerr))
-				}
-				return nil, scanErr
-			}
+		for _, ev := range evs {
 			workflowEvents = append(workflowEvents, map[string]any{
-				"workflow_uuid": evWfUUID,
-				"key":           evKey,
-				"value":         evValue,
+				"workflow_uuid": ev.WorkflowUuid,
+				"key":           ev.Key,
+				"value":         ev.Value,
 			})
-		}
-		if cerr := eventRows.Close(); cerr != nil {
-			return nil, fmt.Errorf("failed to close workflow_events rows for %s: %w", wfID, cerr)
-		}
-		if err := eventRows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating workflow_events for %s: %w", wfID, err)
 		}
 
 		// Export workflow_events_history
-		historyQuery := s.renderSQL(`SELECT workflow_uuid, function_id, key, value
-			FROM %sworkflow_events_history WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-
-		historyRows, err := tx.Query(ctx, historyQuery, wfID)
+		hist, err := txq.ExportWorkflowEventsHistory(ctx, wfID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export workflow_events_history for %s: %w", wfID, err)
 		}
 		var workflowEventsHistory []map[string]any
-		for historyRows.Next() {
-			var hWfUUID, hKey, hValue *string
-			var hFuncID *int
-			if err := historyRows.Scan(&hWfUUID, &hFuncID, &hKey, &hValue); err != nil {
-				scanErr := fmt.Errorf("failed to scan workflow_events_history row for %s: %w", wfID, err)
-				if cerr := historyRows.Close(); cerr != nil {
-					return nil, errors.Join(scanErr, fmt.Errorf("close workflow_events_history rows: %w", cerr))
-				}
-				return nil, scanErr
-			}
+		for _, h := range hist {
 			workflowEventsHistory = append(workflowEventsHistory, map[string]any{
-				"workflow_uuid": hWfUUID,
-				"function_id":   hFuncID,
-				"key":           hKey,
-				"value":         hValue,
+				"workflow_uuid": h.WorkflowUuid,
+				"function_id":   h.FunctionID,
+				"key":           h.Key,
+				"value":         h.Value,
 			})
-		}
-		if cerr := historyRows.Close(); cerr != nil {
-			return nil, fmt.Errorf("failed to close workflow_events_history rows for %s: %w", wfID, cerr)
-		}
-		if err := historyRows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating workflow_events_history for %s: %w", wfID, err)
 		}
 
 		// Export streams
-		streamsQuery := s.renderSQL(`SELECT workflow_uuid, key, value, "offset", function_id
-			FROM %sstreams WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
-
-		streamRows, err := tx.Query(ctx, streamsQuery, wfID)
+		strms, err := txq.ExportStreams(ctx, wfID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to export streams for %s: %w", wfID, err)
 		}
 		var streams []map[string]any
-		for streamRows.Next() {
-			var sWfUUID, sKey, sValue *string
-			var sOffset, sFuncID *int
-			if err := streamRows.Scan(&sWfUUID, &sKey, &sValue, &sOffset, &sFuncID); err != nil {
-				scanErr := fmt.Errorf("failed to scan streams row for %s: %w", wfID, err)
-				if cerr := streamRows.Close(); cerr != nil {
-					return nil, errors.Join(scanErr, fmt.Errorf("close streams rows: %w", cerr))
-				}
-				return nil, scanErr
-			}
+		for _, st := range strms {
 			streams = append(streams, map[string]any{
-				"workflow_uuid": sWfUUID,
-				"key":           sKey,
-				"value":         sValue,
-				"offset":        sOffset,
-				"function_id":   sFuncID,
+				"workflow_uuid": st.WorkflowUuid,
+				"key":           st.Key,
+				"value":         st.Value,
+				"offset":        st.Offset,
+				"function_id":   st.FunctionID,
 			})
-		}
-		if cerr := streamRows.Close(); cerr != nil {
-			return nil, fmt.Errorf("failed to close streams rows for %s: %w", wfID, cerr)
-		}
-		if err := streamRows.Err(); err != nil {
-			return nil, fmt.Errorf("error iterating streams for %s: %w", wfID, err)
 		}
 
 		exported = append(exported, ExportedWorkflow{
@@ -4749,92 +4278,92 @@ func (s *SystemDatabase) importWorkflow(ctx context.Context, workflows []Exporte
 	}
 	defer tx.Rollback(ctx)
 
+	txq := s.queries.WithTx(PgxTx(tx))
+
 	for _, wf := range workflows {
 		status := wf.WorkflowStatus
 
 		// Import workflow_status
-		insertStatusQuery := s.renderSQL(`INSERT INTO %sworkflow_status (
-				workflow_uuid, status, name, authenticated_user, assumed_role, authenticated_roles,
-				output, error, executor_id, created_at, updated_at, application_version, application_id,
-				class_name, config_name, recovery_attempts, queue_name, workflow_timeout_ms,
-				workflow_deadline_epoch_ms, started_at_epoch_ms, deduplication_id, inputs, priority,
-				queue_partition_key, forked_from, parent_workflow_id, delay_until_epoch_ms, serialization
-			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)`,
-			s.dialect.SchemaPrefix(s.schema))
-
-		_, err := tx.Exec(ctx, insertStatusQuery,
-			status["workflow_uuid"], status["status"], status["name"],
-			status["authenticated_user"], status["assumed_role"], status["authenticated_roles"],
-			status["output"], status["error"], status["executor_id"],
-			status["created_at"], status["updated_at"], status["application_version"], status["application_id"],
-			status["class_name"], status["config_name"], status["recovery_attempts"], status["queue_name"],
-			status["workflow_timeout_ms"], status["workflow_deadline_epoch_ms"], status["started_at_epoch_ms"],
-			status["deduplication_id"], status["inputs"], status["priority"],
-			status["queue_partition_key"], status["forked_from"], status["parent_workflow_id"],
-			status["delay_until_epoch_ms"], status["serialization"],
-		)
-		if err != nil {
+		if err := txq.ImportWorkflowStatus(ctx, db.ImportWorkflowStatusParams{
+			WorkflowUuid:            impStrNonNull(status["workflow_uuid"]),
+			Status:                  impStr(status["status"]),
+			Name:                    impStr(status["name"]),
+			AuthenticatedUser:       impStr(status["authenticated_user"]),
+			AssumedRole:             impStr(status["assumed_role"]),
+			AuthenticatedRoles:      impStr(status["authenticated_roles"]),
+			Output:                  impStr(status["output"]),
+			Error:                   impStr(status["error"]),
+			ExecutorID:              impStr(status["executor_id"]),
+			CreatedAt:               impInt64NonNull(status["created_at"]),
+			UpdatedAt:               impInt64NonNull(status["updated_at"]),
+			ApplicationVersion:      impStr(status["application_version"]),
+			ApplicationID:           impStr(status["application_id"]),
+			ClassName:               impStr(status["class_name"]),
+			ConfigName:              impStr(status["config_name"]),
+			RecoveryAttempts:        impInt64Ptr(status["recovery_attempts"]),
+			QueueName:               impStr(status["queue_name"]),
+			WorkflowTimeoutMs:       impInt64Ptr(status["workflow_timeout_ms"]),
+			WorkflowDeadlineEpochMs: impInt64Ptr(status["workflow_deadline_epoch_ms"]),
+			StartedAtEpochMs:        impInt64Ptr(status["started_at_epoch_ms"]),
+			DeduplicationID:         impStr(status["deduplication_id"]),
+			Inputs:                  impStr(status["inputs"]),
+			Priority:                impInt32(status["priority"]),
+			QueuePartitionKey:       impStr(status["queue_partition_key"]),
+			ForkedFrom:              impStr(status["forked_from"]),
+			ParentWorkflowID:        impStr(status["parent_workflow_id"]),
+			DelayUntilEpochMs:       impInt64Ptr(status["delay_until_epoch_ms"]),
+			Serialization:           impStr(status["serialization"]),
+		}); err != nil {
 			return fmt.Errorf("failed to import workflow_status: %w", err)
 		}
 
 		// Import operation_outputs
 		for _, op := range wf.OperationOutputs {
-			insertOpQuery := s.renderSQL(`INSERT INTO %soperation_outputs (
-					workflow_uuid, function_id, function_name, output, error,
-					started_at_epoch_ms, completed_at_epoch_ms
-				) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-				s.dialect.SchemaPrefix(s.schema))
-
-			_, err := tx.Exec(ctx, insertOpQuery,
-				op["workflow_uuid"], op["function_id"], op["function_name"],
-				op["output"], op["error"], op["started_at_epoch_ms"], op["completed_at_epoch_ms"],
-			)
-			if err != nil {
+			if err := txq.ImportOperationOutput(ctx, db.ImportOperationOutputParams{
+				WorkflowUuid:       impStrNonNull(op["workflow_uuid"]),
+				FunctionID:         impInt32(op["function_id"]),
+				FunctionName:       impStrNonNull(op["function_name"]),
+				Output:             impStr(op["output"]),
+				Error:              impStr(op["error"]),
+				StartedAtEpochMs:   impInt64Ptr(op["started_at_epoch_ms"]),
+				CompletedAtEpochMs: impInt64Ptr(op["completed_at_epoch_ms"]),
+			}); err != nil {
 				return fmt.Errorf("failed to import operation_outputs: %w", err)
 			}
 		}
 
 		// Import workflow_events
 		for _, ev := range wf.WorkflowEvents {
-			insertEvQuery := s.renderSQL(`INSERT INTO %sworkflow_events (
-					workflow_uuid, key, value
-				) VALUES ($1, $2, $3)`,
-				s.dialect.SchemaPrefix(s.schema))
-
-			_, err := tx.Exec(ctx, insertEvQuery,
-				ev["workflow_uuid"], ev["key"], ev["value"],
-			)
-			if err != nil {
+			if err := txq.ImportWorkflowEvent(ctx, db.ImportWorkflowEventParams{
+				WorkflowUuid: impStrNonNull(ev["workflow_uuid"]),
+				Key:          impStrNonNull(ev["key"]),
+				Value:        impStrNonNull(ev["value"]),
+			}); err != nil {
 				return fmt.Errorf("failed to import workflow_events: %w", err)
 			}
 		}
 
 		// Import workflow_events_history
 		for _, h := range wf.WorkflowEventsHistory {
-			insertHistQuery := s.renderSQL(`INSERT INTO %sworkflow_events_history (
-					workflow_uuid, function_id, key, value
-				) VALUES ($1, $2, $3, $4)`,
-				s.dialect.SchemaPrefix(s.schema))
-
-			_, err := tx.Exec(ctx, insertHistQuery,
-				h["workflow_uuid"], h["function_id"], h["key"], h["value"],
-			)
-			if err != nil {
+			if err := txq.ImportWorkflowEventHistory(ctx, db.ImportWorkflowEventHistoryParams{
+				WorkflowUuid: impStrNonNull(h["workflow_uuid"]),
+				FunctionID:   impInt32(h["function_id"]),
+				Key:          impStrNonNull(h["key"]),
+				Value:        impStrNonNull(h["value"]),
+			}); err != nil {
 				return fmt.Errorf("failed to import workflow_events_history: %w", err)
 			}
 		}
 
 		// Import streams
 		for _, st := range wf.Streams {
-			insertStreamQuery := s.renderSQL(`INSERT INTO %sstreams (
-					workflow_uuid, key, value, "offset", function_id
-				) VALUES ($1, $2, $3, $4, $5)`,
-				s.dialect.SchemaPrefix(s.schema))
-
-			_, err := tx.Exec(ctx, insertStreamQuery,
-				st["workflow_uuid"], st["key"], st["value"], st["offset"], st["function_id"],
-			)
-			if err != nil {
+			if err := txq.ImportStream(ctx, db.ImportStreamParams{
+				WorkflowUuid: impStrNonNull(st["workflow_uuid"]),
+				Key:          impStrNonNull(st["key"]),
+				Value:        impStrNonNull(st["value"]),
+				StreamOffset: impInt32(st["offset"]),
+				FunctionID:   impInt32(st["function_id"]),
+			}); err != nil {
 				return fmt.Errorf("failed to import streams: %w", err)
 			}
 		}

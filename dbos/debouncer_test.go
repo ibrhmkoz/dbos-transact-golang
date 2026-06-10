@@ -236,7 +236,7 @@ func TestDebouncer(t *testing.T) {
 		// Find the internal debouncer workflow through the target workflow's parent metadata.
 		sysDBInstance := dbosCtxInstance.systemDB
 
-		query := sysDBInstance.renderSQL(`SELECT parent_workflow_id FROM %sworkflow_status WHERE workflow_uuid = $1`, sysDBInstance.dialect.SchemaPrefix(sysDBInstance.schema))
+		query := sysDBInstance.renderSQL(`SELECT parent_workflow_id FROM %sworkflow_status WHERE workflow_uuid = $1`, "")
 		var debouncerWorkflowID string
 		err = sysDBInstance.pool.QueryRow(context.Background(), query, handle1.GetWorkflowID()).Scan(&debouncerWorkflowID)
 		require.NoError(t, err, "failed to find debouncer workflow from parent metadata")

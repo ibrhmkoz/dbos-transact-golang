@@ -59,6 +59,26 @@ func (q *Queries) CancelWorkflows(ctx context.Context, arg CancelWorkflowsParams
 	return items, nil
 }
 
+const clearQueueAssignment = `-- name: ClearQueueAssignment :execrows
+UPDATE workflow_status
+SET status = $1::text, started_at_epoch_ms = NULL
+WHERE workflow_uuid = $2 AND queue_name IS NOT NULL AND status = $3::text
+`
+
+type ClearQueueAssignmentParams struct {
+	EnqueuedStatus string
+	WorkflowUuid   string
+	PendingStatus  string
+}
+
+func (q *Queries) ClearQueueAssignment(ctx context.Context, arg ClearQueueAssignmentParams) (int64, error) {
+	result, err := q.db.Exec(ctx, clearQueueAssignment, arg.EnqueuedStatus, arg.WorkflowUuid, arg.PendingStatus)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected(), nil
+}
+
 const deleteWorkflows = `-- name: DeleteWorkflows :exec
 DELETE FROM workflow_status WHERE workflow_uuid = ANY($1::text[])
 `
@@ -177,6 +197,142 @@ func (q *Queries) GetWorkflowStatusOnly(ctx context.Context, workflowUuid string
 	var status *string
 	err := row.Scan(&status)
 	return status, err
+}
+
+const insertWorkflowStatus = `-- name: InsertWorkflowStatus :one
+INSERT INTO workflow_status (
+    workflow_uuid, status, name, queue_name, authenticated_user, assumed_role,
+    authenticated_roles, executor_id, application_version, application_id,
+    created_at, recovery_attempts, updated_at, workflow_timeout_ms,
+    workflow_deadline_epoch_ms, inputs, deduplication_id, priority,
+    queue_partition_key, owner_xid, parent_workflow_id, class_name, config_name,
+    serialization, delay_until_epoch_ms
+) VALUES (
+    $1, $2::text, $3::text, $4::text, $5::text, $6::text,
+    $7::text, $8::text, $9, $10::text,
+    $11::bigint, $12::bigint, $13::bigint, $14,
+    $15, $16, $17, $18::int,
+    $19, $20, $21, $22, $23,
+    $24::text, $25
+)
+ON CONFLICT (workflow_uuid) DO UPDATE SET
+    recovery_attempts = CASE
+        WHEN EXCLUDED.status NOT IN ($26::text, $27::text)
+        THEN workflow_status.recovery_attempts + $28::bigint
+        ELSE workflow_status.recovery_attempts
+    END,
+    updated_at = EXCLUDED.updated_at,
+    executor_id = CASE
+        WHEN EXCLUDED.status IN ($26::text, $27::text)
+        THEN workflow_status.executor_id
+        ELSE EXCLUDED.executor_id
+    END
+RETURNING recovery_attempts, status, name, queue_name, queue_partition_key,
+          workflow_timeout_ms, workflow_deadline_epoch_ms, owner_xid
+`
+
+type InsertWorkflowStatusParams struct {
+	WorkflowUuid            string
+	Status                  string
+	Name                    string
+	QueueName               string
+	AuthenticatedUser       string
+	AssumedRole             string
+	AuthenticatedRoles      string
+	ExecutorID              string
+	ApplicationVersion      *string
+	ApplicationID           string
+	CreatedAt               int64
+	RecoveryAttempts        int64
+	UpdatedAt               int64
+	WorkflowTimeoutMs       *int64
+	WorkflowDeadlineEpochMs *int64
+	Inputs                  *string
+	DeduplicationID         *string
+	Priority                int32
+	QueuePartitionKey       *string
+	OwnerXid                *string
+	ParentWorkflowID        *string
+	ClassName               *string
+	ConfigName              *string
+	Serialization           string
+	DelayUntilEpochMs       *int64
+	EnqueuedStatus          string
+	DelayedStatus           string
+	RecoveryIncrement       int64
+}
+
+type InsertWorkflowStatusRow struct {
+	RecoveryAttempts        *int64
+	Status                  *string
+	Name                    *string
+	QueueName               *string
+	QueuePartitionKey       *string
+	WorkflowTimeoutMs       *int64
+	WorkflowDeadlineEpochMs *int64
+	OwnerXid                *string
+}
+
+func (q *Queries) InsertWorkflowStatus(ctx context.Context, arg InsertWorkflowStatusParams) (InsertWorkflowStatusRow, error) {
+	row := q.db.QueryRow(ctx, insertWorkflowStatus,
+		arg.WorkflowUuid,
+		arg.Status,
+		arg.Name,
+		arg.QueueName,
+		arg.AuthenticatedUser,
+		arg.AssumedRole,
+		arg.AuthenticatedRoles,
+		arg.ExecutorID,
+		arg.ApplicationVersion,
+		arg.ApplicationID,
+		arg.CreatedAt,
+		arg.RecoveryAttempts,
+		arg.UpdatedAt,
+		arg.WorkflowTimeoutMs,
+		arg.WorkflowDeadlineEpochMs,
+		arg.Inputs,
+		arg.DeduplicationID,
+		arg.Priority,
+		arg.QueuePartitionKey,
+		arg.OwnerXid,
+		arg.ParentWorkflowID,
+		arg.ClassName,
+		arg.ConfigName,
+		arg.Serialization,
+		arg.DelayUntilEpochMs,
+		arg.EnqueuedStatus,
+		arg.DelayedStatus,
+		arg.RecoveryIncrement,
+	)
+	var i InsertWorkflowStatusRow
+	err := row.Scan(
+		&i.RecoveryAttempts,
+		&i.Status,
+		&i.Name,
+		&i.QueueName,
+		&i.QueuePartitionKey,
+		&i.WorkflowTimeoutMs,
+		&i.WorkflowDeadlineEpochMs,
+		&i.OwnerXid,
+	)
+	return i, err
+}
+
+const markWorkflowMaxRecoveryExceeded = `-- name: MarkWorkflowMaxRecoveryExceeded :exec
+UPDATE workflow_status
+SET status = $1::text, started_at_epoch_ms = NULL, queue_name = NULL
+WHERE workflow_uuid = $2 AND status = $3::text
+`
+
+type MarkWorkflowMaxRecoveryExceededParams struct {
+	NewStatus     string
+	WorkflowUuid  string
+	PendingStatus string
+}
+
+func (q *Queries) MarkWorkflowMaxRecoveryExceeded(ctx context.Context, arg MarkWorkflowMaxRecoveryExceededParams) error {
+	_, err := q.db.Exec(ctx, markWorkflowMaxRecoveryExceeded, arg.NewStatus, arg.WorkflowUuid, arg.PendingStatus)
+	return err
 }
 
 const resumeWorkflows = `-- name: ResumeWorkflows :many
