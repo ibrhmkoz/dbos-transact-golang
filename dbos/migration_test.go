@@ -17,7 +17,7 @@ func poolFromContext(t *testing.T, ctx DBOSContext) *pgxpool.Pool {
 	t.Helper()
 	c, ok := ctx.(*dbosContext)
 	require.True(t, ok)
-	s := c.systemDB
+	s := c.kernel
 	return PgxPool(s.pool)
 }
 

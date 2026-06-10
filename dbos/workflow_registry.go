@@ -12,7 +12,7 @@ type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization str
 // workflow to the system database. Called once at launch.
 func (c *dbosContext) persistWorkflowDefinitions() error {
 	for _, entry := range c.workflowRegistry.List(false) {
-		if err := c.systemDB.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit, entry.Retention); err != nil {
+		if err := c.kernel.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit, entry.Retention); err != nil {
 			return fmt.Errorf("persist workflow definition %s: %w", entry.Name, err)
 		}
 	}

@@ -235,67 +235,67 @@ func TestConfig(t *testing.T) {
 
 		require.NotNil(t, ctx)
 
-		// Get the internal systemDB instance to check tables directly
+		// Get the internal kernel instance to check tables directly
 		dbosCtx, ok := ctx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
-		require.NotNil(t, dbosCtx.systemDB)
+		require.NotNil(t, dbosCtx.kernel)
 
-		SystemDatabase := dbosCtx.systemDB
+		Kernel := dbosCtx.kernel
 
 		// Verify all expected tables exist and have correct structure
 		dbCtx := context.Background()
 
 		// Test workflow_status table
 		var exists bool
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_status')").Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_status')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_status table should exist")
 
 		// Test operation_outputs table
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'operation_outputs')").Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'operation_outputs')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "operation_outputs table should exist")
 
 		// Test workflow_events table
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_events')").Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_events')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_events table should exist")
 
 		// Test notifications table
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'notifications')").Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'notifications')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "notifications table should exist")
 
 		// Test that all tables can be queried (empty results expected)
-		rows, err := SystemDatabase.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.workflow_status LIMIT 1")
+		rows, err := Kernel.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.workflow_status LIMIT 1")
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.operation_outputs LIMIT 1")
+		rows, err = Kernel.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.operation_outputs LIMIT 1")
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.workflow_events LIMIT 1")
+		rows, err = Kernel.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.workflow_events LIMIT 1")
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, "SELECT destination_uuid FROM dbos.notifications LIMIT 1")
+		rows, err = Kernel.pool.Query(dbCtx, "SELECT destination_uuid FROM dbos.notifications LIMIT 1")
 		require.NoError(t, err)
 		rows.Close()
 
 		// Check that the dbos_migrations table exists and has one row with the correct version
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'dbos_migrations')").Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'dbos_migrations')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "dbos_migrations table should exist")
 
 		// Verify migration version is 14 (after initial migration through pgsql_client_functions)
 		var version int64
 		var count int
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT COUNT(*) FROM dbos.dbos_migrations").Scan(&count)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT COUNT(*) FROM dbos.dbos_migrations").Scan(&count)
 		require.NoError(t, err)
 		assert.Equal(t, 1, count, "dbos_migrations table should have exactly one row")
 
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT version FROM dbos.dbos_migrations").Scan(&version)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT version FROM dbos.dbos_migrations").Scan(&version)
 		require.NoError(t, err)
 		assert.Equal(t, int64(37), version, "migration version should be 37 (after all migrations including completed_at and started_at index)")
 
@@ -397,15 +397,15 @@ func TestConfig(t *testing.T) {
 			// Verify system DB is functional
 			dbosCtx, ok := ctx.(*dbosContext)
 			require.True(t, ok)
-			SystemDatabase := dbosCtx.systemDB
+			Kernel := dbosCtx.kernel
 
 			var exists bool
-			err = SystemDatabase.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_status')").Scan(&exists)
+			err = Kernel.pool.QueryRow(context.Background(), "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_status')").Scan(&exists)
 			require.NoError(t, err)
 			assert.True(t, exists)
 
 			// Verify masking works
-			poolConnStr := PgxPool(SystemDatabase.pool).Config().ConnString()
+			poolConnStr := PgxPool(Kernel.pool).Config().ConnString()
 			maskedConnStr, err := maskPassword(poolConnStr)
 			require.NoError(t, err)
 			if actualPassword == "" {
@@ -526,70 +526,70 @@ func TestCustomSystemDBSchema(t *testing.T) {
 	require.NotNil(t, ctx)
 
 	t.Run("CustomSchemaSetup", func(t *testing.T) {
-		// Get the internal systemDB instance to check tables directly
+		// Get the internal kernel instance to check tables directly
 		dbosCtx, ok := ctx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
-		require.NotNil(t, dbosCtx.systemDB)
+		require.NotNil(t, dbosCtx.kernel)
 
-		SystemDatabase := dbosCtx.systemDB
+		Kernel := dbosCtx.kernel
 
 		// Verify schema name was set correctly
-		assert.Equal(t, customSchema, SystemDatabase.schema, "schema name should match custom schema")
+		assert.Equal(t, customSchema, Kernel.schema, "schema name should match custom schema")
 
 		// Verify all expected tables exist in the custom schema
 		dbCtx := context.Background()
 
 		// Test workflow_status table in custom schema
 		var exists bool
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_status')", customSchema).Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_status')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_status table should exist in custom schema")
 
 		// Test operation_outputs table in custom schema
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'operation_outputs')", customSchema).Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'operation_outputs')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "operation_outputs table should exist in custom schema")
 
 		// Test workflow_events table in custom schema
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_events')", customSchema).Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_events')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_events table should exist in custom schema")
 
 		// Test notifications table in custom schema
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'notifications')", customSchema).Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'notifications')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "notifications table should exist in custom schema")
 
 		// Test that all tables can be queried using custom schema (empty results expected)
-		rows, err := SystemDatabase.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.workflow_status LIMIT 1", customSchema))
+		rows, err := Kernel.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.workflow_status LIMIT 1", customSchema))
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.operation_outputs LIMIT 1", customSchema))
+		rows, err = Kernel.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.operation_outputs LIMIT 1", customSchema))
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.workflow_events LIMIT 1", customSchema))
+		rows, err = Kernel.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.workflow_events LIMIT 1", customSchema))
 		require.NoError(t, err)
 		rows.Close()
 
-		rows, err = SystemDatabase.pool.Query(dbCtx, fmt.Sprintf("SELECT destination_uuid FROM %s.notifications LIMIT 1", customSchema))
+		rows, err = Kernel.pool.Query(dbCtx, fmt.Sprintf("SELECT destination_uuid FROM %s.notifications LIMIT 1", customSchema))
 		require.NoError(t, err)
 		rows.Close()
 
 		// Check that the dbos_migrations table exists in custom schema
-		err = SystemDatabase.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dbos_migrations')", customSchema).Scan(&exists)
+		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dbos_migrations')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "dbos_migrations table should exist in custom schema")
 
 		// Verify migration version is 14 (after initial migration through pgsql_client_functions)
 		var version int64
 		var count int
-		err = SystemDatabase.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT COUNT(*) FROM %s.dbos_migrations", customSchema)).Scan(&count)
+		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT COUNT(*) FROM %s.dbos_migrations", customSchema)).Scan(&count)
 		require.NoError(t, err)
 		assert.Equal(t, 1, count, "dbos_migrations table should have exactly one row")
 
-		err = SystemDatabase.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT version FROM %s.dbos_migrations", customSchema)).Scan(&version)
+		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT version FROM %s.dbos_migrations", customSchema)).Scan(&version)
 		require.NoError(t, err)
 		assert.Equal(t, int64(37), version, "migration version should be 37 (after all migrations including completed_at and started_at index)")
 	})
@@ -793,13 +793,13 @@ func TestCustomPool(t *testing.T) {
 		defer Shutdown(dbosCtx, 10*time.Second)
 		require.True(t, ok)
 
-		SystemDatabase := dbosCtx.systemDB
-		assert.Same(t, pool, PgxPool(SystemDatabase.pool), "The pool in dbosContext should be the same as the custom pool provided")
+		Kernel := dbosCtx.kernel
+		assert.Same(t, pool, PgxPool(Kernel.pool), "The pool in dbosContext should be the same as the custom pool provided")
 
-		stats := PgxPool(SystemDatabase.pool).Stat()
+		stats := PgxPool(Kernel.pool).Stat()
 		assert.Equal(t, int32(10), stats.MaxConns(), "MaxConns should match custom pool config")
 
-		sysdbConfig := PgxPool(SystemDatabase.pool).Config()
+		sysdbConfig := PgxPool(Kernel.pool).Config()
 		assert.Equal(t, int32(10), sysdbConfig.MaxConns)
 		assert.Equal(t, int32(5), sysdbConfig.MinConns)
 		assert.Equal(t, 2*time.Hour, sysdbConfig.MaxConnLifetime)
@@ -915,7 +915,7 @@ func TestCustomPool(t *testing.T) {
 		assert.Contains(t, dbosErr.Message, expectedMsg)
 	})
 
-	t.Run("DirectSystemDatabase", func(t *testing.T) {
+	t.Run("DirectKernel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		databaseURL := getDatabaseURL()
 		logger := slog.Default()
@@ -930,22 +930,22 @@ func TestCustomPool(t *testing.T) {
 		defer customPool.Close()
 
 		// Create system database with custom pool
-		sysDBInput := newSystemDatabaseInput{
+		sysDBInput := newKernelInput{
 			databaseURL:    databaseURL,
 			databaseSchema: "dbos_test_custom_direct",
 			customPool:     customPool,
 			logger:         logger,
 		}
 
-		systemDB, err := newSystemDatabase(ctx, sysDBInput)
+		kernel, err := newKernel(ctx, sysDBInput)
 		require.NoError(t, err, "failed to create system database with custom pool")
-		require.NotNil(t, systemDB)
+		require.NotNil(t, kernel)
 
 		// Launch the system database
-		systemDB.launch(ctx)
+		kernel.launch(ctx)
 
 		require.Eventually(t, func() bool {
-			conn, err := PgxPool(systemDB.pool).Acquire(ctx)
+			conn, err := PgxPool(kernel.pool).Acquire(ctx)
 			require.NoError(t, err)
 			defer conn.Release()
 			err = conn.Ping(ctx)
@@ -956,7 +956,7 @@ func TestCustomPool(t *testing.T) {
 		// Shutdown the system database
 		cancel() // Cancel context
 		shutdownTimeout := 2 * time.Second
-		systemDB.shutdown(ctx, shutdownTimeout)
-		assert.False(t, systemDB.launched)
+		kernel.shutdown(ctx, shutdownTimeout)
+		assert.False(t, kernel.launched)
 	})
 }

@@ -31,9 +31,9 @@ const (
 // DatabaseURL and AppName are required.
 type Config struct {
 	AppName                   string          // Application name for identification (required)
-	DatabaseURL               string          // PostgreSQL connection string. Mutually exclusive with SystemDBPool and SystemDatabase.
-	SystemDBPool              *pgxpool.Pool   // Custom PostgreSQL pool. Mutually exclusive with DatabaseURL and SystemDatabase.
-	SystemDatabase            *SystemDatabase // Shared system database. Mutually exclusive with DatabaseURL and SystemDBPool.
+	DatabaseURL               string          // PostgreSQL connection string. Mutually exclusive with SystemDBPool and Kernel.
+	SystemDBPool              *pgxpool.Pool   // Custom PostgreSQL pool. Mutually exclusive with DatabaseURL and Kernel.
+	Kernel                    *Kernel         // Shared system database. Mutually exclusive with DatabaseURL and SystemDBPool.
 	DatabaseSchema            string          // Database schema name (defaults to "dbos")
 	Logger                    *slog.Logger    // Custom logger instance (defaults to a new slog logger)
 	AdminServer               bool            // Enable Transact admin HTTP server (disabled by default)
@@ -50,16 +50,16 @@ type Config struct {
 
 func processConfig(inputConfig *Config) (*Config, error) {
 	// First check required fields
-	if len(inputConfig.DatabaseURL) == 0 && inputConfig.SystemDBPool == nil && inputConfig.SystemDatabase == nil {
-		return nil, fmt.Errorf("one of databaseURL, systemDBPool, or systemDatabase must be provided")
+	if len(inputConfig.DatabaseURL) == 0 && inputConfig.SystemDBPool == nil && inputConfig.Kernel == nil {
+		return nil, fmt.Errorf("one of databaseURL, systemDBPool, or kernel must be provided")
 	}
-	if inputConfig.SystemDatabase != nil && (inputConfig.DatabaseURL != "" || inputConfig.SystemDBPool != nil) {
-		return nil, fmt.Errorf("systemDatabase is mutually exclusive with databaseURL and systemDBPool")
+	if inputConfig.Kernel != nil && (inputConfig.DatabaseURL != "" || inputConfig.SystemDBPool != nil) {
+		return nil, fmt.Errorf("kernel is mutually exclusive with databaseURL and systemDBPool")
 	}
 	if len(inputConfig.AppName) == 0 {
 		return nil, fmt.Errorf("missing required config field: appName")
 	}
-	if inputConfig.SystemDBPool == nil && inputConfig.SystemDatabase == nil {
+	if inputConfig.SystemDBPool == nil && inputConfig.Kernel == nil {
 		if err := validateDatabaseURL(inputConfig.DatabaseURL); err != nil {
 			return nil, err
 		}
@@ -81,7 +81,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 		ApplicationVersion:        inputConfig.ApplicationVersion,
 		ExecutorID:                inputConfig.ExecutorID,
 		SystemDBPool:              inputConfig.SystemDBPool,
-		SystemDatabase:            inputConfig.SystemDatabase,
+		Kernel:                    inputConfig.Kernel,
 		EnablePatching:            inputConfig.EnablePatching,
 		Serializer:                inputConfig.Serializer,
 		SchedulerPollingInterval:  inputConfig.SchedulerPollingInterval,
@@ -183,7 +183,7 @@ type dbosContext struct {
 
 	launched atomic.Bool
 
-	systemDB     *SystemDatabase
+	kernel       *Kernel
 	ownsSystemDB bool
 	adminServer  *adminServer
 	config       *Config
@@ -286,7 +286,7 @@ func (c *dbosContext) From(ctx context.Context) DBOSContext {
 		ctx:                ctx, // Use the provided context
 		config:             c.config,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -322,7 +322,7 @@ func (c *dbosContext) WithValue(key, val any) DBOSContext {
 		ctx:                context.WithValue(c.ctx, key, val), // Spawn a new child context with the value set
 		config:             c.config,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -342,7 +342,7 @@ func (c *dbosContext) WithoutCancel() DBOSContext {
 		ctx:                context.WithoutCancel(c.ctx),
 		config:             c.config,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -371,7 +371,7 @@ func (c *dbosContext) WithCancel() (DBOSContext, context.CancelFunc) {
 	childCtx := &dbosContext{
 		ctx:                newCtx,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -401,7 +401,7 @@ func (c *dbosContext) WithCancelCause() (DBOSContext, context.CancelCauseFunc) {
 	childCtx := &dbosContext{
 		ctx:                newCtx,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -431,7 +431,7 @@ func (c *dbosContext) WithTimeout(timeout time.Duration) (DBOSContext, context.C
 		ctx:                newCtx,
 		config:             c.config,
 		logger:             c.logger,
-		systemDB:           c.systemDB,
+		kernel:             c.kernel,
 		workflowsWg:        c.workflowsWg,
 		workflowRegistry:   c.workflowRegistry,
 		activeWorkflowIDs:  c.activeWorkflowIDs,
@@ -535,7 +535,7 @@ func NewDBOSContext(ctx context.Context, inputConfig Config) (DBOSContext, error
 	initExecutor.applicationID = os.Getenv("DBOS__APPID")
 	initExecutor.serializer = config.Serializer
 
-	newSystemDatabaseInputs := newSystemDatabaseInput{
+	newKernelInputs := newKernelInput{
 		databaseURL:     config.DatabaseURL,
 		databaseSchema:  config.DatabaseSchema,
 		customPool:      config.SystemDBPool,
@@ -543,16 +543,16 @@ func NewDBOSContext(ctx context.Context, inputConfig Config) (DBOSContext, error
 		applicationName: config.AppName,
 	}
 
-	if config.SystemDatabase != nil {
-		initExecutor.systemDB = config.SystemDatabase
+	if config.Kernel != nil {
+		initExecutor.kernel = config.Kernel
 	} else {
 		// Create the system database
-		systemDB, err := newSystemDatabase(initExecutor, newSystemDatabaseInputs)
+		kernel, err := newKernel(initExecutor, newKernelInputs)
 		if err != nil {
 			initExecutor.logger.Error("failed to create system database", "error", err)
 			return nil, newInitializationError(err.Error())
 		}
-		initExecutor.systemDB = systemDB
+		initExecutor.kernel = kernel
 		initExecutor.ownsSystemDB = true
 	}
 	initExecutor.logger.Debug("System database initialized")
@@ -603,16 +603,16 @@ func (c *dbosContext) Launch() error {
 
 	// Start the system database
 	if c.ownsSystemDB {
-		c.systemDB.launch(c)
+		c.kernel.launch(c)
 	}
 
 	// Register the current application version and warn if it is not the latest.
 	if err := retry(c, func() error {
-		return c.systemDB.createApplicationVersion(c, c.applicationVersion)
+		return c.kernel.createApplicationVersion(c, c.applicationVersion)
 	}, withRetrierLogger(c.logger)); err != nil {
 		c.logger.Warn("Failed to register application version", "version", c.applicationVersion, "error", err)
 	} else if latest, err := retryWithResult(c, func() (*VersionInfo, error) {
-		return c.systemDB.getLatestApplicationVersion(c)
+		return c.kernel.getLatestApplicationVersion(c)
 	}, withRetrierLogger(c.logger)); err != nil {
 		c.logger.Warn("Failed to fetch latest application version", "error", err)
 	} else if latest.Name != c.applicationVersion {
@@ -754,9 +754,9 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 	}
 
 	// Close the system database
-	if c.systemDB != nil && c.ownsSystemDB {
+	if c.kernel != nil && c.ownsSystemDB {
 		c.logger.Debug("Shutting down system database")
-		c.systemDB.shutdown(c, timeout)
+		c.kernel.shutdown(c, timeout)
 	}
 
 	c.launched.Store(false)

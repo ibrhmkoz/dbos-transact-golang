@@ -8,7 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dbq.go: a thin driver-agnostic SQL surface used by SystemDatabase.
+// dbq.go: a thin driver-agnostic SQL surface used by Kernel.
 //
 // The adapter keeps pgx pool and transaction operations behind one small SQL surface.
 

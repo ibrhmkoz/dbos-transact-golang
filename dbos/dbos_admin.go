@@ -17,7 +17,7 @@ import (
 type DBOSAdminConfig struct {
 	DatabaseURL    string          // PostgreSQL connection string.
 	SystemDBPool   *pgxpool.Pool   // Custom PostgreSQL pool.
-	SystemDatabase *SystemDatabase // Shared system database. When set, DBOSAdmin does not own its lifecycle.
+	Kernel         *Kernel         // Shared system database. When set, DBOSAdmin does not own its lifecycle.
 	DatabaseSchema string          // Database schema name (defaults to "dbos")
 	Logger         *slog.Logger    // Optional custom logger
 	Serializer     Serializer[any] // Optional custom serializer (defaults to JSON)
@@ -83,7 +83,7 @@ func NewDBOSAdmin(ctx context.Context, config DBOSAdminConfig) (DBOSAdmin, error
 		AppName:        "dbos-admin",
 		Logger:         config.Logger,
 		SystemDBPool:   config.SystemDBPool,
-		SystemDatabase: config.SystemDatabase,
+		Kernel:         config.Kernel,
 		Serializer:     config.Serializer,
 	})
 	if err != nil {
@@ -92,7 +92,7 @@ func NewDBOSAdmin(ctx context.Context, config DBOSAdminConfig) (DBOSAdmin, error
 
 	asDBOSCtx := dbosCtx.(*dbosContext)
 	if asDBOSCtx.ownsSystemDB {
-		asDBOSCtx.systemDB.launch(asDBOSCtx)
+		asDBOSCtx.kernel.launch(asDBOSCtx)
 	}
 
 	return &dbosAdmin{dbosCtx: asDBOSCtx}, nil
@@ -306,7 +306,7 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 
 	uncancellableCtx := WithoutCancel(dbosCtx)
 	for {
-		tx, err := dbosCtx.systemDB.pool.BeginTx(uncancellableCtx, TxOptions{})
+		tx, err := dbosCtx.kernel.pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
 			return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("failed to begin transaction: %v", err))
 		}
@@ -316,13 +316,13 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 			status: status,
 			tx:     tx,
 		}
-		_, err = dbosCtx.systemDB.insertWorkflowStatus(uncancellableCtx, insertInput)
+		_, err = dbosCtx.kernel.insertWorkflowStatus(uncancellableCtx, insertInput)
 		if err != nil {
 			if rbErr := tx.Rollback(uncancellableCtx); rbErr != nil {
 				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowID)
 			}
 			if errors.Is(err, errDeduplicationCollision) {
-				existingID, lookupErr := dbosCtx.systemDB.getDeduplicatedWorkflow(uncancellableCtx, workflowName, params.deduplicationID)
+				existingID, lookupErr := dbosCtx.kernel.getDeduplicatedWorkflow(uncancellableCtx, workflowName, params.deduplicationID)
 				if lookupErr != nil {
 					return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
 				}
@@ -683,7 +683,7 @@ func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
 		return fmt.Errorf("failed to serialize context: %w", err)
 	}
 
-	return dbosCtx.systemDB.createSchedule(dbosCtx, createScheduleDBInput{
+	return dbosCtx.kernel.createSchedule(dbosCtx, createScheduleDBInput{
 		ScheduleID:        scheduleID,
 		ScheduleName:      input.ScheduleName,
 		WorkflowName:      input.WorkflowName,
@@ -726,7 +726,7 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 
 	dbosCtx := c.dbosCtx
 
-	tx, err := dbosCtx.systemDB.pool.BeginTx(dbosCtx, TxOptions{})
+	tx, err := dbosCtx.kernel.pool.BeginTx(dbosCtx, TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -743,14 +743,14 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 			queueName = _DBOS_INTERNAL_QUEUE_NAME
 		}
 
-		if err := dbosCtx.systemDB.deleteSchedule(dbosCtx, deleteScheduleDBInput{
+		if err := dbosCtx.kernel.deleteSchedule(dbosCtx, deleteScheduleDBInput{
 			ScheduleName: req.ScheduleName,
 			tx:           tx,
 		}); err != nil {
 			return fmt.Errorf("failed to delete existing schedule: %w", err)
 		}
 
-		if err := dbosCtx.systemDB.createSchedule(dbosCtx, createScheduleDBInput{
+		if err := dbosCtx.kernel.createSchedule(dbosCtx, createScheduleDBInput{
 			ScheduleID:        uuid.New().String(),
 			ScheduleName:      req.ScheduleName,
 			WorkflowName:      req.WorkflowName,
@@ -839,8 +839,8 @@ func (c *dbosAdmin) Shutdown(timeout time.Duration) {
 	dbosCtx.ctxCancelFunc(errors.New("dbosAdmin shutdown initiated"))
 
 	// Close the system database only when this dbosAdmin created it.
-	if dbosCtx.systemDB != nil && dbosCtx.ownsSystemDB {
+	if dbosCtx.kernel != nil && dbosCtx.ownsSystemDB {
 		dbosCtx.logger.Debug("Shutting down system database")
-		dbosCtx.systemDB.shutdown(dbosCtx, timeout)
+		dbosCtx.kernel.shutdown(dbosCtx, timeout)
 	}
 }

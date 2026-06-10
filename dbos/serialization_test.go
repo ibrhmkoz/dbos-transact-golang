@@ -191,15 +191,15 @@ func testAllSerializationPaths[T any](
 			// Get the database pool to query directly
 			dbosCtx, ok := executor.(*dbosContext)
 			require.True(t, ok, "expected dbosContext")
-			SystemDatabase := dbosCtx.systemDB
+			Kernel := dbosCtx.kernel
 
 			// Query the database directly to check for the marker
 			ctx := context.Background()
 			schemaPrefix := ""
-			query := SystemDatabase.renderSQL(`SELECT inputs, output FROM %sworkflow_status WHERE workflow_uuid = $1`, schemaPrefix)
+			query := Kernel.renderSQL(`SELECT inputs, output FROM %sworkflow_status WHERE workflow_uuid = $1`, schemaPrefix)
 
 			var inputString, outputString *string
-			err := SystemDatabase.pool.QueryRow(ctx, query, workflowID).Scan(&inputString, &outputString)
+			err := Kernel.pool.QueryRow(ctx, query, workflowID).Scan(&inputString, &outputString)
 			require.NoError(t, err, "failed to query workflow status")
 
 			// Both input and output should be the nil marker
@@ -210,9 +210,9 @@ func testAllSerializationPaths[T any](
 			assert.Equal(t, nilMarker, *outputString, "output should be the nil marker")
 
 			// Also check the step output in operation_outputs
-			stepQuery := SystemDatabase.renderSQL(`SELECT output FROM %soperation_outputs WHERE workflow_uuid = $1 ORDER BY function_id LIMIT 1`, schemaPrefix)
+			stepQuery := Kernel.renderSQL(`SELECT output FROM %soperation_outputs WHERE workflow_uuid = $1 ORDER BY function_id LIMIT 1`, schemaPrefix)
 			var stepOutputString *string
-			err = SystemDatabase.pool.QueryRow(ctx, stepQuery, workflowID).Scan(&stepOutputString)
+			err = Kernel.pool.QueryRow(ctx, stepQuery, workflowID).Scan(&stepOutputString)
 			require.NoError(t, err, "failed to query step output")
 			require.NotNil(t, stepOutputString, "step output should not be NULL in database")
 			assert.Equal(t, nilMarker, *stepOutputString, "step output should be the nil marker")
@@ -1283,15 +1283,15 @@ func TestPortableInterop(t *testing.T) {
 	insertPortableWorkflow := func(t *testing.T, workflowID, status string, queueName *string) {
 		t.Helper()
 		c := executor.(*dbosContext)
-		SystemDatabase := c.systemDB
-		insertQuery := SystemDatabase.renderSQL(`INSERT INTO %sworkflow_status (
+		Kernel := c.kernel
+		insertQuery := Kernel.renderSQL(`INSERT INTO %sworkflow_status (
 			workflow_uuid, status, name, inputs, serialization, queue_name,
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 			"")
 		now := time.Now().UnixMilli()
-		_, err := SystemDatabase.pool.Exec(context.Background(), insertQuery,
+		_, err := Kernel.pool.Exec(context.Background(), insertQuery,
 			workflowID, status, "interop_workflow", goldenInputsJSON, PortableSerializerName, queueName,
 			now, now, 0, "local", 0, c.applicationVersion, "", "", "", "[]")
 		require.NoError(t, err)
@@ -1386,11 +1386,11 @@ func TestPortableInterop(t *testing.T) {
 
 		// Verify the DB has portable_json serialization and the correct envelope
 		c := executor.(*dbosContext)
-		SystemDatabase := c.systemDB
+		Kernel := c.kernel
 		var storedInputs, storedSerialization string
-		selectQuery := SystemDatabase.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		selectQuery := Kernel.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		err = SystemDatabase.pool.QueryRow(context.Background(), selectQuery, handle.GetWorkflowID()).Scan(&storedInputs, &storedSerialization)
+		err = Kernel.pool.QueryRow(context.Background(), selectQuery, handle.GetWorkflowID()).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
@@ -1416,15 +1416,15 @@ func TestPortableInterop(t *testing.T) {
 		badInputsJSON := `{"positionalArgs":["not-an-object"],"namedArgs":{}}`
 
 		c := executor.(*dbosContext)
-		SystemDatabase := c.systemDB
-		insertQuery := SystemDatabase.renderSQL(`INSERT INTO %sworkflow_status (
+		Kernel := c.kernel
+		insertQuery := Kernel.renderSQL(`INSERT INTO %sworkflow_status (
 			workflow_uuid, status, name, inputs, serialization, queue_name,
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)`,
 			"")
 		now := time.Now().UnixMilli()
-		_, err := SystemDatabase.pool.Exec(context.Background(), insertQuery,
+		_, err := Kernel.pool.Exec(context.Background(), insertQuery,
 			workflowID, string(WorkflowStatusEnqueued), "interop_workflow", badInputsJSON, PortableSerializerName, &queueName,
 			now, now, 0, "local", 0, c.applicationVersion, "", "", "", "[]")
 		require.NoError(t, err)
@@ -1454,16 +1454,16 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	payload := Payload{Name: "portable-op", Count: 7}
 
 	c := executor.(*dbosContext)
-	SystemDatabase := c.systemDB
+	Kernel := c.kernel
 
 	// Helper: fetch the serialization recorded in operation_outputs for the Recv step of a workflow.
 	// The Recv step stores the serialization of the message it consumed, which reflects what the sender used.
 	recvStepSerialization := func(t *testing.T, workflowID string) string {
 		t.Helper()
 		var ser string
-		q := SystemDatabase.renderSQL(`SELECT serialization FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_name = 'DBOS.recv' ORDER BY function_id ASC LIMIT 1`,
+		q := Kernel.renderSQL(`SELECT serialization FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_name = 'DBOS.recv' ORDER BY function_id ASC LIMIT 1`,
 			"")
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&ser))
 		return ser
 	}
 
@@ -1471,9 +1471,9 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	eventSerialization := func(t *testing.T, workflowID, key string) string {
 		t.Helper()
 		var ser string
-		q := SystemDatabase.renderSQL(`SELECT serialization FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2`,
+		q := Kernel.renderSQL(`SELECT serialization FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2`,
 			"")
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, key).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, key).Scan(&ser))
 		return ser
 	}
 
@@ -1481,9 +1481,9 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	streamSerialization := func(t *testing.T, workflowID, key string) string {
 		t.Helper()
 		var ser string
-		q := SystemDatabase.renderSQL(`SELECT serialization FROM %sstreams WHERE workflow_uuid = $1 AND key = $2 AND value != $3 ORDER BY "offset" LIMIT 1`,
+		q := Kernel.renderSQL(`SELECT serialization FROM %sstreams WHERE workflow_uuid = $1 AND key = $2 AND value != $3 ORDER BY "offset" LIMIT 1`,
 			"")
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, key, _DBOS_STREAM_CLOSED_SENTINEL).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, key, _DBOS_STREAM_CLOSED_SENTINEL).Scan(&ser))
 		return ser
 	}
 
@@ -1674,15 +1674,15 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	defer Shutdown(executor, 10*time.Second)
 
 	c := executor.(*dbosContext)
-	SystemDatabase := c.systemDB
+	Kernel := c.kernel
 
 	// Helper: read the stored inputs and serialization from the DB.
 	readStoredInputs := func(t *testing.T, workflowID string) (string, string) {
 		t.Helper()
 		var storedInputs, storedSerialization string
-		q := SystemDatabase.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		q := Kernel.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		err := SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedInputs, &storedSerialization)
+		err := Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		return storedInputs, storedSerialization
 	}
@@ -1691,12 +1691,12 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	resetToPending := func(t *testing.T, workflowID string) {
 		t.Helper()
 		schemaPrefix := ""
-		q := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
-		_, err := SystemDatabase.pool.Exec(context.Background(), q, string(WorkflowStatusPending), workflowID)
+		q := Kernel.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
+		_, err := Kernel.pool.Exec(context.Background(), q, string(WorkflowStatusPending), workflowID)
 		require.NoError(t, err)
 		// Also clear operation outputs so the workflow re-executes its steps.
-		dq := SystemDatabase.renderSQL(`DELETE FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
-		_, err = SystemDatabase.pool.Exec(context.Background(), dq, workflowID)
+		dq := Kernel.renderSQL(`DELETE FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
+		_, err = Kernel.pool.Exec(context.Background(), dq, workflowID)
 		require.NoError(t, err)
 	}
 
@@ -1871,13 +1871,13 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		// Verify operation_outputs exist for this workflow.
 		var stepCount int
 		schemaPrefix := ""
-		countQ := SystemDatabase.renderSQL(`SELECT count(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), countQ, workflowID).Scan(&stepCount))
+		countQ := Kernel.renderSQL(`SELECT count(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), countQ, workflowID).Scan(&stepCount))
 		require.Greater(t, stepCount, 0, "expected operation_outputs rows from first execution")
 
 		// Reset to PENDING but KEEP operation_outputs — steps will be replayed from DB.
-		resetQ := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
-		_, err = SystemDatabase.pool.Exec(context.Background(), resetQ, string(WorkflowStatusPending), workflowID)
+		resetQ := Kernel.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
+		_, err = Kernel.pool.Exec(context.Background(), resetQ, string(WorkflowStatusPending), workflowID)
 		require.NoError(t, err)
 
 		// Recover — each step hits checkOperationExecution and decodes from stored serialization.
@@ -1945,14 +1945,14 @@ func TestPortableWorkflowError(t *testing.T) {
 	defer Shutdown(executor, 10*time.Second)
 
 	c := executor.(*dbosContext)
-	SystemDatabase := c.systemDB
+	Kernel := c.kernel
 
 	readStoredError := func(t *testing.T, workflowID string) string {
 		t.Helper()
 		var storedError *string
-		q := SystemDatabase.renderSQL(`SELECT error FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		q := Kernel.renderSQL(`SELECT error FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedError))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError
 	}
@@ -1960,9 +1960,9 @@ func TestPortableWorkflowError(t *testing.T) {
 	readStoredStepError := func(t *testing.T, workflowID string, stepID int) string {
 		t.Helper()
 		var storedError *string
-		q := SystemDatabase.renderSQL(`SELECT error FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_id = $2`,
+		q := Kernel.renderSQL(`SELECT error FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_id = $2`,
 			"")
-		require.NoError(t, SystemDatabase.pool.QueryRow(context.Background(), q, workflowID, stepID).Scan(&storedError))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, stepID).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError
 	}

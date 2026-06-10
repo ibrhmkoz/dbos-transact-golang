@@ -586,7 +586,7 @@ func (c *conductor) handleRetentionRequest(data []byte, requestID string) error 
 	}
 
 	err := retry(c.dbosCtx, func() error {
-		return c.dbosCtx.systemDB.garbageCollectWorkflows(c.dbosCtx, input)
+		return c.dbosCtx.kernel.garbageCollectWorkflows(c.dbosCtx, input)
 	}, withRetrierLogger(c.logger))
 	if err != nil {
 		c.logger.Error("Failed to garbage collect workflows", "error", err)
@@ -601,7 +601,7 @@ func (c *conductor) handleRetentionRequest(data []byte, requestID string) error 
 	if success && req.Body.TimeoutCutoffEpochMs != nil {
 		cutoffTime := time.UnixMilli(int64(*req.Body.TimeoutCutoffEpochMs))
 		err := retry(c.dbosCtx, func() error {
-			return c.dbosCtx.systemDB.cancelAllBefore(c.dbosCtx, cutoffTime)
+			return c.dbosCtx.kernel.cancelAllBefore(c.dbosCtx, cutoffTime)
 		}, withRetrierLogger(c.logger))
 		if err != nil {
 			c.logger.Error("Failed to timeout workflows", "cutoff_ms", *req.Body.TimeoutCutoffEpochMs, "error", err)
@@ -645,7 +645,7 @@ func (c *conductor) handleGetMetricsRequest(data []byte, requestID string) error
 	if req.MetricClass == "workflow_step_count" {
 		var err error
 		metricsData, err = retryWithResult(c.dbosCtx, func() ([]metricData, error) {
-			return c.dbosCtx.systemDB.getMetrics(c.dbosCtx, req.StartTime, req.EndTime)
+			return c.dbosCtx.kernel.getMetrics(c.dbosCtx, req.StartTime, req.EndTime)
 		}, withRetrierLogger(c.logger))
 		if err != nil {
 			c.logger.Error("Failed to get metrics", "error", err)
@@ -1048,7 +1048,7 @@ func (c *conductor) handleExportWorkflowRequest(data []byte, requestID string) e
 	var errorMsg *string
 
 	exported, err := retryWithResult(c.dbosCtx, func() ([]ExportedWorkflow, error) {
-		return c.dbosCtx.systemDB.exportWorkflow(c.dbosCtx, req.WorkflowID, req.ExportChildren)
+		return c.dbosCtx.kernel.exportWorkflow(c.dbosCtx, req.WorkflowID, req.ExportChildren)
 	}, withRetrierLogger(c.logger))
 	if err != nil {
 		c.logger.Error("Failed to export workflow", "workflow_id", req.WorkflowID, "error", err)
@@ -1128,7 +1128,7 @@ func (c *conductor) handleImportWorkflowRequest(data []byte, requestID string) e
 					success = false
 				} else {
 					err := retry(c.dbosCtx, func() error {
-						return c.dbosCtx.systemDB.importWorkflow(c.dbosCtx, workflows)
+						return c.dbosCtx.kernel.importWorkflow(c.dbosCtx, workflows)
 					}, withRetrierLogger(c.logger))
 					if err != nil {
 						errStr := fmt.Sprintf("Exception encountered when importing workflow: %v", err)
@@ -1170,7 +1170,7 @@ func (c *conductor) handleDeleteWorkflowRequest(data []byte, requestID string) e
 	var errorMsg *string
 
 	err := retry(c.dbosCtx, func() error {
-		return c.dbosCtx.systemDB.deleteWorkflows(c.dbosCtx, deleteWorkflowsDBInput{
+		return c.dbosCtx.kernel.deleteWorkflows(c.dbosCtx, deleteWorkflowsDBInput{
 			workflowIDs:    workflowIDs,
 			deleteChildren: req.DeleteChildren,
 		})
@@ -1232,7 +1232,7 @@ func (c *conductor) handleGetWorkflowEventsRequest(data []byte, requestID string
 		},
 	}
 
-	records, err := c.dbosCtx.systemDB.getAllEvents(c.dbosCtx, req.WorkflowID)
+	records, err := c.dbosCtx.kernel.getAllEvents(c.dbosCtx, req.WorkflowID)
 	if err != nil {
 		c.logger.Error("Failed to get workflow events", "workflow_id", req.WorkflowID, "error", err)
 		errStr := fmt.Sprintf("failed to get workflow events: %v", err)
@@ -1270,7 +1270,7 @@ func (c *conductor) handleGetWorkflowNotificationsRequest(data []byte, requestID
 		},
 	}
 
-	records, err := c.dbosCtx.systemDB.getAllNotifications(c.dbosCtx, req.WorkflowID)
+	records, err := c.dbosCtx.kernel.getAllNotifications(c.dbosCtx, req.WorkflowID)
 	if err != nil {
 		c.logger.Error("Failed to get workflow notifications", "workflow_id", req.WorkflowID, "error", err)
 		errStr := fmt.Sprintf("failed to get workflow notifications: %v", err)
@@ -1313,7 +1313,7 @@ func (c *conductor) handleGetWorkflowStreamsRequest(data []byte, requestID strin
 		},
 	}
 
-	records, err := c.dbosCtx.systemDB.getAllStreamEntries(c.dbosCtx, req.WorkflowID)
+	records, err := c.dbosCtx.kernel.getAllStreamEntries(c.dbosCtx, req.WorkflowID)
 	if err != nil {
 		c.logger.Error("Failed to get workflow streams", "workflow_id", req.WorkflowID, "error", err)
 		errStr := fmt.Sprintf("failed to get workflow streams: %v", err)
@@ -1682,7 +1682,7 @@ func (c *conductor) handleBackfillScheduleRequest(data []byte, requestID string)
 				msg := fmt.Sprintf("schedule not found: %s", req.ScheduleName)
 				errorMsg = &msg
 			} else {
-				ids, errBf := c.dbosCtx.systemDB.backfillSchedule(c.dbosCtx, backfillScheduleDBInput{
+				ids, errBf := c.dbosCtx.kernel.backfillSchedule(c.dbosCtx, backfillScheduleDBInput{
 					ScheduleName: req.ScheduleName,
 					Schedule:     schedule.Schedule,
 					StartTime:    start,
@@ -1720,7 +1720,7 @@ func (c *conductor) handleTriggerScheduleRequest(data []byte, requestID string) 
 
 	var errorMsg *string
 	var workflowID *string
-	id, err := c.dbosCtx.systemDB.triggerSchedule(c.dbosCtx, req.ScheduleName)
+	id, err := c.dbosCtx.kernel.triggerSchedule(c.dbosCtx, req.ScheduleName)
 	if err != nil {
 		c.logger.Error("Failed to trigger schedule", "schedule_name", req.ScheduleName, "error", err)
 		msg := fmt.Sprintf("failed to trigger schedule '%s': %v", req.ScheduleName, err)
@@ -1749,7 +1749,7 @@ func (c *conductor) handleListApplicationVersionsRequest(data []byte, requestID 
 	var errorMsg *string
 	output := []applicationVersionOutput{}
 	versions, err := retryWithResult(c.dbosCtx, func() ([]VersionInfo, error) {
-		return c.dbosCtx.systemDB.listApplicationVersions(c.dbosCtx)
+		return c.dbosCtx.kernel.listApplicationVersions(c.dbosCtx)
 	}, withRetrierLogger(c.logger))
 	if err != nil {
 		c.logger.Error("Failed to list application versions", "error", err)
@@ -1781,7 +1781,7 @@ func (c *conductor) handleSetLatestApplicationVersionRequest(data []byte, reques
 	success := true
 	var errorMsg *string
 	if err := retry(c.dbosCtx, func() error {
-		return c.dbosCtx.systemDB.updateApplicationVersionTimestamp(c.dbosCtx, req.VersionName, time.Now().UnixMilli())
+		return c.dbosCtx.kernel.updateApplicationVersionTimestamp(c.dbosCtx, req.VersionName, time.Now().UnixMilli())
 	}, withRetrierLogger(c.logger)); err != nil {
 		c.logger.Error("Failed to set latest application version", "version_name", req.VersionName, "error", err)
 		msg := fmt.Sprintf("failed to set latest application version '%s': %v", req.VersionName, err)

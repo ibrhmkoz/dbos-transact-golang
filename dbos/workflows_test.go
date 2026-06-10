@@ -1326,24 +1326,24 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify events, streams, notifications, and steps exist via direct DB query
-		SystemDatabase := dbosCtx.(*dbosContext).systemDB
+		Kernel := dbosCtx.(*dbosContext).kernel
 		schemaPrefix := ""
 
 		var eventCount, streamCount, notifCount, stepCount int
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&eventCount)
 		require.NoError(t, err)
 		require.Greater(t, eventCount, 0, "expected events to exist before deletion")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&streamCount)
 		require.NoError(t, err)
 		require.Greater(t, streamCount, 0, "expected stream entries to exist before deletion")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
 			wfID).Scan(&notifCount)
 		require.NoError(t, err)
 		require.Greater(t, notifCount, 0, "expected notifications to exist before deletion")
@@ -1356,8 +1356,8 @@ func TestChildWorkflow(t *testing.T) {
 		// so we just check the floor.
 		require.GreaterOrEqual(t, len(steps), 4, "expected at least 4 steps: SetEvent, WriteStream, CloseStream, Recv")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&stepCount)
 		require.NoError(t, err)
 		require.Greater(t, stepCount, 0, "expected operation_outputs to exist before deletion")
@@ -1367,26 +1367,26 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify all related data was cascade-deleted
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&eventCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, eventCount, "expected events to be cascade-deleted")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&streamCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, streamCount, "expected stream entries to be cascade-deleted")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
 			wfID).Scan(&notifCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, notifCount, "expected notifications to be cascade-deleted")
 
-		err = SystemDatabase.pool.QueryRow(dbosCtx,
-			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
+		err = Kernel.pool.QueryRow(dbosCtx,
+			Kernel.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&stepCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, stepCount, "expected operation_outputs to be cascade-deleted")
@@ -1701,7 +1701,7 @@ func TestWorkflowRecovery(t *testing.T) {
 		for i := range numWorkflows {
 			workflowIDs[i] = handles[i].GetWorkflowID()
 		}
-		workflows, err := dbosCtx.(*dbosContext).systemDB.listWorkflows(dbosCtx, listWorkflowsDBInput{
+		workflows, err := dbosCtx.(*dbosContext).kernel.listWorkflows(dbosCtx, listWorkflowsDBInput{
 			workflowIDs: workflowIDs,
 		})
 		require.NoError(t, err, "failed to list workflows")
@@ -2991,7 +2991,7 @@ func TestWorkflowExecutionMismatch(t *testing.T) {
 
 		// This directly tests the CheckOperationExecution method with mismatched step name
 		wrongStepName := "wrong-step-name"
-		_, err = dbosCtx.(*dbosContext).systemDB.checkOperationExecution(dbosCtx, checkOperationExecutionDBInput{
+		_, err = dbosCtx.(*dbosContext).kernel.checkOperationExecution(dbosCtx, checkOperationExecutionDBInput{
 			workflowID: workflowID,
 			stepID:     0,
 			stepName:   wrongStepName,
@@ -3199,11 +3199,11 @@ func TestWorkflowTimeout(t *testing.T) {
 		if !ok {
 			return "", fmt.Errorf("failed to cast DBOSContext to dbosContext")
 		}
-		SystemDatabase := dbosCtxInternal.systemDB
-		query := SystemDatabase.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, "")
+		Kernel := dbosCtxInternal.kernel
+		query := Kernel.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, "")
 		require.Eventually(t, func() bool {
 			var status WorkflowStatusType
-			err := SystemDatabase.pool.QueryRow(uncancellableCtx, query, wfid).Scan(&status)
+			err := Kernel.pool.QueryRow(uncancellableCtx, query, wfid).Scan(&status)
 			if err != nil {
 				return false
 			}
@@ -3900,19 +3900,19 @@ func TestGarbageCollect(t *testing.T) {
 		_, err = handle.GetResult()
 		require.NoError(t, err)
 
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
 		require.NoError(t, err)
 		workflows, err := ListWorkflows(dbosCtx)
 		require.NoError(t, err)
 		require.Len(t, workflows, 1, "workflow inside its retention period must remain")
 
 		expiredAt := time.Now().Add(-2 * retention).UnixMilli()
-		SystemDatabase := dbosCtx.(*dbosContext).systemDB
-		query := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, "")
-		_, err = SystemDatabase.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
+		Kernel := dbosCtx.(*dbosContext).kernel
+		query := Kernel.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, "")
+		_, err = Kernel.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
 		require.NoError(t, err)
 
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
 		require.NoError(t, err)
 		workflows, err = ListWorkflows(dbosCtx)
 		require.NoError(t, err)
@@ -3963,7 +3963,7 @@ func TestGarbageCollect(t *testing.T) {
 		// Garbage collect keeping only the 5 newest workflows
 		// The blocked workflow won't be deleted because it's pending
 		threshold := 5
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			rowsThreshold: &threshold,
 		})
 		require.NoError(t, err, "failed to garbage collect workflows")
@@ -4070,7 +4070,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		// Garbage collect workflows completed before cutoff time
 		cutoffTimestamp := cutoffTime.UnixMilli()
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			cutoffEpochTimestampMs: &cutoffTimestamp,
 		})
 		require.NoError(t, err, "failed to garbage collect workflows by time")
@@ -4112,7 +4112,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		// Garbage collect all workflows - use a future cutoff to catch everything
 		futureTimestamp := time.Now().Add(1 * time.Hour).UnixMilli()
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			cutoffEpochTimestampMs: &futureTimestamp,
 		})
 		require.NoError(t, err, "failed to garbage collect all completed workflows")
@@ -4139,7 +4139,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		// Verify GC runs without errors on a blank table
 		threshold := 1
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			rowsThreshold: &threshold,
 		})
 		require.NoError(t, err, "garbage collect should work on empty database")
@@ -4150,7 +4150,7 @@ func TestGarbageCollect(t *testing.T) {
 		require.Equal(t, 0, len(workflows), "expected exactly 0 workflows after row-based GC on empty database")
 
 		currentTimestamp := time.Now().UnixMilli()
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			cutoffEpochTimestampMs: &currentTimestamp,
 		})
 		require.NoError(t, err, "time-based garbage collect should work on empty database")
@@ -4219,7 +4219,7 @@ func TestGarbageCollect(t *testing.T) {
 		// The blocked workflow is the oldest but won't be deleted because it's pending
 		// So we should have 2 workflows: 1 newest completed + 1 pending
 		threshold := 1
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			rowsThreshold: &threshold,
 		})
 		require.NoError(t, err, "failed to garbage collect workflows")
@@ -4260,7 +4260,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		// Now GC everything using future timestamp
 		futureTimestamp := time.Now().Add(1 * time.Hour).UnixMilli()
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			cutoffEpochTimestampMs: &futureTimestamp,
 		})
 		require.NoError(t, err, "failed to garbage collect all workflows")
@@ -4319,7 +4319,7 @@ func TestGarbageCollect(t *testing.T) {
 		// Threshold would keep 6 newest, timestamp would keep 8 newest
 		// Result: threshold wins (higher timestamp), only 6 workflows remain
 		threshold := 6
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			rowsThreshold:          &threshold,
 			cutoffEpochTimestampMs: &cutoff1,
 		})
@@ -4335,7 +4335,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		// Case2: Threshold is less restrictive (lower cutoff)
 		threshold = 3
-		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
+		err = dbosCtx.(*dbosContext).kernel.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{
 			rowsThreshold:          &threshold,
 			cutoffEpochTimestampMs: &cutoff2,
 		})
@@ -4644,7 +4644,7 @@ func captureAuthFromDB(ctx DBOSContext) (authSnapshot, error) {
 	if err != nil {
 		return authSnapshot{}, err
 	}
-	rows, err := ctx.(*dbosContext).systemDB.listWorkflows(ctx, listWorkflowsDBInput{
+	rows, err := ctx.(*dbosContext).kernel.listWorkflows(ctx, listWorkflowsDBInput{
 		workflowIDs: []string{wfID},
 	})
 	if err != nil || len(rows) == 0 {
@@ -5380,9 +5380,9 @@ func TestStreams(t *testing.T) {
 				// Query database directly to avoid blocking (ReadStream would block)
 				dbosCtxInternal, ok := dbosCtx.(*dbosContext)
 				require.True(t, ok, "expected dbosContext")
-				SystemDatabase := dbosCtxInternal.systemDB
+				Kernel := dbosCtxInternal.kernel
 
-				entries, closed, err := SystemDatabase.readStream(context.Background(), readStreamDBInput{
+				entries, closed, err := Kernel.readStream(context.Background(), readStreamDBInput{
 					WorkflowID: forkHandle.GetWorkflowID(),
 					Key:        streamKey,
 					FromOffset: 0,
@@ -5499,9 +5499,9 @@ func TestStreams(t *testing.T) {
 		// Query database directly to avoid blocking (ReadStream would block)
 		dbosCtxInternal, ok := dbosCtx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
-		SystemDatabase := dbosCtxInternal.systemDB
+		Kernel := dbosCtxInternal.kernel
 
-		entries, closed, err := SystemDatabase.readStream(context.Background(), readStreamDBInput{
+		entries, closed, err := Kernel.readStream(context.Background(), readStreamDBInput{
 			WorkflowID: forkHandle.GetWorkflowID(),
 			Key:        streamKey,
 			FromOffset: 0,
@@ -5795,7 +5795,7 @@ func TestExportImportWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, originalGrandchildSteps, 0, "grandchild should have 0 steps")
 
-	sdb := dbosCtx.(*dbosContext).systemDB
+	sdb := dbosCtx.(*dbosContext).kernel
 
 	t.Run("ExportWithChildren", func(t *testing.T) {
 		exported, err := sdb.exportWorkflow(dbosCtx, parentID, true)

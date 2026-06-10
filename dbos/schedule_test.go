@@ -152,7 +152,7 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 	start := time.Now().Add(-5 * time.Second).Truncate(time.Second)
 	end := time.Now()
 	c := dbosCtx.(*dbosContext)
-	ids, err := c.systemDB.backfillSchedule(c, backfillScheduleDBInput{
+	ids, err := c.kernel.backfillSchedule(c, backfillScheduleDBInput{
 		ScheduleName: scheduleName,
 		Schedule:     "*/1 * * * * *",
 		StartTime:    start,

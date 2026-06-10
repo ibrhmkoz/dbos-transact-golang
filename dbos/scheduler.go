@@ -150,7 +150,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 
 		// Skip if this tick's workflow already exists. Another executor may have enqueued it.
 		existing, err := retryWithResult(c, func() ([]WorkflowStatus, error) {
-			return c.systemDB.listWorkflows(c, listWorkflowsDBInput{workflowIDs: []string{wfID}})
+			return c.kernel.listWorkflows(c, listWorkflowsDBInput{workflowIDs: []string{wfID}})
 		}, withRetrierLogger(c.logger))
 		if err != nil {
 			c.logger.Error("failed to check existing scheduled workflow", "schedule", scheduleName, "workflow_id", wfID, "error", err)
@@ -174,7 +174,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 		}
 		// Scheduled workflows always run against the latest registered application version, so a stale executor does not pick them up after a new deploy.
 		latest, err := retryWithResult(c, func() (*VersionInfo, error) {
-			return c.systemDB.getLatestApplicationVersion(c)
+			return c.kernel.getLatestApplicationVersion(c)
 		}, withRetrierLogger(c.logger))
 		if err != nil {
 			c.logger.Error("failed to fetch latest application version for scheduled workflow", "schedule", scheduleName, "workflow_id", wfID, "error", err)
@@ -184,7 +184,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 		result, runErr := wrappedFn(ctx, encodedInput, ser.Name(), opts...)
 
 		if err := retry(c, func() error {
-			return c.systemDB.updateScheduleLastFiredAt(c, scheduleName, time.Now())
+			return c.kernel.updateScheduleLastFiredAt(c, scheduleName, time.Now())
 		}, withRetrierLogger(c.logger)); err != nil {
 			c.logger.Error("failed to update schedule last fired time after retries", "schedule", scheduleName, "error", err)
 		}
@@ -263,7 +263,7 @@ func (c *dbosContext) runScheduleReconciler() {
 }
 
 func (c *dbosContext) reconcileSchedules() {
-	schedules, err := c.systemDB.listSchedules(c, listSchedulesDBInput{})
+	schedules, err := c.kernel.listSchedules(c, listSchedulesDBInput{})
 	if err != nil {
 		c.logger.Warn("failed to list schedules for reconciler", "error", err)
 		return
@@ -311,7 +311,7 @@ func (c *dbosContext) reconcileSchedules() {
 			end := time.Now()
 			if start.Before(end) {
 				c.logger.Info("performing automatic backfill", "schedule", sched.ScheduleName, "start", start, "end", end)
-				if _, err := c.systemDB.backfillSchedule(c, backfillScheduleDBInput{
+				if _, err := c.kernel.backfillSchedule(c, backfillScheduleDBInput{
 					ScheduleName: sched.ScheduleName,
 					Schedule:     sched.Schedule,
 					StartTime:    start,

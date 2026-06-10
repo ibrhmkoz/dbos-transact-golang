@@ -277,11 +277,11 @@ func setWorkflowStatusPending(t *testing.T, dbosCtx DBOSContext, workflowID stri
 	t.Helper()
 	c, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected DBOSContext to be *dbosContext")
-	SystemDatabase := c.systemDB
+	Kernel := c.kernel
 	updateQuery := fmt.Sprintf(`UPDATE %sworkflow_status
 		SET status = $1, output = NULL, error = NULL, started_at_epoch_ms = NULL, updated_at = $2
 		WHERE workflow_uuid = $3`, "")
-	_, err := SystemDatabase.pool.Exec(context.Background(), updateQuery,
+	_, err := Kernel.pool.Exec(context.Background(), updateQuery,
 		WorkflowStatusPending, time.Now().UnixMilli(), workflowID)
 	require.NoError(t, err, "failed to set workflow status to PENDING")
 }
@@ -294,7 +294,7 @@ func queueEntriesAreCleanedUp(ctx DBOSContext) bool {
 		fmt.Println("Expected ctx to be of type *dbosContext in queueEntriesAreCleanedUp")
 		return false
 	}
-	sdb := exec.systemDB
+	sdb := exec.kernel
 	for range maxTries {
 		tx, err := sdb.pool.BeginTx(ctx, TxOptions{})
 		if err != nil {

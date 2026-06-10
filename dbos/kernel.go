@@ -34,7 +34,7 @@ type ExportedWorkflow struct {
 	Streams               []map[string]any `json:"streams"`
 }
 
-type SystemDatabase struct {
+type Kernel struct {
 	pool                          Pool
 	queries                       *db.Queries
 	notificationLoopDone          chan struct{}
@@ -47,8 +47,8 @@ type SystemDatabase struct {
 	launched                      bool
 }
 
-// SystemDatabaseConfig configures the shared DBOS system database dependency.
-type SystemDatabaseConfig struct {
+// KernelConfig configures the shared DBOS system database dependency.
+type KernelConfig struct {
 	DatabaseURL     string
 	DatabaseSchema  string
 	SystemDBPool    *pgxpool.Pool
@@ -488,7 +488,7 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, schema string, logge
 
 // q returns the sqlc query set bound to tx when one is supplied, otherwise the
 // pool-bound set. Lets optional-transaction methods share a single code path.
-func (s *SystemDatabase) q(tx Tx) *db.Queries {
+func (s *Kernel) q(tx Tx) *db.Queries {
 	if tx != nil {
 		return s.queries.WithTx(PgxTx(tx))
 	}
@@ -545,7 +545,7 @@ func applyCatalogMigration(
 	return nil
 }
 
-type newSystemDatabaseInput struct {
+type newKernelInput struct {
 	databaseURL     string
 	databaseSchema  string
 	customPool      *pgxpool.Pool
@@ -553,7 +553,7 @@ type newSystemDatabaseInput struct {
 	applicationName string
 }
 
-func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*SystemDatabase, error) {
+func newKernel(ctx context.Context, inputs newKernelInput) (*Kernel, error) {
 	// Dereference fields from inputs
 	databaseURL := inputs.databaseURL
 	databaseSchema := inputs.databaseSchema
@@ -672,7 +672,7 @@ func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*Sys
 	workflowEventsMap := &sync.Map{}
 	workflowEventsRepollMap := &sync.Map{}
 
-	return &SystemDatabase{
+	return &Kernel{
 		pool:                          newPgxPool(pool),
 		queries:                       db.New(pool),
 		workflowNotificationsMap:      workflowNotificationsMap,
@@ -685,15 +685,15 @@ func newSystemDatabase(ctx context.Context, inputs newSystemDatabaseInput) (*Sys
 	}, nil
 }
 
-// NewSystemDatabase creates the shared system database and runs its migrations.
-func NewSystemDatabase(ctx context.Context, config SystemDatabaseConfig) (*SystemDatabase, error) {
+// NewKernel creates the shared system database and runs its migrations.
+func NewKernel(ctx context.Context, config KernelConfig) (*Kernel, error) {
 	if config.DatabaseSchema == "" {
 		config.DatabaseSchema = "dbos"
 	}
 	if config.Logger == nil {
 		config.Logger = slog.Default()
 	}
-	return newSystemDatabase(ctx, newSystemDatabaseInput{
+	return newKernel(ctx, newKernelInput{
 		databaseURL:     config.DatabaseURL,
 		databaseSchema:  config.DatabaseSchema,
 		customPool:      config.SystemDBPool,
@@ -703,25 +703,25 @@ func NewSystemDatabase(ctx context.Context, config SystemDatabaseConfig) (*Syste
 }
 
 // Launch starts the system database notification loops.
-func (s *SystemDatabase) Launch(ctx context.Context) {
+func (s *Kernel) Launch(ctx context.Context) {
 	s.launch(ctx)
 }
 
 // Shutdown stops the system database and closes its connection pool.
-func (s *SystemDatabase) Shutdown(ctx context.Context, timeout time.Duration) {
+func (s *Kernel) Shutdown(ctx context.Context, timeout time.Duration) {
 	s.shutdown(ctx, timeout)
 }
 
-func (s *SystemDatabase) listenNotifyPool() *pgxpool.Pool {
+func (s *Kernel) listenNotifyPool() *pgxpool.Pool {
 	return PgxPool(s.pool)
 }
 
-func (s *SystemDatabase) launch(ctx context.Context) {
+func (s *Kernel) launch(ctx context.Context) {
 	go s.notificationListenerLoop(ctx)
 	s.launched = true
 }
 
-func (s *SystemDatabase) shutdown(ctx context.Context, timeout time.Duration) {
+func (s *Kernel) shutdown(ctx context.Context, timeout time.Duration) {
 	s.logger.Debug("Closing system database connection pool")
 
 	if s.launched {
@@ -777,7 +777,7 @@ type insertWorkflowStatusDBInput struct {
 	incrementAttempts bool
 }
 
-func (s *SystemDatabase) insertWorkflowStatus(ctx context.Context, input insertWorkflowStatusDBInput) (*insertWorkflowResult, error) {
+func (s *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowStatusDBInput) (*insertWorkflowResult, error) {
 	if input.tx == nil {
 		return nil, errors.New("transaction is required for InsertWorkflowStatus")
 	}
@@ -984,7 +984,7 @@ type listWorkflowsDBInput struct {
 }
 
 // ListWorkflows retrieves a list of workflows based on the provided filters
-func (s *SystemDatabase) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
+func (s *Kernel) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
 	idPrefixes := make([]string, len(input.workflowIDPrefix))
 	for i, p := range input.workflowIDPrefix {
 		idPrefixes[i] = p + "%"
@@ -1153,7 +1153,7 @@ type updateWorkflowOutcomeDBInput struct {
 
 // updateWorkflowOutcome updates the status, output, and error of a workflow
 // Note that transitions from CANCELLED to SUCCESS or ERROR are forbidden
-func (s *SystemDatabase) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
+func (s *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
 	// input.output is already a *string from the database layer
 	if err := s.q(input.tx).UpdateWorkflowOutcome(ctx, db.UpdateWorkflowOutcomeParams{
 		Status:          string(input.status),
@@ -1179,7 +1179,7 @@ type cancelWorkflowsDBInput struct {
 // are already in a terminal state (SUCCESS, ERROR, CANCELLED) are left untouched.
 // Returns the subset of input IDs that existed in workflow_status (including terminal
 // ones, which are considered existing even though they are not updated).
-func (s *SystemDatabase) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInput) ([]string, error) {
+func (s *Kernel) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInput) ([]string, error) {
 	if len(input.workflowIDs) == 0 {
 		return nil, nil
 	}
@@ -1203,7 +1203,7 @@ type deleteWorkflowsDBInput struct {
 	tx             Tx
 }
 
-func (s *SystemDatabase) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error {
+func (s *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error {
 	// If no transaction is provided, create one so the entire operation is atomic
 	tx := input.tx
 	if tx == nil {
@@ -1256,7 +1256,7 @@ type getWorkflowChildrenDBInput struct {
 
 // getWorkflowChildren retrieves all descendant workflows of the given parent workflow
 // (breadth-first) within the same transaction.
-func (s *SystemDatabase) getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error) {
+func (s *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error) {
 
 	children, err := s.listWorkflows(ctx, listWorkflowsDBInput{
 		parentWorkflowID: []string{input.workflowID},
@@ -1290,7 +1290,7 @@ func (s *SystemDatabase) getWorkflowChildren(ctx context.Context, input getWorkf
 	return children, nil
 }
 
-func (s *SystemDatabase) cancelAllBefore(ctx context.Context, cutoffTime time.Time) error {
+func (s *Kernel) cancelAllBefore(ctx context.Context, cutoffTime time.Time) error {
 	// List all workflows in PENDING, ENQUEUED, or DELAYED state ending at cutoffTime
 	listInput := listWorkflowsDBInput{
 		endTime: cutoffTime,
@@ -1321,7 +1321,7 @@ type garbageCollectWorkflowsInput struct {
 	rowsThreshold          *int
 }
 
-func (s *SystemDatabase) garbageCollectWorkflows(ctx context.Context, input garbageCollectWorkflowsInput) error {
+func (s *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageCollectWorkflowsInput) error {
 	// Validate input parameters
 	if input.rowsThreshold != nil && *input.rowsThreshold <= 0 {
 		return fmt.Errorf("rowsThreshold must be greater than 0, got %d", *input.rowsThreshold)
@@ -1380,7 +1380,7 @@ type resumeWorkflowsDBInput struct {
 // resumeWorkflows re-enqueues the given workflows onto the specified queue (or the internal
 // queue if unset). It returns the subset of IDs that existed in workflow_status; IDs in
 // terminal states are considered existing even though they are not updated.
-func (s *SystemDatabase) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error) {
+func (s *Kernel) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error) {
 	if len(input.workflowIDs) == 0 {
 		return nil, nil
 	}
@@ -1414,7 +1414,7 @@ type forkWorkflowDBInput struct {
 	tx                 Tx
 }
 
-func (s *SystemDatabase) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error) {
+func (s *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error) {
 	// Generate new workflow ID if not provided
 	forkedWorkflowID := input.forkedWorkflowID
 	if forkedWorkflowID == "" {
@@ -1562,7 +1562,7 @@ type awaitWorkflowResultOutput struct {
 	errStr        *string
 }
 
-func (s *SystemDatabase) awaitWorkflowResult(ctx context.Context, workflowID string, pollInterval time.Duration) (*awaitWorkflowResultOutput, error) {
+func (s *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pollInterval time.Duration) (*awaitWorkflowResultOutput, error) {
 	if pollInterval <= 0 {
 		pollInterval = _DB_RETRY_INTERVAL
 	}
@@ -1625,7 +1625,7 @@ type recordOperationResultDBInput struct {
 	serialization string
 }
 
-func (s *SystemDatabase) recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error {
+func (s *Kernel) recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error {
 	startedAtMs := input.startedAt.UnixMilli()
 	completedAtMs := input.completedAt.UnixMilli()
 
@@ -1651,7 +1651,7 @@ func (s *SystemDatabase) recordOperationResult(ctx context.Context, input record
 
 // getDeduplicatedWorkflow returns the ID of the workflow currently holding the
 // deduplication slot for (workflowName, deduplicationID), or nil if the slot is free.
-func (s *SystemDatabase) getDeduplicatedWorkflow(ctx context.Context, workflowName, deduplicationID string) (*string, error) {
+func (s *Kernel) getDeduplicatedWorkflow(ctx context.Context, workflowName, deduplicationID string) (*string, error) {
 	id, err := s.queries.GetDeduplicatedWorkflow(ctx, db.GetDeduplicatedWorkflowParams{
 		Name:            &workflowName,
 		DeduplicationID: &deduplicationID,
@@ -1683,7 +1683,7 @@ type checkOperationExecutionDBInput struct {
 	tx         Tx
 }
 
-func (s *SystemDatabase) checkOperationExecution(ctx context.Context, input checkOperationExecutionDBInput) (*recordedResult, error) {
+func (s *Kernel) checkOperationExecution(ctx context.Context, input checkOperationExecutionDBInput) (*recordedResult, error) {
 	// Use provided transaction or create a new one. We don't commit -- it is
 	// just useful for having READ COMMITTED across the two reads.
 	tx := input.tx
@@ -1758,7 +1758,7 @@ type getWorkflowStepsInput struct {
 	loadOutput bool
 }
 
-func (s *SystemDatabase) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInput) ([]stepInfo, error) {
+func (s *Kernel) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInput) ([]stepInfo, error) {
 	rows, err := s.queries.GetWorkflowSteps(ctx, input.workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workflow steps: %w", err)
@@ -1940,7 +1940,7 @@ func aggInt64(v any) *int64 {
 	}
 }
 
-func (s *SystemDatabase) getWorkflowAggregates(ctx context.Context, input getWorkflowAggregatesDBInput) ([]WorkflowAggregateRow, error) {
+func (s *Kernel) getWorkflowAggregates(ctx context.Context, input getWorkflowAggregatesDBInput) ([]WorkflowAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
@@ -2054,7 +2054,7 @@ type getStepAggregatesDBInput struct {
 // SUCCESS, otherwise ERROR. operation_outputs has no explicit status column.
 const stepStatusExpr = "(CASE WHEN error IS NULL THEN 'SUCCESS' ELSE 'ERROR' END)"
 
-func (s *SystemDatabase) getStepAggregates(ctx context.Context, input getStepAggregatesDBInput) ([]StepAggregateRow, error) {
+func (s *Kernel) getStepAggregates(ctx context.Context, input getStepAggregatesDBInput) ([]StepAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
@@ -2137,7 +2137,7 @@ type sleepInput struct {
 // If we sleep is re-executed, it will only sleep for the remaining duration until the wakeup time
 // sleep can be called within other special steps (e.g., getEvent, recv) to provide durable sleep
 
-func (s *SystemDatabase) sleep(ctx context.Context, input sleepInput) (time.Duration, error) {
+func (s *Kernel) sleep(ctx context.Context, input sleepInput) (time.Duration, error) {
 	functionName := "DBOS.sleep"
 
 	// Get workflow state from context
@@ -2239,14 +2239,14 @@ type patchDBInput struct {
 	patchName  string
 }
 
-func (s *SystemDatabase) doesPatchExists(ctx context.Context, input patchDBInput) (string, error) {
+func (s *Kernel) doesPatchExists(ctx context.Context, input patchDBInput) (string, error) {
 	return s.queries.DoesPatchExist(ctx, db.DoesPatchExistParams{
 		WorkflowUuid: input.workflowID,
 		FunctionID:   int32(input.stepID),
 	})
 }
 
-func (s *SystemDatabase) patch(ctx context.Context, input patchDBInput) (bool, error) {
+func (s *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
 	functionName, err := s.doesPatchExists(ctx, input)
 	if err != nil {
 		// No result means this is a new workflow, or an existing workflow that has not reached this step yet
@@ -2273,7 +2273,7 @@ func (s *SystemDatabase) patch(ctx context.Context, input patchDBInput) (bool, e
 /******* WORKFLOW COMMUNICATIONS ********/
 /****************************************/
 
-func (s *SystemDatabase) notificationListenerLoop(ctx context.Context) {
+func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 	defer func() {
 		s.logger.Debug("Notification listener loop exiting")
 		s.notificationLoopDone <- struct{}{}
@@ -2406,7 +2406,7 @@ func (s *SystemDatabase) notificationListenerLoop(ctx context.Context) {
 	}
 }
 
-func (s *SystemDatabase) notificationPollerLoop(ctx context.Context) {
+func (s *Kernel) notificationPollerLoop(ctx context.Context) {
 	defer func() {
 		s.logger.Debug("Notification poller loop exiting")
 		s.notificationLoopDone <- struct{}{}
@@ -2429,7 +2429,7 @@ func (s *SystemDatabase) notificationPollerLoop(ctx context.Context) {
 	}
 }
 
-func (s *SystemDatabase) pollNotifications(ctx context.Context) {
+func (s *Kernel) pollNotifications(ctx context.Context) {
 	// Iterate through all registered notification payloads
 	s.workflowNotificationsMap.Range(func(key, value any) bool {
 		payload, ok := key.(string)
@@ -2470,7 +2470,7 @@ func (s *SystemDatabase) pollNotifications(ctx context.Context) {
 	})
 }
 
-func (s *SystemDatabase) pollEvents(ctx context.Context) {
+func (s *Kernel) pollEvents(ctx context.Context) {
 	// Iterate through all registered event payloads
 	s.workflowEventsMap.Range(func(key, value any) bool {
 		payload, ok := key.(string)
@@ -2524,7 +2524,7 @@ type WorkflowSendInput struct {
 // Send is a special type of step that sends a message to another workflow.
 // Can be called both within a workflow (as a step) or outside a workflow (directly).
 // When called within a workflow: durability and the function run in the same transaction, and we forbid nested step execution
-func (s *SystemDatabase) send(ctx context.Context, input WorkflowSendInput) error {
+func (s *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
 	if _, ok := input.Message.(*string); !ok {
 		return fmt.Errorf("message must be a pointer to a string")
 	}
@@ -2555,7 +2555,7 @@ func (s *SystemDatabase) send(ctx context.Context, input WorkflowSendInput) erro
 }
 
 // Recv is a special type of step that receives a message destined for a given workflow
-func (s *SystemDatabase) recv(ctx context.Context, input recvInput) (*recvResult, error) {
+func (s *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error) {
 	functionName := "DBOS.recv"
 
 	// Get workflow state from context
@@ -2742,7 +2742,7 @@ type WorkflowSetEventInput struct {
 	serialization string
 }
 
-func (s *SystemDatabase) setEvent(ctx context.Context, input WorkflowSetEventInput) error {
+func (s *Kernel) setEvent(ctx context.Context, input WorkflowSetEventInput) error {
 	// Get workflow state from context
 	wfState, ok := ctx.Value(workflowStateKey).(*workflowState)
 	if !ok || wfState == nil {
@@ -2777,7 +2777,7 @@ func (s *SystemDatabase) setEvent(ctx context.Context, input WorkflowSetEventInp
 	})
 }
 
-func (s *SystemDatabase) getEvent(ctx context.Context, input getEventInput) (*getEventResult, error) {
+func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventResult, error) {
 	functionName := "DBOS.getEvent"
 
 	// Get workflow state from context (optional for GetEvent as we can get an event from outside a workflow)
@@ -2995,7 +2995,7 @@ type streamEntry struct {
 	Serialization string
 }
 
-func (s *SystemDatabase) writeStream(ctx context.Context, input writeStreamDBInput) error {
+func (s *Kernel) writeStream(ctx context.Context, input writeStreamDBInput) error {
 	// Get workflow state from context
 	wfState, ok := ctx.Value(workflowStateKey).(*workflowState)
 	if !ok || wfState == nil {
@@ -3030,7 +3030,7 @@ func (s *SystemDatabase) writeStream(ctx context.Context, input writeStreamDBInp
 
 // readStream reads stream entries starting from a given offset.
 // Returns the entries, whether the stream is closed, and any error.
-func (s *SystemDatabase) readStream(ctx context.Context, input readStreamDBInput) ([]streamEntry, bool, error) {
+func (s *Kernel) readStream(ctx context.Context, input readStreamDBInput) ([]streamEntry, bool, error) {
 	rows, err := s.queries.ReadStream(ctx, db.ReadStreamParams{
 		WorkflowUuid: input.WorkflowID,
 		Key:          input.Key,
@@ -3069,7 +3069,7 @@ type eventRecord struct {
 }
 
 // getAllEvents returns every event row currently set on the workflow.
-func (s *SystemDatabase) getAllEvents(ctx context.Context, workflowID string) ([]eventRecord, error) {
+func (s *Kernel) getAllEvents(ctx context.Context, workflowID string) ([]eventRecord, error) {
 	rows, err := s.queries.GetAllEvents(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workflow events: %w", err)
@@ -3097,7 +3097,7 @@ type notificationRecord struct {
 
 // getAllNotifications returns every notification sent to the workflow, ordered by arrival time.
 // The __null__topic__ sentinel is normalized back to a nil Topic.
-func (s *SystemDatabase) getAllNotifications(ctx context.Context, workflowID string) ([]notificationRecord, error) {
+func (s *Kernel) getAllNotifications(ctx context.Context, workflowID string) ([]notificationRecord, error) {
 	rows, err := s.queries.GetAllNotifications(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query notifications: %w", err)
@@ -3130,7 +3130,7 @@ type streamRecord struct {
 
 // getAllStreamEntries returns every stream entry for the workflow, ordered by (key, offset).
 // Rows holding the stream-closed sentinel are filtered out; callers may group by Key.
-func (s *SystemDatabase) getAllStreamEntries(ctx context.Context, workflowID string) ([]streamRecord, error) {
+func (s *Kernel) getAllStreamEntries(ctx context.Context, workflowID string) ([]streamRecord, error) {
 	rows, err := s.queries.GetAllStreamEntries(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query streams: %w", err)
@@ -3160,7 +3160,7 @@ type setWorkflowDelayDBInput struct {
 }
 
 // setWorkflowDelay updates the delay on a DELAYED workflow.
-func (s *SystemDatabase) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBInput) error {
+func (s *Kernel) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBInput) error {
 	if err := s.q(input.tx).SetWorkflowDelay(ctx, db.SetWorkflowDelayParams{
 		DelayUntil:   input.delayUntil.UnixMilli(),
 		UpdatedAt:    time.Now().UnixMilli(),
@@ -3173,7 +3173,7 @@ func (s *SystemDatabase) setWorkflowDelay(ctx context.Context, input setWorkflow
 }
 
 // transitionDelayedWorkflows transitions DELAYED workflows whose delay has expired to ENQUEUED.
-func (s *SystemDatabase) transitionDelayedWorkflows(ctx context.Context) error {
+func (s *Kernel) transitionDelayedWorkflows(ctx context.Context) error {
 	if err := s.queries.TransitionDelayedWorkflows(ctx, db.TransitionDelayedWorkflowsParams{
 		NewStatus: string(WorkflowStatusEnqueued),
 		OldStatus: string(WorkflowStatusDelayed),
@@ -3191,7 +3191,7 @@ type dequeuedWorkflow struct {
 	serialization string
 }
 
-func (s *SystemDatabase) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
+func (s *Kernel) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
 	var globalConcurrency, rateLimit *int32
 	var ratePeriodMs *int64
 	if concurrency != nil {
@@ -3219,7 +3219,7 @@ type dequeueWorkflowsInput struct {
 	applicationVersion string
 }
 
-func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
+func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
 	var policyConcurrency *int
 	var policyRateLimit *rateLimiter
 
@@ -3366,7 +3366,7 @@ func (s *SystemDatabase) dequeueWorkflows(ctx context.Context, input dequeueWork
 	return retWorkflows, nil
 }
 
-func (s *SystemDatabase) clearQueueAssignment(ctx context.Context, workflowID string) (bool, error) {
+func (s *Kernel) clearQueueAssignment(ctx context.Context, workflowID string) (bool, error) {
 	n, err := s.queries.ClearQueueAssignment(ctx, db.ClearQueueAssignmentParams{
 		EnqueuedStatus: string(WorkflowStatusEnqueued),
 		WorkflowUuid:   workflowID,
@@ -3389,7 +3389,7 @@ type metricData struct {
 	Value      float64 `json:"value"`
 }
 
-func (s *SystemDatabase) getMetrics(ctx context.Context, startTime, endTime string) ([]metricData, error) {
+func (s *Kernel) getMetrics(ctx context.Context, startTime, endTime string) ([]metricData, error) {
 	// Parse ISO timestamp strings to time.Time
 	startTimeParsed, err := time.Parse(time.RFC3339, startTime)
 	if err != nil {
@@ -3423,7 +3423,7 @@ func (s *SystemDatabase) getMetrics(ctx context.Context, startTime, endTime stri
 	return metrics, nil
 }
 
-func (s *SystemDatabase) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
+func (s *Kernel) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
 	rows, err := s.queries.GetMetricWorkflowCount(ctx, db.GetMetricWorkflowCountParams{
 		StartMs: startEpochMs,
 		EndMs:   endEpochMs,
@@ -3446,7 +3446,7 @@ func (s *SystemDatabase) getMetricWorkflowCount(ctx context.Context, startEpochM
 	return metrics, nil
 }
 
-func (s *SystemDatabase) getMetricStepCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
+func (s *Kernel) getMetricStepCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
 	rows, err := s.queries.GetMetricStepCount(ctx, db.GetMetricStepCountParams{
 		StartMs: startEpochMs,
 		EndMs:   endEpochMs,
@@ -3518,7 +3518,7 @@ func scheduleFromRow(r db.WorkflowSchedule) WorkflowSchedule {
 	return sc
 }
 
-func (s *SystemDatabase) createSchedule(ctx context.Context, input createScheduleDBInput) error {
+func (s *Kernel) createSchedule(ctx context.Context, input createScheduleDBInput) error {
 	var workflowClassName, queueName *string
 	if input.WorkflowClassName != "" {
 		workflowClassName = &input.WorkflowClassName
@@ -3550,7 +3550,7 @@ type listSchedulesDBInput struct {
 	tx                   Tx // optional: run inside an existing transaction
 }
 
-func (s *SystemDatabase) listSchedules(ctx context.Context, input listSchedulesDBInput) ([]WorkflowSchedule, error) {
+func (s *Kernel) listSchedules(ctx context.Context, input listSchedulesDBInput) ([]WorkflowSchedule, error) {
 	statuses := make([]string, len(input.Statuses))
 	for i, st := range input.Statuses {
 		statuses[i] = string(st)
@@ -3586,7 +3586,7 @@ type updateScheduleDBInput struct {
 	tx           Tx // optional: run inside an existing transaction
 }
 
-func (s *SystemDatabase) updateSchedule(ctx context.Context, input updateScheduleDBInput) error {
+func (s *Kernel) updateSchedule(ctx context.Context, input updateScheduleDBInput) error {
 	var lastFiredAt *string
 	if input.LastFiredAt != nil {
 		v := input.LastFiredAt.Format(time.RFC3339Nano)
@@ -3602,7 +3602,7 @@ func (s *SystemDatabase) updateSchedule(ctx context.Context, input updateSchedul
 	return nil
 }
 
-func (s *SystemDatabase) updateScheduleLastFiredAt(ctx context.Context, scheduleName string, lastFiredAt time.Time) error {
+func (s *Kernel) updateScheduleLastFiredAt(ctx context.Context, scheduleName string, lastFiredAt time.Time) error {
 	if err := s.queries.UpdateScheduleLastFiredAt(ctx, db.UpdateScheduleLastFiredAtParams{
 		LastFiredAt:  lastFiredAt.Format(time.RFC3339Nano),
 		ScheduleName: scheduleName,
@@ -3617,7 +3617,7 @@ type deleteScheduleDBInput struct {
 	tx           Tx // optional: run inside an existing transaction
 }
 
-func (s *SystemDatabase) deleteSchedule(ctx context.Context, input deleteScheduleDBInput) error {
+func (s *Kernel) deleteSchedule(ctx context.Context, input deleteScheduleDBInput) error {
 	if err := s.q(input.tx).DeleteSchedule(ctx, input.ScheduleName); err != nil {
 		return fmt.Errorf("failed to delete schedule: %w", err)
 	}
@@ -3631,7 +3631,7 @@ type backfillScheduleDBInput struct {
 	EndTime      time.Time
 }
 
-func (s *SystemDatabase) backfillSchedule(ctx context.Context, input backfillScheduleDBInput) ([]string, error) {
+func (s *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBInput) ([]string, error) {
 	schedules, err := s.listSchedules(ctx, listSchedulesDBInput{ScheduleNamePrefixes: []string{input.ScheduleName}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schedule: %w", err)
@@ -3736,7 +3736,7 @@ func (s *SystemDatabase) backfillSchedule(ctx context.Context, input backfillSch
 // triggerSchedule immediately enqueues the named schedule's workflow at the
 // current time, using the schedule's queue (or the internal queue by default)
 // and preserving its workflow_class_name and context. Returns the workflow ID.
-func (s *SystemDatabase) triggerSchedule(ctx context.Context, scheduleName string) (string, error) {
+func (s *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (string, error) {
 	if scheduleName == "" {
 		return "", errors.New("schedule_name is required")
 	}
@@ -3829,7 +3829,7 @@ type VersionInfo struct {
 	CreatedAt int64  `json:"created_at"`        // epoch milliseconds
 }
 
-func (s *SystemDatabase) createApplicationVersion(ctx context.Context, versionName string) error {
+func (s *Kernel) createApplicationVersion(ctx context.Context, versionName string) error {
 	nowMs := time.Now().UnixMilli()
 	if err := s.queries.CreateApplicationVersion(ctx, db.CreateApplicationVersionParams{
 		VersionID:        uuid.New().String(),
@@ -3842,7 +3842,7 @@ func (s *SystemDatabase) createApplicationVersion(ctx context.Context, versionNa
 	return nil
 }
 
-func (s *SystemDatabase) updateApplicationVersionTimestamp(ctx context.Context, versionName string, newTimestamp int64) error {
+func (s *Kernel) updateApplicationVersionTimestamp(ctx context.Context, versionName string, newTimestamp int64) error {
 	if err := s.queries.UpdateApplicationVersionTimestamp(ctx, db.UpdateApplicationVersionTimestampParams{
 		VersionTimestamp: newTimestamp,
 		VersionName:      versionName,
@@ -3852,7 +3852,7 @@ func (s *SystemDatabase) updateApplicationVersionTimestamp(ctx context.Context, 
 	return nil
 }
 
-func (s *SystemDatabase) listApplicationVersions(ctx context.Context) ([]VersionInfo, error) {
+func (s *Kernel) listApplicationVersions(ctx context.Context) ([]VersionInfo, error) {
 	rows, err := s.queries.ListApplicationVersions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list application versions: %w", err)
@@ -3869,7 +3869,7 @@ func (s *SystemDatabase) listApplicationVersions(ctx context.Context) ([]Version
 	return versions, nil
 }
 
-func (s *SystemDatabase) getLatestApplicationVersion(ctx context.Context) (*VersionInfo, error) {
+func (s *Kernel) getLatestApplicationVersion(ctx context.Context) (*VersionInfo, error) {
 	r, err := s.queries.GetLatestApplicationVersion(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -3899,7 +3899,7 @@ func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) er
 	return nil
 }
 
-func (s *SystemDatabase) resetSystemDB(ctx context.Context) error {
+func (s *Kernel) resetSystemDB(ctx context.Context) error {
 	// Get the current database configuration from the pool
 	config := PgxPool(s.pool).Config()
 	if config == nil || config.ConnConfig == nil {
@@ -4129,7 +4129,7 @@ func retryWithResult[T any](ctx context.Context, fn func() (T, error), options .
 	return result, nil
 }
 
-func (s *SystemDatabase) exportWorkflow(ctx context.Context, workflowID string, exportChildren bool) ([]ExportedWorkflow, error) {
+func (s *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportChildren bool) ([]ExportedWorkflow, error) {
 	tx, err := s.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction for exportWorkflow: %w", err)
@@ -4271,7 +4271,7 @@ func (s *SystemDatabase) exportWorkflow(ctx context.Context, workflowID string, 
 	return exported, nil
 }
 
-func (s *SystemDatabase) importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error {
+func (s *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error {
 	tx, err := s.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction for importWorkflow: %w", err)

@@ -67,7 +67,7 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 	for {
 		hasBackoffError := false
 		// Transition any DELAYED workflows whose delay has expired to ENQUEUED.
-		if err := ctx.systemDB.transitionDelayedWorkflows(ctx); err != nil {
+		if err := ctx.kernel.transitionDelayedWorkflows(ctx); err != nil {
 			workerLogger.Warn("Exception transitioning delayed workflows", "error", err)
 		}
 
@@ -120,7 +120,7 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 // Returns the dequeued workflows and a boolean indicating whether to continue to the next iteration.
 func (w *worker) dequeueWorkflows(ctx *dbosContext, workflowName string, hasBackoffError *bool) ([]dequeuedWorkflow, bool) {
 	dequeuedWorkflows, err := retryWithResult(ctx, func() ([]dequeuedWorkflow, error) {
-		return ctx.systemDB.dequeueWorkflows(ctx, dequeueWorkflowsInput{
+		return ctx.kernel.dequeueWorkflows(ctx, dequeueWorkflowsInput{
 			workflowName:       workflowName,
 			executorID:         ctx.executorID,
 			applicationVersion: ctx.applicationVersion,

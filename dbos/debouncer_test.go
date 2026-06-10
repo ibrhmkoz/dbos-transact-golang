@@ -225,16 +225,16 @@ func TestDebouncer(t *testing.T) {
 		require.NoError(t, err, "failed to get result from first run")
 		assert.Equal(t, "recovery-input-1", result1, "result should match input")
 
-		// Access systemDB and manually change status to PENDING
+		// Access kernel and manually change status to PENDING
 		dbosCtxInstance, ok := dbosCtx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
-		require.NotNil(t, dbosCtxInstance.systemDB)
+		require.NotNil(t, dbosCtxInstance.kernel)
 
 		// Sleep for a few seconds, which would push back the time computation in the debouncer workflow
 		time.Sleep(3 * time.Second)
 
 		// Find the internal debouncer workflow through the target workflow's parent metadata.
-		sysDBInstance := dbosCtxInstance.systemDB
+		sysDBInstance := dbosCtxInstance.kernel
 
 		query := sysDBInstance.renderSQL(`SELECT parent_workflow_id FROM %sworkflow_status WHERE workflow_uuid = $1`, "")
 		var debouncerWorkflowID string
@@ -242,7 +242,7 @@ func TestDebouncer(t *testing.T) {
 		require.NoError(t, err, "failed to find debouncer workflow from parent metadata")
 		require.NotEmpty(t, debouncerWorkflowID, "debouncer workflow ID should not be empty")
 
-		err = dbosCtxInstance.systemDB.updateWorkflowOutcome(context.Background(), updateWorkflowOutcomeDBInput{
+		err = dbosCtxInstance.kernel.updateWorkflowOutcome(context.Background(), updateWorkflowOutcomeDBInput{
 			workflowID: debouncerWorkflowID,
 			status:     WorkflowStatusPending,
 			output:     nil,
@@ -250,7 +250,7 @@ func TestDebouncer(t *testing.T) {
 		})
 		require.NoError(t, err, "failed to update workflow status to PENDING")
 
-		cleared, err := dbosCtxInstance.systemDB.clearQueueAssignment(context.Background(), debouncerWorkflowID)
+		cleared, err := dbosCtxInstance.kernel.clearQueueAssignment(context.Background(), debouncerWorkflowID)
 		require.NoError(t, err, "failed to clear queue assignment")
 		require.True(t, cleared, "should have cleared queue assignment")
 
