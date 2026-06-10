@@ -3,7 +3,6 @@ package dbos
 import (
 	"context"
 	"crypto/sha256"
-	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -32,9 +31,9 @@ const (
 // DatabaseURL and AppName are required.
 type Config struct {
 	AppName                   string          // Application name for identification (required)
-	DatabaseURL               string          // DatabaseURL is the system-database connection string. Exactly one of DatabaseURL, SystemDBPool, or SqliteSystemDB must be set.
-	SystemDBPool              *pgxpool.Pool   // SystemDBPool is a custom pg/CRDB pool. Optional; takes precedence over DatabaseURL. Mutually exclusive with SqliteSystemDB.
-	SqliteSystemDB            *sql.DB         // SqliteSystemDB is a custom sqlite handle (e.g. from modernc.org/sqlite). Optional; takes precedence over DatabaseURL. Mutually exclusive with SystemDBPool.
+	DatabaseURL               string          // PostgreSQL connection string. Mutually exclusive with SystemDBPool and SystemDatabase.
+	SystemDBPool              *pgxpool.Pool   // Custom PostgreSQL pool. Mutually exclusive with DatabaseURL and SystemDatabase.
+	SystemDatabase            *SystemDatabase // Shared system database. Mutually exclusive with DatabaseURL and SystemDBPool.
 	DatabaseSchema            string          // Database schema name (defaults to "dbos")
 	Logger                    *slog.Logger    // Custom logger instance (defaults to a new slog logger)
 	AdminServer               bool            // Enable Transact admin HTTP server (disabled by default)
@@ -51,16 +50,16 @@ type Config struct {
 
 func processConfig(inputConfig *Config) (*Config, error) {
 	// First check required fields
-	if len(inputConfig.DatabaseURL) == 0 && inputConfig.SystemDBPool == nil && inputConfig.SqliteSystemDB == nil {
-		return nil, fmt.Errorf("one of databaseURL, systemDBPool, or sqliteSystemDB must be provided")
+	if len(inputConfig.DatabaseURL) == 0 && inputConfig.SystemDBPool == nil && inputConfig.SystemDatabase == nil {
+		return nil, fmt.Errorf("one of databaseURL, systemDBPool, or systemDatabase must be provided")
 	}
-	if inputConfig.SystemDBPool != nil && inputConfig.SqliteSystemDB != nil {
-		return nil, fmt.Errorf("systemDBPool and sqliteSystemDB are mutually exclusive")
+	if inputConfig.SystemDatabase != nil && (inputConfig.DatabaseURL != "" || inputConfig.SystemDBPool != nil) {
+		return nil, fmt.Errorf("systemDatabase is mutually exclusive with databaseURL and systemDBPool")
 	}
 	if len(inputConfig.AppName) == 0 {
 		return nil, fmt.Errorf("missing required config field: appName")
 	}
-	if inputConfig.SystemDBPool == nil && inputConfig.SqliteSystemDB == nil {
+	if inputConfig.SystemDBPool == nil && inputConfig.SystemDatabase == nil {
 		if _, err := detectDialect(inputConfig.DatabaseURL); err != nil {
 			return nil, err
 		}
@@ -82,7 +81,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 		ApplicationVersion:        inputConfig.ApplicationVersion,
 		ExecutorID:                inputConfig.ExecutorID,
 		SystemDBPool:              inputConfig.SystemDBPool,
-		SqliteSystemDB:            inputConfig.SqliteSystemDB,
+		SystemDatabase:            inputConfig.SystemDatabase,
 		EnablePatching:            inputConfig.EnablePatching,
 		Serializer:                inputConfig.Serializer,
 		SchedulerPollingInterval:  inputConfig.SchedulerPollingInterval,
@@ -161,21 +160,6 @@ type DBOSContext interface {
 	GetWorkflowID() (string, error)                                                               // Get the current workflow ID (only available within workflows)
 	GetStepID() (int, error)                                                                      // Get the current step ID (only available within workflows)
 
-	// WorkflowFn management
-	RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error)                                   // Get a handle to an existing workflow
-	CancelWorkflow(workflowID string) error                                                             // Cancel a workflow by setting its status to CANCELLED
-	CancelWorkflows(workflowIDs []string) error                                                         // Cancel multiple workflows in a single DB round-trip
-	SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error                           // Set or update the delay on a DELAYED workflow
-	ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)       // Resume a cancelled workflow
-	ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) // Resume multiple workflows in a single DB round-trip
-	ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error)                                 // Fork a workflow from a specific step
-	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)                                // List workflows based on filtering criteria
-	GetWorkflowSteps(workflowID string, opts ...GetWorkflowStepsOption) ([]StepInfo, error)             // Get the execution steps of a workflow
-	GetWorkflowAggregates(input GetWorkflowAggregatesInput) ([]WorkflowAggregateRow, error)             // Aggregate counts of workflows by one or more grouping columns
-	GetStepAggregates(input GetStepAggregatesInput) ([]StepAggregateRow, error)                         // Aggregate counts/durations of steps by function name and/or status
-	ListRegisteredWorkflows(opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error)     // List registered workflows with filtering options
-	DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error                           // Delete workflows and all their associated data
-
 	// Accessors
 	GetApplicationVersion() string // Get the application version for this context
 	GetExecutorID() string         // Get the executor ID for this context
@@ -189,22 +173,6 @@ type DBOSContext interface {
 	WithCancel() (DBOSContext, context.CancelFunc)                       // Returns a copy that can be manually canceled
 	WithCancelCause() (DBOSContext, context.CancelCauseFunc)             // Returns a copy of the DBOS context that can be canceled with a cause
 
-	// Schedule management
-	CreateSchedule(fn ScheduledWorkflowFunc, input CreateScheduleRequest, opts ...CreateScheduleOption) error // Create a new schedule
-	ApplySchedules(schedules []ApplySchedulesRequest) error                                                   // Apply schedules (create or update)
-	PauseSchedule(scheduleName string) error                                                                  // Pause a schedule
-	ResumeSchedule(scheduleName string) error                                                                 // Resume a paused schedule
-	DeleteSchedule(scheduleName string) error                                                                 // Delete a schedule
-	GetSchedule(scheduleName string) (*WorkflowSchedule, error)                                               // Get a schedule by name
-	ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSchedule, error)                                    // List schedules with optional filters
-	BackfillSchedule(scheduleName string, start time.Time, end time.Time) ([]string, error)                   // Backfill a schedule, returning the IDs of the enqueued workflows
-	TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error)                                        // Trigger a schedule immediately, returning a handle to the enqueued workflow
-
-	// Application versions
-	ListApplicationVersions() ([]VersionInfo, error)      // List all registered application versions, newest first
-	GetLatestApplicationVersion() (*VersionInfo, error)   // Get the latest registered application version
-	SetLatestApplicationVersion(versionName string) error // Mark the named version as latest by bumping its timestamp to now
-
 	// Alert handling
 	SetAlertHandler(handler AlertHandler) // Register a handler for alerts from DBOS Conductor (must be called before Launch)
 }
@@ -215,9 +183,10 @@ type dbosContext struct {
 
 	launched atomic.Bool
 
-	systemDB    systemDatabase
-	adminServer *adminServer
-	config      *Config
+	systemDB     *SystemDatabase
+	ownsSystemDB bool
+	adminServer  *adminServer
+	config       *Config
 
 	// Queue runner
 	worker *worker
@@ -570,18 +539,22 @@ func NewDBOSContext(ctx context.Context, inputConfig Config) (DBOSContext, error
 		databaseURL:     config.DatabaseURL,
 		databaseSchema:  config.DatabaseSchema,
 		customPool:      config.SystemDBPool,
-		customSqliteDB:  config.SqliteSystemDB,
 		logger:          initExecutor.logger,
 		applicationName: config.AppName,
 	}
 
-	// Create the system database
-	systemDB, err := newSystemDatabase(initExecutor, newSystemDatabaseInputs)
-	if err != nil {
-		initExecutor.logger.Error("failed to create system database", "error", err)
-		return nil, newInitializationError(err.Error())
+	if config.SystemDatabase != nil {
+		initExecutor.systemDB = config.SystemDatabase
+	} else {
+		// Create the system database
+		systemDB, err := newSystemDatabase(initExecutor, newSystemDatabaseInputs)
+		if err != nil {
+			initExecutor.logger.Error("failed to create system database", "error", err)
+			return nil, newInitializationError(err.Error())
+		}
+		initExecutor.systemDB = systemDB
+		initExecutor.ownsSystemDB = true
 	}
-	initExecutor.systemDB = systemDB
 	initExecutor.logger.Debug("System database initialized")
 
 	// Initialize the worker.
@@ -629,7 +602,9 @@ func (c *dbosContext) Launch() error {
 	}
 
 	// Start the system database
-	c.systemDB.launch(c)
+	if c.ownsSystemDB {
+		c.systemDB.launch(c)
+	}
 
 	// Register the current application version and warn if it is not the latest.
 	if err := retry(c, func() error {
@@ -779,7 +754,7 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 	}
 
 	// Close the system database
-	if c.systemDB != nil {
+	if c.systemDB != nil && c.ownsSystemDB {
 		c.logger.Debug("Shutting down system database")
 		c.systemDB.shutdown(c, timeout)
 	}

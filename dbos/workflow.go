@@ -872,7 +872,7 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 	var insertStatusResult *insertWorkflowResult
 	// Initialize workflow status.
 	insertWorkflowStatusTx := func() error {
-		tx, err := c.systemDB.(*sysDB).pool.BeginTx(uncancellableCtx, TxOptions{})
+		tx, err := c.systemDB.pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
 			return newWorkflowExecutionError(workflowID, fmt.Errorf("failed to begin transaction: %w", err))
 		}
@@ -1488,7 +1488,7 @@ func (c *dbosContext) runAsTxn(fn txnFunc, opts ...StepOption) (any, error) {
 	uncancellableCtx := WithoutCancel(c)
 	stepState := prep.StepState
 	stepOpts := prep.StepOpts
-	pool := c.systemDB.(*sysDB).pool
+	pool := c.systemDB.pool
 	stepCtx := WithValue(c, workflowStateKey, stepState)
 	stepStartTime := time.Now()
 
@@ -1894,13 +1894,9 @@ func (c *dbosContext) Recv(topic string, timeout time.Duration) (any, error) {
 		Timeout:       timeout,
 		serialization: resolveEncoder(c).Name(),
 	}
-	recvRetryOpts := []retryOption{withRetrierLogger(c.logger)}
-	if sysDB, ok := c.systemDB.(*sysDB); ok && sysDB.isCockroachDB {
-		recvRetryOpts = append(recvRetryOpts, withRetryCondition(isRetryableTransaction))
-	}
 	return retryWithResult(c, func() (*recvResult, error) {
 		return c.systemDB.recv(c, input)
-	}, recvRetryOpts...)
+	}, withRetrierLogger(c.logger))
 }
 
 // Recv receives a message sent to this workflow with type safety.
@@ -2795,7 +2791,7 @@ func RetrieveWorkflow[R any](ctx DBOSContext, workflowID string) (*WorkflowHandl
 	}
 
 	// Call the interface method
-	handle, err := ctx.RetrieveWorkflow(workflowID)
+	handle, err := ctx.(*dbosContext).RetrieveWorkflow(workflowID)
 	if err != nil {
 		return nil, err
 	}
@@ -2846,7 +2842,7 @@ func CancelWorkflow(ctx DBOSContext, workflowID string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.CancelWorkflow(workflowID)
+	return ctx.(*dbosContext).CancelWorkflow(workflowID)
 }
 
 func (c *dbosContext) CancelWorkflows(workflowIDs []string) error {
@@ -2880,7 +2876,7 @@ func CancelWorkflows(ctx DBOSContext, workflowIDs []string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.CancelWorkflows(workflowIDs)
+	return ctx.(*dbosContext).CancelWorkflows(workflowIDs)
 }
 
 // SetWorkflowDelayOption configures how the delay is set on a workflow.
@@ -2957,7 +2953,7 @@ func SetWorkflowDelay(ctx DBOSContext, workflowID string, opts ...SetWorkflowDel
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.SetWorkflowDelay(workflowID, opts...)
+	return ctx.(*dbosContext).SetWorkflowDelay(workflowID, opts...)
 }
 
 func (c *dbosContext) DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error {
@@ -3030,7 +3026,7 @@ func DeleteWorkflows(ctx DBOSContext, workflowIDs []string, opts ...DeleteWorkfl
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.DeleteWorkflows(workflowIDs, opts...)
+	return ctx.(*dbosContext).DeleteWorkflows(workflowIDs, opts...)
 }
 
 // resumeWorkflowOptions holds configuration parameters for resuming workflows.
@@ -3125,7 +3121,7 @@ func ResumeWorkflow[R any](ctx DBOSContext, workflowID string, opts ...ResumeWor
 		return nil, errors.New("ctx cannot be nil")
 	}
 
-	_, err := ctx.ResumeWorkflow(workflowID, opts...)
+	_, err := ctx.(*dbosContext).ResumeWorkflow(workflowID, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3153,7 +3149,7 @@ func ResumeWorkflows[R any](ctx DBOSContext, workflowIDs []string, opts ...Resum
 		return nil, errors.New("ctx cannot be nil")
 	}
 
-	anyHandles, err := ctx.ResumeWorkflows(workflowIDs, opts...)
+	anyHandles, err := ctx.(*dbosContext).ResumeWorkflows(workflowIDs, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -3261,7 +3257,7 @@ func ForkWorkflow[R any](ctx DBOSContext, input ForkWorkflowInput) (*WorkflowHan
 		return nil, errors.New("ctx cannot be nil")
 	}
 
-	handle, err := ctx.ForkWorkflow(input)
+	handle, err := ctx.(*dbosContext).ForkWorkflow(input)
 	if err != nil {
 		return nil, err
 	}
@@ -3643,7 +3639,7 @@ func ListWorkflows(ctx DBOSContext, opts ...ListWorkflowsOption) ([]WorkflowStat
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.ListWorkflows(opts...)
+	return ctx.(*dbosContext).ListWorkflows(opts...)
 }
 
 type StepInfo struct {
@@ -3774,7 +3770,7 @@ func GetWorkflowSteps(ctx DBOSContext, workflowID string, opts ...GetWorkflowSte
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetWorkflowSteps(workflowID, opts...)
+	return ctx.(*dbosContext).GetWorkflowSteps(workflowID, opts...)
 }
 
 // GetWorkflowAggregatesInput is the input to GetWorkflowAggregates.
@@ -3864,7 +3860,7 @@ func GetWorkflowAggregates(ctx DBOSContext, input GetWorkflowAggregatesInput) ([
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetWorkflowAggregates(input)
+	return ctx.(*dbosContext).GetWorkflowAggregates(input)
 }
 
 // GetStepAggregatesInput is the input to GetStepAggregates.
@@ -3934,7 +3930,7 @@ func GetStepAggregates(ctx DBOSContext, input GetStepAggregatesInput) ([]StepAgg
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetStepAggregates(input)
+	return ctx.(*dbosContext).GetStepAggregates(input)
 }
 
 // listRegisteredWorkflowsOptions holds configuration parameters for listing registered workflows
@@ -3979,7 +3975,7 @@ func ListRegisteredWorkflows(ctx DBOSContext, opts ...ListRegisteredWorkflowsOpt
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.ListRegisteredWorkflows(opts...)
+	return ctx.(*dbosContext).ListRegisteredWorkflows(opts...)
 }
 
 /*******************************/
@@ -4119,7 +4115,7 @@ func CreateSchedule(ctx DBOSContext, fn ScheduledWorkflowFunc, input CreateSched
 	if fn == nil {
 		return errors.New("workflow function cannot be nil")
 	}
-	return ctx.CreateSchedule(fn, input, opts...)
+	return ctx.(*dbosContext).CreateSchedule(fn, input, opts...)
 }
 
 func (c *dbosContext) ApplySchedules(schedules []ApplySchedulesRequest) error {
@@ -4144,7 +4140,7 @@ func (c *dbosContext) ApplySchedules(schedules []ApplySchedulesRequest) error {
 	}
 
 	return retry(c, func() error {
-		tx, err := c.systemDB.(*sysDB).pool.BeginTx(c, TxOptions{})
+		tx, err := c.systemDB.pool.BeginTx(c, TxOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to begin transaction: %w", err)
 		}
@@ -4205,7 +4201,7 @@ func ApplySchedules(ctx DBOSContext, schedules []ApplySchedulesRequest) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.ApplySchedules(schedules)
+	return ctx.(*dbosContext).ApplySchedules(schedules)
 }
 
 func (c *dbosContext) PauseSchedule(scheduleName string) error {
@@ -4249,7 +4245,7 @@ func PauseSchedule(ctx DBOSContext, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.PauseSchedule(scheduleName)
+	return ctx.(*dbosContext).PauseSchedule(scheduleName)
 }
 
 func (c *dbosContext) ResumeSchedule(scheduleName string) error {
@@ -4293,7 +4289,7 @@ func ResumeSchedule(ctx DBOSContext, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.ResumeSchedule(scheduleName)
+	return ctx.(*dbosContext).ResumeSchedule(scheduleName)
 }
 
 func (c *dbosContext) DeleteSchedule(scheduleName string) error {
@@ -4322,7 +4318,7 @@ func DeleteSchedule(ctx DBOSContext, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.DeleteSchedule(scheduleName)
+	return ctx.(*dbosContext).DeleteSchedule(scheduleName)
 }
 
 // Potentially we could return an error here, if helpful to the user, if the schedule is not found.
@@ -4366,7 +4362,7 @@ func GetSchedule(ctx DBOSContext, scheduleName string) (*WorkflowSchedule, error
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetSchedule(scheduleName)
+	return ctx.(*dbosContext).GetSchedule(scheduleName)
 }
 
 func (c *dbosContext) ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSchedule, error) {
@@ -4419,7 +4415,7 @@ func ListSchedules(ctx DBOSContext, opts ...ListSchedulesOption) ([]WorkflowSche
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.ListSchedules(opts...)
+	return ctx.(*dbosContext).ListSchedules(opts...)
 }
 
 func (c *dbosContext) BackfillSchedule(scheduleName string, start time.Time, end time.Time) ([]string, error) {
@@ -4466,7 +4462,7 @@ func BackfillSchedule(ctx DBOSContext, scheduleName string, start, end time.Time
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.BackfillSchedule(scheduleName, start, end)
+	return ctx.(*dbosContext).BackfillSchedule(scheduleName, start, end)
 }
 
 func (c *dbosContext) TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error) {
@@ -4496,7 +4492,7 @@ func TriggerSchedule(ctx DBOSContext, scheduleName string) (*WorkflowHandle[any]
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.TriggerSchedule(scheduleName)
+	return ctx.(*dbosContext).TriggerSchedule(scheduleName)
 }
 
 // ListApplicationVersions returns every registered application version ordered
@@ -4512,7 +4508,7 @@ func ListApplicationVersions(ctx DBOSContext) ([]VersionInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.ListApplicationVersions()
+	return ctx.(*dbosContext).ListApplicationVersions()
 }
 
 // GetLatestApplicationVersion returns the application version with the most
@@ -4528,7 +4524,7 @@ func GetLatestApplicationVersion(ctx DBOSContext) (*VersionInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
-	return ctx.GetLatestApplicationVersion()
+	return ctx.(*dbosContext).GetLatestApplicationVersion()
 }
 
 // SetLatestApplicationVersion marks the named application version as latest by
@@ -4547,5 +4543,5 @@ func SetLatestApplicationVersion(ctx DBOSContext, versionName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
-	return ctx.SetLatestApplicationVersion(versionName)
+	return ctx.(*dbosContext).SetLatestApplicationVersion(versionName)
 }

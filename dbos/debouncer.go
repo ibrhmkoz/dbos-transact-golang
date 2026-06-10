@@ -160,12 +160,20 @@ func WithDebouncerTimeout(timeout time.Duration) DebouncerOption {
 	}
 }
 
-// DebouncerClient provides workflow debouncing functionality using a Client.
-// It uses a Client interface instead of a DBOSContext and takes a workflow name
-// string instead of a workflow function.
+// DebouncerAdmin is the subset of control-plane operations required by DebouncerClient.
+type DebouncerAdmin interface {
+	Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error)
+	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)
+	Send(destinationID string, message any, topic string, opts ...SendOption) error
+	GetEvent(targetWorkflowID, key string, timeout time.Duration) (any, error)
+	RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error)
+}
+
+// DebouncerClient provides workflow debouncing functionality using the narrow
+// subset of DBOSAdmin operations required by debouncing.
 type DebouncerClient[P any, R any] struct {
-	WorkflowName         string        // Name of the target workflow
-	Client               Client        // DBOS client for operations
+	WorkflowName         string // Name of the target workflow
+	admin                DebouncerAdmin
 	Timeout              time.Duration // Maximum time before starting the workflow (0 = no timeout)
 	internalDebouncerFQN string        // Fully qualified name of the internal debouncer workflow
 }
@@ -174,14 +182,14 @@ type DebouncerClient[P any, R any] struct {
 //
 // Parameters:
 //   - workflowName: The name of the workflow to debounce
-//   - client: The DBOS client to use for operations
+//   - dbosAdmin: The DBOS admin to use for operations
 //   - opts: Optional functional options for configuring the debouncer:
 //   - WithDebouncerTimeout: Maximum time before starting the workflow (0 = no timeout) [optional]
 //
 // Returns a pointer to a DebouncerClient instance that can be used to call Debounce.
 func NewDebouncerClient[P any, R any](
 	workflowName string,
-	client Client,
+	admin DebouncerAdmin,
 	opts ...DebouncerOption,
 ) *DebouncerClient[P, R] {
 	timeout := time.Duration(0) // Default: no timeout
@@ -191,7 +199,7 @@ func NewDebouncerClient[P any, R any](
 
 	return &DebouncerClient[P, R]{
 		WorkflowName: workflowName,
-		Client:       client,
+		admin:        admin,
 		Timeout:      timeout,
 		// Use the any,any internal debouncer workflow FQN because that's all the server knows
 		internalDebouncerFQN: resolveWorkflowFunctionName(internalDebouncerWF[any, any]),
@@ -202,7 +210,7 @@ func NewDebouncerClient[P any, R any](
 // subsequent call pushing back the start time by the delay (up to an optional maximum timeout).
 //
 // Unlike Debouncer.Debounce, this method never checks if we're within a workflow
-// and never attempts to run operations as steps. It uses the Client's Enqueue,
+// and never attempts to run operations as steps. It uses the DBOSAdmin's Enqueue,
 // Send, ListWorkflows, and GetEvent methods.
 //
 // Parameters:
@@ -239,16 +247,16 @@ func (dc *DebouncerClient[P, R]) Debounce(key string, delay time.Duration, input
 
 	internalWorkflowID := uuid.New().String()
 	for {
-		handle, err := Enqueue[debouncerInput[P], R](dc.Client, _DBOS_INTERNAL_QUEUE_NAME, dc.internalDebouncerFQN, dInput,
+		handle, err := dc.admin.Enqueue(_DBOS_INTERNAL_QUEUE_NAME, dc.internalDebouncerFQN, dInput,
 			WithEnqueueWorkflowID(internalWorkflowID), WithEnqueueDeduplicationID(key))
 		if err != nil {
 			return nil, err
 		}
 		if handle.GetWorkflowID() == internalWorkflowID {
-			return newWorkflowHandle[R](dc.Client.(*client).dbosCtx, dInput.TargetWorkflowID), nil
+			return retrieveTypedWorkflow[R](dc.admin, dInput.TargetWorkflowID)
 		}
 
-		debouncerWorkflowStatus, err := dc.Client.ListWorkflows(WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
+		debouncerWorkflowStatus, err := dc.admin.ListWorkflows(WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
 		if err != nil {
 			return nil, err
 		}
@@ -257,7 +265,7 @@ func (dc *DebouncerClient[P, R]) Debounce(key string, delay time.Duration, input
 		}
 		debouncerWorkflowID := handle.GetWorkflowID()
 
-		err = dc.Client.Send(debouncerWorkflowID, DebounceMessage[P]{
+		err = dc.admin.Send(debouncerWorkflowID, DebounceMessage[P]{
 			Input: input,
 			Delay: delay,
 			ID:    messageID,
@@ -266,7 +274,7 @@ func (dc *DebouncerClient[P, R]) Debounce(key string, delay time.Duration, input
 			return nil, err
 		}
 
-		_, err = dc.Client.GetEvent(debouncerWorkflowID, messageID, 2*time.Second)
+		_, err = dc.admin.GetEvent(debouncerWorkflowID, messageID, 2*time.Second)
 		if errors.Is(err, &DBOSError{Code: TimeoutError}) {
 			continue
 		} else if err != nil {
@@ -281,8 +289,16 @@ func (dc *DebouncerClient[P, R]) Debounce(key string, delay time.Duration, input
 		if err := json.Unmarshal([]byte(encodedInputStr), &decodedInput); err != nil {
 			return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
 		}
-		return newWorkflowHandle[R](dc.Client.(*client).dbosCtx, decodedInput.TargetWorkflowID), nil
+		return retrieveTypedWorkflow[R](dc.admin, decodedInput.TargetWorkflowID)
 	}
+}
+
+func retrieveTypedWorkflow[R any](admin DebouncerAdmin, workflowID string) (*WorkflowHandle[R], error) {
+	handle, err := admin.RetrieveWorkflow(workflowID)
+	if err != nil {
+		return nil, err
+	}
+	return &WorkflowHandle[R]{workflowHandle: handle.workflowHandle}, nil
 }
 
 // internalDebouncerWF is the internal workflow that implements debouncing logic.

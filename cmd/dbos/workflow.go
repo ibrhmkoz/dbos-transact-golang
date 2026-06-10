@@ -98,14 +98,14 @@ func runWorkflowList(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Build options from flags
 	var opts []dbos.ListWorkflowsOption
@@ -175,7 +175,7 @@ func runWorkflowList(cmd *cobra.Command, args []string) error {
 	opts = append(opts, dbos.WithLoadInput(false), dbos.WithLoadOutput(false))
 
 	// List workflows
-	workflows, err := ctx.ListWorkflows(opts...)
+	workflows, err := admin.ListWorkflows(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list workflows: %w", err)
 	}
@@ -197,17 +197,17 @@ func runWorkflowGet(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Retrieve workflow
-	workflows, err := ctx.ListWorkflows(
+	workflows, err := admin.ListWorkflows(
 		dbos.WithWorkflowIDs([]string{workflowID}),
 		dbos.WithLoadInput(false),
 		dbos.WithLoadOutput(false),
@@ -231,17 +231,17 @@ func runWorkflowSteps(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Get workflow steps
-	steps, err := dbos.GetWorkflowSteps(ctx, workflowID)
+	steps, err := admin.GetWorkflowSteps(workflowID)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow steps: %w", err)
 	}
@@ -263,17 +263,17 @@ func runWorkflowCancel(cmd *cobra.Command, args []string) error {
 	if err != nil {
 		return err
 	}
-
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Cancel workflow
-	err = ctx.CancelWorkflow(workflowID)
+	err = admin.CancelWorkflow(workflowID)
 	if err != nil {
 		return err
 	}
@@ -293,13 +293,14 @@ func runWorkflowResume(cmd *cobra.Command, args []string) error {
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Resume workflow
-	handle, err := ctx.ResumeWorkflow(workflowID)
+	handle, err := admin.ResumeWorkflow(workflowID)
 	if err != nil {
 		return err
 	}
@@ -326,10 +327,11 @@ func runWorkflowFork(cmd *cobra.Command, args []string) error {
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	// Get step flag
 	step, _ := cmd.Flags().GetInt("step")
@@ -354,7 +356,7 @@ func runWorkflowFork(cmd *cobra.Command, args []string) error {
 	}
 
 	// Fork workflow
-	handle, err := ctx.ForkWorkflow(input)
+	handle, err := admin.ForkWorkflow(input)
 	if err != nil {
 		return err
 	}
@@ -379,17 +381,18 @@ func runWorkflowDelete(cmd *cobra.Command, args []string) error {
 	user_ctx := context.Background()
 
 	// Create DBOS context
-	ctx, err := createDBOSContext(user_ctx, dbURL)
+	admin, err := createDBOSAdmin(user_ctx, dbURL)
 	if err != nil {
 		return err
 	}
+	defer admin.Shutdown(5 * time.Second)
 
 	var opts []dbos.DeleteWorkflowOption
 	if children, _ := cmd.Flags().GetBool("children"); children {
 		opts = append(opts, dbos.WithDeleteChildren())
 	}
 
-	if err := ctx.DeleteWorkflows(args, opts...); err != nil {
+	if err := admin.DeleteWorkflows(args, opts...); err != nil {
 		return err
 	}
 

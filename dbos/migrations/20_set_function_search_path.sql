@@ -3,10 +3,6 @@
 -- call time against whatever the caller has set, which lets an attacker with
 -- CREATE-on-schema privileges shadow built-ins. Setting it to
 -- pg_catalog, pg_temp ensures references resolve only to the system catalog.
---
--- This migration is skipped on CockroachDB, which does not support
--- ALTER FUNCTION ... SET. The runner passes the empty string in that case.
-
 ALTER FUNCTION %s.enqueue_workflow(
     TEXT, TEXT, JSON[], JSON, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, TEXT, INTEGER, TEXT
 ) SET search_path = pg_catalog, pg_temp;

@@ -1326,24 +1326,24 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify events, streams, notifications, and steps exist via direct DB query
-		sysDB := dbosCtx.(*dbosContext).systemDB.(*sysDB)
-		schemaPrefix := sysDB.dialect.SchemaPrefix(sysDB.schema)
+		SystemDatabase := dbosCtx.(*dbosContext).systemDB
+		schemaPrefix := SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)
 
 		var eventCount, streamCount, notifCount, stepCount int
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&eventCount)
 		require.NoError(t, err)
 		require.Greater(t, eventCount, 0, "expected events to exist before deletion")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&streamCount)
 		require.NoError(t, err)
 		require.Greater(t, streamCount, 0, "expected stream entries to exist before deletion")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
 			wfID).Scan(&notifCount)
 		require.NoError(t, err)
 		require.Greater(t, notifCount, 0, "expected notifications to exist before deletion")
@@ -1356,8 +1356,8 @@ func TestChildWorkflow(t *testing.T) {
 		// so we just check the floor.
 		require.GreaterOrEqual(t, len(steps), 4, "expected at least 4 steps: SetEvent, WriteStream, CloseStream, Recv")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&stepCount)
 		require.NoError(t, err)
 		require.Greater(t, stepCount, 0, "expected operation_outputs to exist before deletion")
@@ -1367,26 +1367,26 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err)
 
 		// Verify all related data was cascade-deleted
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sworkflow_events WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&eventCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, eventCount, "expected events to be cascade-deleted")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %sstreams WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&streamCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, streamCount, "expected stream entries to be cascade-deleted")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %snotifications WHERE destination_uuid = $1`, schemaPrefix),
 			wfID).Scan(&notifCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, notifCount, "expected notifications to be cascade-deleted")
 
-		err = sysDB.pool.QueryRow(dbosCtx,
-			sysDB.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
+		err = SystemDatabase.pool.QueryRow(dbosCtx,
+			SystemDatabase.renderSQL(`SELECT COUNT(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix),
 			wfID).Scan(&stepCount)
 		require.NoError(t, err)
 		require.Equal(t, 0, stepCount, "expected operation_outputs to be cascade-deleted")
@@ -3199,14 +3199,11 @@ func TestWorkflowTimeout(t *testing.T) {
 		if !ok {
 			return "", fmt.Errorf("failed to cast DBOSContext to dbosContext")
 		}
-		sysDB, ok := dbosCtxInternal.systemDB.(*sysDB)
-		if !ok {
-			return "", fmt.Errorf("failed to cast systemDB to sysDB")
-		}
-		query := sysDB.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, sysDB.dialect.SchemaPrefix(sysDB.schema))
+		SystemDatabase := dbosCtxInternal.systemDB
+		query := SystemDatabase.renderSQL(`SELECT status FROM %sworkflow_status WHERE workflow_uuid = $1`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
 		require.Eventually(t, func() bool {
 			var status WorkflowStatusType
-			err := sysDB.pool.QueryRow(uncancellableCtx, query, wfid).Scan(&status)
+			err := SystemDatabase.pool.QueryRow(uncancellableCtx, query, wfid).Scan(&status)
 			if err != nil {
 				return false
 			}
@@ -3633,9 +3630,6 @@ func TestConcurrentWorkflows(t *testing.T) {
 
 	t.Run("SendRecvWorkflows", func(t *testing.T) {
 		numPairs := 500
-		if useSqliteBackend() {
-			numPairs = 100
-		}
 		var wg sync.WaitGroup
 		receiverResults := make(chan string, numPairs)
 		senderResults := make(chan string, numPairs)
@@ -3913,9 +3907,9 @@ func TestGarbageCollect(t *testing.T) {
 		require.Len(t, workflows, 1, "workflow inside its retention period must remain")
 
 		expiredAt := time.Now().Add(-2 * retention).UnixMilli()
-		sysDB := dbosCtx.(*dbosContext).systemDB.(*sysDB)
-		query := sysDB.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, sysDB.dialect.SchemaPrefix(sysDB.schema))
-		_, err = sysDB.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
+		SystemDatabase := dbosCtx.(*dbosContext).systemDB
+		query := SystemDatabase.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema))
+		_, err = SystemDatabase.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
 		require.NoError(t, err)
 
 		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
@@ -5386,10 +5380,9 @@ func TestStreams(t *testing.T) {
 				// Query database directly to avoid blocking (ReadStream would block)
 				dbosCtxInternal, ok := dbosCtx.(*dbosContext)
 				require.True(t, ok, "expected dbosContext")
-				sysDB, ok := dbosCtxInternal.systemDB.(*sysDB)
-				require.True(t, ok, "expected sysDB")
+				SystemDatabase := dbosCtxInternal.systemDB
 
-				entries, closed, err := sysDB.readStream(context.Background(), readStreamDBInput{
+				entries, closed, err := SystemDatabase.readStream(context.Background(), readStreamDBInput{
 					WorkflowID: forkHandle.GetWorkflowID(),
 					Key:        streamKey,
 					FromOffset: 0,
@@ -5506,10 +5499,9 @@ func TestStreams(t *testing.T) {
 		// Query database directly to avoid blocking (ReadStream would block)
 		dbosCtxInternal, ok := dbosCtx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
-		sysDB, ok := dbosCtxInternal.systemDB.(*sysDB)
-		require.True(t, ok, "expected sysDB")
+		SystemDatabase := dbosCtxInternal.systemDB
 
-		entries, closed, err := sysDB.readStream(context.Background(), readStreamDBInput{
+		entries, closed, err := SystemDatabase.readStream(context.Background(), readStreamDBInput{
 			WorkflowID: forkHandle.GetWorkflowID(),
 			Key:        streamKey,
 			FromOffset: 0,
@@ -5803,7 +5795,7 @@ func TestExportImportWorkflow(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, originalGrandchildSteps, 0, "grandchild should have 0 steps")
 
-	sdb := dbosCtx.(*dbosContext).systemDB.(*sysDB)
+	sdb := dbosCtx.(*dbosContext).systemDB
 
 	t.Run("ExportWithChildren", func(t *testing.T) {
 		exported, err := sdb.exportWorkflow(dbosCtx, parentID, true)

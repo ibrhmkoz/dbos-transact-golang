@@ -2,23 +2,15 @@ package dbos
 
 import (
 	"context"
-	"database/sql"
 	"errors"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dbq.go: a thin driver-agnostic SQL surface used by sysDB.
+// dbq.go: a thin driver-agnostic SQL surface used by SystemDatabase.
 //
-// Each backend type can implement the same interfaces:
-//   pgxPoolAdapter  → wraps *pgxpool.Pool / pgx.Tx (Postgres + CockroachDB)
-//   sqlPoolAdapter  → wraps *sql.DB / *sql.Tx     (SQLite via modernc.org/sqlite)
-//
-// Higher-level code (sysDB methods, the migration runner, runAsTxn in
-// workflow.go) talks to these interfaces, so it does not have to know which
-// driver is in use. Per-dialect query fragments (placeholder style, schema
-// prefix, FOR UPDATE clauses, etc.) live in Dialect (see dialect.go).
+// The adapter keeps pgx pool and transaction operations behind one small SQL surface.
 
 // Querier is the subset of SQL operations available on both a pool and a
 // transaction.
@@ -80,9 +72,7 @@ type Result interface {
 	RowsAffected() (int64, error)
 }
 
-// ErrNoRows is returned by Row.Scan when no row matched. Aliased to
-// pgx.ErrNoRows so existing callers can continue to compare against pgx's
-// sentinel; the sql adapter maps sql.ErrNoRows to this value as well.
+// ErrNoRows is returned by Row.Scan when no row matched.
 var ErrNoRows = pgx.ErrNoRows
 
 /* ---------------------------------------------------------------------------
@@ -200,111 +190,4 @@ func pgxTxOpts(o TxOptions) pgx.TxOptions {
 		mode = pgx.ReadOnly
 	}
 	return pgx.TxOptions{IsoLevel: iso, AccessMode: mode}
-}
-
-/* ---------------------------------------------------------------------------
-   database/sql adapter (used by SQLite)
-   ------------------------------------------------------------------------- */
-
-// newSQLPool wraps a *sql.DB so it satisfies Pool.
-func newSQLPool(db *sql.DB) Pool { return &sqlPoolAdapter{db: db} }
-
-type sqlPoolAdapter struct{ db *sql.DB }
-
-func (a *sqlPoolAdapter) Exec(ctx context.Context, q string, args ...any) (Result, error) {
-	res, err := a.db.ExecContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
-}
-
-func (a *sqlPoolAdapter) Query(ctx context.Context, q string, args ...any) (Rows, error) {
-	rows, err := a.db.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	return &sqlRows{r: rows}, nil
-}
-
-func (a *sqlPoolAdapter) QueryRow(ctx context.Context, q string, args ...any) Row {
-	return &sqlRow{r: a.db.QueryRowContext(ctx, q, args...)}
-}
-
-func (a *sqlPoolAdapter) BeginTx(ctx context.Context, opts TxOptions) (Tx, error) {
-	tx, err := a.db.BeginTx(ctx, sqlTxOpts(opts))
-	if err != nil {
-		return nil, err
-	}
-	return &sqlTxAdapter{tx: tx}, nil
-}
-
-func (a *sqlPoolAdapter) Ping(ctx context.Context) error { return a.db.PingContext(ctx) }
-func (a *sqlPoolAdapter) Close()                         { _ = a.db.Close() }
-
-// SQLDB unwraps the underlying *sql.DB, or returns nil if not sql-backed.
-func SQLDB(p Pool) *sql.DB {
-	if a, ok := p.(*sqlPoolAdapter); ok {
-		return a.db
-	}
-	return nil
-}
-
-type sqlTxAdapter struct{ tx *sql.Tx }
-
-func (t *sqlTxAdapter) Exec(ctx context.Context, q string, args ...any) (Result, error) {
-	res, err := t.tx.ExecContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	return res, nil
-}
-
-func (t *sqlTxAdapter) Query(ctx context.Context, q string, args ...any) (Rows, error) {
-	rows, err := t.tx.QueryContext(ctx, q, args...)
-	if err != nil {
-		return nil, err
-	}
-	return &sqlRows{r: rows}, nil
-}
-
-func (t *sqlTxAdapter) QueryRow(ctx context.Context, q string, args ...any) Row {
-	return &sqlRow{r: t.tx.QueryRowContext(ctx, q, args...)}
-}
-
-func (t *sqlTxAdapter) Commit(_ context.Context) error   { return t.tx.Commit() }
-func (t *sqlTxAdapter) Rollback(_ context.Context) error { return t.tx.Rollback() }
-
-type sqlRows struct{ r *sql.Rows }
-
-func (r *sqlRows) Next() bool             { return r.r.Next() }
-func (r *sqlRows) Scan(dest ...any) error { return r.r.Scan(dest...) }
-func (r *sqlRows) Err() error             { return r.r.Err() }
-func (r *sqlRows) Close() error           { return r.r.Close() }
-
-type sqlRow struct{ r *sql.Row }
-
-func (r *sqlRow) Scan(dest ...any) error {
-	if err := r.r.Scan(dest...); err != nil {
-		if errors.Is(err, sql.ErrNoRows) {
-			return ErrNoRows
-		}
-		return err
-	}
-	return nil
-}
-
-func sqlTxOpts(o TxOptions) *sql.TxOptions {
-	var iso sql.IsolationLevel
-	switch o.IsoLevel {
-	case IsoLevelReadCommitted:
-		iso = sql.LevelReadCommitted
-	case IsoLevelRepeatableRead:
-		iso = sql.LevelRepeatableRead
-	case IsoLevelSerializable:
-		iso = sql.LevelSerializable
-	default:
-		iso = sql.LevelDefault
-	}
-	return &sql.TxOptions{Isolation: iso, ReadOnly: o.ReadOnly}
 }

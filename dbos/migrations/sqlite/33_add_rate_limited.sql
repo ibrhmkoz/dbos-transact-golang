@@ -1,1 +1,0 @@
-ALTER TABLE "workflow_status" ADD COLUMN "rate_limited" BOOLEAN NOT NULL DEFAULT FALSE;

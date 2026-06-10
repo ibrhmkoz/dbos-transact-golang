@@ -76,5 +76,5 @@ ORDER BY events.event_index;
 --   duckdb -readonly .test-results/latest.duckdb -f scripts/test-results.sql
 SELECT string_agg(events.output, '' ORDER BY events.event_index) AS output
 FROM latest_test_events AS events
-WHERE events.test = getenv('TEST_NAME')
+WHERE events.test = 'TestWorkflowsRegistration/SimpleWorkflow'
   AND events.output IS NOT NULL;

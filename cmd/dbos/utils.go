@@ -43,6 +43,13 @@ func maskPassword(dbURL string) (string, error) {
 	return maskPasswordInKeyValueFormat(dbURL), nil
 }
 
+func createDBOSAdmin(ctx context.Context, dbURL string) (dbos.DBOSAdmin, error) {
+	return dbos.NewDBOSAdmin(ctx, dbos.DBOSAdminConfig{
+		DatabaseURL: dbURL,
+		Logger:      logger,
+	})
+}
+
 // maskPasswordInKeyValueFormat masks password in libpq-style key-value connection strings
 // Format: "user=foo password=bar database=db host=localhost"
 // Supports all spacing variations: password=value, password =value, password= value, password = value
@@ -123,41 +130,12 @@ func confirmAction(prompt string) bool {
 	return response == "y" || response == "Y" || response == "yes" || response == "Yes"
 }
 
-func isCockroachDB(ctx context.Context, conn *pgx.Conn) bool {
-	return conn.PgConn().ParameterStatus("crdb_version") != ""
-}
-
-// dropDatabaseIfExists drops a database in a way that works with both PostgreSQL and CockroachDB.
-// For CockroachDB, it terminates active connections first, then drops the database.
-// For PostgreSQL, it uses the WITH (FORCE) syntax.
+// dropDatabaseIfExists force-drops a PostgreSQL database.
 func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) error {
-	crdb := isCockroachDB(ctx, conn)
-
 	sanitizedDBName := pgx.Identifier{dbName}.Sanitize()
-
-	var err error
-	if crdb {
-		// In CockroachDB, we can't force drop, so we terminate connections manually
-		// Try to terminate connections to the target database
-		terminateQuery := `
-			SELECT pg_terminate_backend(pid)
-			FROM pg_stat_activity
-			WHERE datname = $1 AND pid != pg_backend_pid()`
-		_, _ = conn.Exec(ctx, terminateQuery, dbName) // Ignore errors, proceed anyway
-
-		dropSQL := fmt.Sprintf("DROP DATABASE IF EXISTS %s", sanitizedDBName)
-		_, err = conn.Exec(ctx, dropSQL)
-		if err != nil {
-			return fmt.Errorf("failed to drop database %s: %w", dbName, err)
-		}
-	} else {
-		// For PostgreSQL, use WITH (FORCE) to drop even with active connections
-		dropSQL := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
-		_, err = conn.Exec(ctx, dropSQL)
-		if err != nil {
-			return fmt.Errorf("failed to drop database %s: %w", dbName, err)
-		}
+	dropSQL := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
+	if _, err := conn.Exec(ctx, dropSQL); err != nil {
+		return fmt.Errorf("failed to drop database %s: %w", dbName, err)
 	}
-
 	return nil
 }

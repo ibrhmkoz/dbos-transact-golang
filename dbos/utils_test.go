@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strconv"
 	"sync"
@@ -30,17 +29,6 @@ func getDatabaseURL() string {
 	return databaseURL
 }
 
-func useSqliteBackend() bool {
-	return os.Getenv("DBOS_TEST_BACKEND") == "sqlite"
-}
-
-func skipIfSqlite(t *testing.T, reason string) {
-	t.Helper()
-	if useSqliteBackend() {
-		t.Skipf("skipping on sqlite backend: %s", reason)
-	}
-}
-
 var (
 	testDBURLs        sync.Map // *testing.T -> string; ensures setupDBOS and follow-up callers share the same database.
 	usedTestDBs       sync.Map // *testing.T -> struct{}; tracks whether setupDBOS has initialized the test database.
@@ -50,7 +38,6 @@ var (
 	pgTemplateURL     string
 	pgTemplateName    string
 	pgTemplateErr     error
-	pgTemplateIsCRDB  bool
 	pgTemplateCloneMu sync.Mutex
 )
 
@@ -84,12 +71,7 @@ func backendDatabaseURL(t *testing.T) string {
 	if v, ok := testDBURLs.Load(t); ok {
 		return v.(string)
 	}
-	var url string
-	if useSqliteBackend() {
-		url = "sqlite:" + filepath.Join(t.TempDir(), "dbos.db")
-	} else {
-		url = createPostgresTestDatabase(t)
-	}
+	url := createPostgresTestDatabase(t)
 	testDBURLs.Store(t, url)
 	t.Cleanup(func() {
 		testDBURLs.Delete(t)
@@ -111,10 +93,7 @@ func createPostgresTestDatabase(t *testing.T) string {
 	defer conn.Close(context.Background())
 
 	dbName := testDatabaseName(t.Name())
-	createSQL := fmt.Sprintf("CREATE DATABASE %s", pgx.Identifier{dbName}.Sanitize())
-	if !pgTemplateIsCRDB {
-		createSQL += fmt.Sprintf(" TEMPLATE %s", pgx.Identifier{pgTemplateName}.Sanitize())
-	}
+	createSQL := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", pgx.Identifier{dbName}.Sanitize(), pgx.Identifier{pgTemplateName}.Sanitize())
 	pgTemplateCloneMu.Lock()
 	_, err = conn.Exec(context.Background(), createSQL)
 	pgTemplateCloneMu.Unlock()
@@ -148,12 +127,6 @@ func ensurePostgresTemplate(t *testing.T) {
 			return
 		}
 		defer conn.Close(context.Background())
-
-		pgTemplateIsCRDB = isCockroachDB(context.Background(), conn)
-		if pgTemplateIsCRDB {
-			pgTemplateURL = config.ConnString()
-			return
-		}
 
 		pgTemplateName = testDatabaseName("template")
 		_, err = conn.Exec(context.Background(), fmt.Sprintf(
@@ -196,10 +169,6 @@ func testDatabaseName(testName string) string {
 func resetTestDatabase(t *testing.T, databaseURL string) {
 	t.Helper()
 
-	if useSqliteBackend() {
-		return
-	}
-
 	// Clean up the test database
 	parsedURL, err := pgx.ParseConfig(databaseURL)
 	require.NoError(t, err)
@@ -230,12 +199,9 @@ type setupDBOSOptions struct {
 func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 	t.Helper()
 
-	if opts.dropDB && useSqliteBackend() {
-		testDBURLs.Delete(t)
-	}
 	databaseURL := backendDatabaseURL(t)
 	_, databaseWasUsed := usedTestDBs.Load(t)
-	if opts.dropDB && !useSqliteBackend() && databaseWasUsed {
+	if opts.dropDB && databaseWasUsed {
 		resetTestDatabase(t, databaseURL)
 	}
 
@@ -265,11 +231,6 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
-				// database/sql's connectionOpener/connectionCleaner exit after
-				// Close but slightly after goleak's check fires. Ignored under
-				// the sqlite backend.
-				goleak.IgnoreAnyFunction("database/sql.(*DB).connectionOpener"),
-				goleak.IgnoreAnyFunction("database/sql.(*DB).connectionCleaner"),
 			)
 		}
 	})
@@ -316,12 +277,11 @@ func setWorkflowStatusPending(t *testing.T, dbosCtx DBOSContext, workflowID stri
 	t.Helper()
 	c, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected DBOSContext to be *dbosContext")
-	sysDB, ok := c.systemDB.(*sysDB)
-	require.True(t, ok, "expected systemDB to be *sysDB")
-	updateQuery := sysDB.dialect.RewriteQuery(fmt.Sprintf(`UPDATE %sworkflow_status
+	SystemDatabase := c.systemDB
+	updateQuery := SystemDatabase.dialect.RewriteQuery(fmt.Sprintf(`UPDATE %sworkflow_status
 		SET status = $1, output = NULL, error = NULL, started_at_epoch_ms = NULL, updated_at = $2
-		WHERE workflow_uuid = $3`, sysDB.dialect.SchemaPrefix(sysDB.schema)))
-	_, err := sysDB.pool.Exec(context.Background(), updateQuery,
+		WHERE workflow_uuid = $3`, SystemDatabase.dialect.SchemaPrefix(SystemDatabase.schema)))
+	_, err := SystemDatabase.pool.Exec(context.Background(), updateQuery,
 		WorkflowStatusPending, time.Now().UnixMilli(), workflowID)
 	require.NoError(t, err, "failed to set workflow status to PENDING")
 }
@@ -334,7 +294,7 @@ func queueEntriesAreCleanedUp(ctx DBOSContext) bool {
 		fmt.Println("Expected ctx to be of type *dbosContext in queueEntriesAreCleanedUp")
 		return false
 	}
-	sdb := exec.systemDB.(*sysDB)
+	sdb := exec.systemDB
 	for range maxTries {
 		tx, err := sdb.pool.BeginTx(ctx, TxOptions{})
 		if err != nil {

@@ -139,12 +139,6 @@ func TestCLIWorkflow(t *testing.T) {
 
 	for _, config := range testConfigs {
 		t.Run(config.name, func(t *testing.T) {
-			// If we are using CockroachDB, ignore the funky user name (not supported) and use postgres instead
-			isCockroachDB := os.Getenv("ISCRDB") == "true"
-			if isCockroachDB && config.dbRole == "User Name-123@acme.com#$%&!" {
-				config.dbRole = "postgres"
-			}
-
 			// Create temporary directory for test
 			tempDir := t.TempDir()
 			originalDir, err := os.Getwd()

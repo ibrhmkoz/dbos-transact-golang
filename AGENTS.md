@@ -83,10 +83,8 @@ parallel tests.
 
 Test database isolation:
 
-- SQLite uses one temporary database file per test.
 - PostgreSQL uses one migrated template database and clones one database per
   test.
-- CockroachDB creates one isolated database per test without templates.
 
 Keep tests serial when they depend on process-wide state that has not been
 isolated, including:

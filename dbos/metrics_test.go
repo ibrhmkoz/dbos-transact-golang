@@ -15,9 +15,9 @@ func TestGetMetrics(t *testing.T) {
 	defer Shutdown(dbosCtx, 1*time.Minute)
 
 	// Get the internal systemDB instance
-	sysDB, ok := dbosCtx.(*dbosContext)
+	SystemDatabase, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected dbosContext")
-	require.NotNil(t, sysDB.systemDB)
+	require.NotNil(t, SystemDatabase.systemDB)
 
 	// Define test workflows
 	testWorkflowA := func(ctx DBOSContext, input string) (string, error) {
@@ -73,7 +73,7 @@ func TestGetMetrics(t *testing.T) {
 
 	// Query metrics from start to now + 10 hours
 	endTime := time.Now().Add(10 * time.Hour)
-	metrics, err := sysDB.systemDB.getMetrics(context.Background(), startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
+	metrics, err := SystemDatabase.systemDB.getMetrics(context.Background(), startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(metrics), 4, "Expected at least 4 metrics (2 workflow counts + 2 step counts)")
 
@@ -120,15 +120,15 @@ func TestGetMetricsEmptyTimeRange(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	defer Shutdown(dbosCtx, 1*time.Minute)
 
-	sysDB, ok := dbosCtx.(*dbosContext)
+	SystemDatabase, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected dbosContext")
-	require.NotNil(t, sysDB.systemDB)
+	require.NotNil(t, SystemDatabase.systemDB)
 
 	// Query metrics for a time range with no data
 	futureTime := time.Now().Add(24 * time.Hour)
 	futureTime2 := futureTime.Add(1 * time.Hour)
 
-	metrics, err := sysDB.systemDB.getMetrics(context.Background(), futureTime.Format(time.RFC3339), futureTime2.Format(time.RFC3339))
+	metrics, err := SystemDatabase.systemDB.getMetrics(context.Background(), futureTime.Format(time.RFC3339), futureTime2.Format(time.RFC3339))
 	require.NoError(t, err)
 	assert.Equal(t, 0, len(metrics), "Should return empty metrics for future time range")
 }
