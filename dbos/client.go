@@ -126,14 +126,6 @@ func WithEnqueueDeduplicationID(id string) EnqueueOption {
 	}
 }
 
-// WithEnqueueDeduplicationPolicy sets how a colliding deduplication ID is handled.
-// DeduplicationPolicyReturnExisting requires a deduplication ID (WithEnqueueDeduplicationID).
-func WithEnqueueDeduplicationPolicy(policy DeduplicationPolicy) EnqueueOption {
-	return func(opts *enqueueOptions) {
-		opts.deduplicationPolicy = policy
-	}
-}
-
 // WithEnqueuePriority sets the execution priority for the enqueued workflow.
 func WithEnqueuePriority(priority uint) EnqueueOption {
 	return func(opts *enqueueOptions) {
@@ -206,21 +198,20 @@ func WithEnqueueAuthenticatedRoles(roles []string) EnqueueOption {
 }
 
 type enqueueOptions struct {
-	workflowName        string
-	workflowID          string
-	applicationVersion  string
-	deduplicationID     string
-	deduplicationPolicy DeduplicationPolicy
-	priority            uint
-	workflowTimeout     time.Duration
-	workflowInput       any
-	queuePartitionKey   string
-	className           string
-	configName          *string
-	delayDuration       time.Duration
-	authenticatedUser   string
-	assumedRole         string
-	authenticatedRoles  []string
+	workflowName       string
+	workflowID         string
+	applicationVersion string
+	deduplicationID    string
+	priority           uint
+	workflowTimeout    time.Duration
+	workflowInput      any
+	queuePartitionKey  string
+	className          string
+	configName         *string
+	delayDuration      time.Duration
+	authenticatedUser  string
+	assumedRole        string
+	authenticatedRoles []string
 }
 
 // EnqueueWorkflow enqueues a workflow to a named queue for deferred execution.
@@ -252,11 +243,6 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 	// Validate partition key and deduplication ID are not both provided (they are incompatible)
 	if len(params.queuePartitionKey) > 0 && len(params.deduplicationID) > 0 {
 		return nil, fmt.Errorf("partition key and deduplication ID cannot be used together")
-	}
-
-	// A non-default deduplication policy only applies with a deduplication ID
-	if params.deduplicationPolicy != DeduplicationPolicyReject && len(params.deduplicationID) == 0 {
-		return nil, fmt.Errorf("a deduplication policy requires a deduplication ID")
 	}
 
 	workflowID := params.workflowID
@@ -326,8 +312,6 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 	}
 
 	uncancellableCtx := WithoutCancel(dbosCtx)
-	returnExisting := params.deduplicationPolicy == DeduplicationPolicyReturnExisting
-
 	for {
 		tx, err := dbosCtx.systemDB.(*sysDB).pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
@@ -344,8 +328,8 @@ func (c *client) Enqueue(queueName, workflowName string, input any, opts ...Enqu
 			if rbErr := tx.Rollback(uncancellableCtx); rbErr != nil {
 				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowID)
 			}
-			if returnExisting && errors.Is(err, &DBOSError{Code: QueueDeduplicated}) {
-				existingID, lookupErr := dbosCtx.systemDB.getDeduplicatedWorkflow(uncancellableCtx, queueName, params.deduplicationID)
+			if errors.Is(err, errDeduplicationCollision) {
+				existingID, lookupErr := dbosCtx.systemDB.getDeduplicatedWorkflow(uncancellableCtx, workflowName, params.deduplicationID)
 				if lookupErr != nil {
 					return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
 				}

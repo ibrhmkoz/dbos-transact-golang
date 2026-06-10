@@ -84,54 +84,62 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 		return internalDebouncerWF[P, R](ctx, in.(debouncerInput[P]))
 	})
 
+	var internalWorkflowID string
+	if isWithinWorkflow {
+		var err error
+		internalWorkflowID, err = Run(ctx, func(ctx context.Context) (string, error) {
+			return uuid.New().String(), nil
+		}, WithStepName("DBOS.debounce.assignInternalWorkflowID"))
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		internalWorkflowID = uuid.New().String()
+	}
+
 	for {
-		_, err := ctx.RunWorkflow(internalWF, dInput, WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
-		if err == nil {
+		handle, err := ctx.RunWorkflow(internalWF, dInput, WithWorkflowID(internalWorkflowID), WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
+		if err != nil {
+			return nil, err
+		}
+		if handle.GetWorkflowID() == internalWorkflowID {
 			return newWorkflowHandle[R](ctx, dInput.TargetWorkflowID), nil
 		}
-		// A dedup error means the internal debouncer workflow was already started, in which case we should send it the new input
-		if errors.Is(err, &DBOSError{Code: QueueDeduplicated}) {
-			// Identify the ID of the internal debouncer workflow from the dedup error
-			debouncerWorkflowStatus, err := ListWorkflows(ctx, WithFilterDeduplicationID(key))
-			if err != nil {
-				return nil, err
-			}
-			if len(debouncerWorkflowStatus) == 0 {
-				continue // The debouncer workflow might have started the user workflow and exited already, in which case we should try again to create a new internal debouncer workflow
-			}
-			debouncerWorkflowID := debouncerWorkflowStatus[0].ID
 
-			// Send the new input to the internal debouncer workflow
-			err = Send(ctx, debouncerWorkflowID, DebounceMessage[P]{
-				Input: input,
-				Delay: delay,
-				ID:    messageID,
-			}, _DEBOUNCER_TOPIC)
-			if err != nil {
-				return nil, err
-			}
-
-			// Acknowledge the send by getting an event with the message ID
-			_, err = GetEvent[bool](ctx, debouncerWorkflowID, messageID, 2*time.Second) // XXX unclear what's a good timeout here.
-			if errors.Is(err, &DBOSError{Code: TimeoutError}) {
-				continue // The debouncer workflow might have started the user workflow and exited already, in which case we should try again to create a new internal debouncer workflow
-			} else if err != nil {
-				return nil, err
-			}
-
-			// Retrieve the user workflow ID from the input of the internal debouncer workflow
-			// The input comes from the DB and was decoded as a typeless JSON string
-			encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
-			if !ok {
-				return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
-			}
-			var decodedInput debouncerInput[P]
-			if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
-			}
-			return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
+		debouncerWorkflowStatus, err := ListWorkflows(ctx, WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		if len(debouncerWorkflowStatus) == 0 {
+			continue
+		}
+		debouncerWorkflowID := handle.GetWorkflowID()
+
+		err = Send(ctx, debouncerWorkflowID, DebounceMessage[P]{
+			Input: input,
+			Delay: delay,
+			ID:    messageID,
+		}, _DEBOUNCER_TOPIC)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = GetEvent[bool](ctx, debouncerWorkflowID, messageID, 2*time.Second) // XXX unclear what's a good timeout here.
+		if errors.Is(err, &DBOSError{Code: TimeoutError}) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+
+		encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
+		if !ok {
+			return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
+		}
+		var decodedInput debouncerInput[P]
+		if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
+		}
+		return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
 	}
 }
 
@@ -223,61 +231,51 @@ func (dc *DebouncerClient[P, R]) Debounce(key string, delay time.Duration, input
 		WorkflowOptions:               options,
 	}
 
+	internalWorkflowID := uuid.New().String()
 	for {
-		// Try to enqueue the internal debouncer workflow
-		// Use the package-level Enqueue function which handles encoding automatically
-		_, err := Enqueue[debouncerInput[P], R](dc.Client, _DBOS_INTERNAL_QUEUE_NAME, dc.internalDebouncerFQN, dInput, WithEnqueueDeduplicationID(key))
-		if err == nil {
+		handle, err := Enqueue[debouncerInput[P], R](dc.Client, _DBOS_INTERNAL_QUEUE_NAME, dc.internalDebouncerFQN, dInput,
+			WithEnqueueWorkflowID(internalWorkflowID), WithEnqueueDeduplicationID(key))
+		if err != nil {
+			return nil, err
+		}
+		if handle.GetWorkflowID() == internalWorkflowID {
 			return newWorkflowHandle[R](dc.Client.(*client).dbosCtx, dInput.TargetWorkflowID), nil
 		}
 
-		// Check if error is due to deduplication (workflow already exists)
-		var dbosErr *DBOSError
-		if errors.As(err, &dbosErr) && dbosErr.Code == QueueDeduplicated {
-			// The internal debouncer workflow already exists, send it the new input
-			// List workflows with the deduplication ID to find the existing debouncer workflow
-			debouncerWorkflowStatus, err := dc.Client.ListWorkflows(WithFilterDeduplicationID(key), WithLoadInput(true))
-			if err != nil {
-				return nil, err
-			}
-			if len(debouncerWorkflowStatus) == 0 {
-				// The debouncer workflow might have started the user workflow and exited already, try again
-				continue
-			}
-			debouncerWorkflowID := debouncerWorkflowStatus[0].ID
-
-			// Send the new input to the internal debouncer workflow
-			err = dc.Client.Send(debouncerWorkflowID, DebounceMessage[P]{
-				Input: input,
-				Delay: delay,
-				ID:    messageID,
-			}, _DEBOUNCER_TOPIC)
-			if err != nil {
-				return nil, err
-			}
-
-			// Acknowledge the send by getting an event with the message ID
-			_, err = dc.Client.GetEvent(debouncerWorkflowID, messageID, 2*time.Second)
-			if errors.Is(err, &DBOSError{Code: TimeoutError}) {
-				// The debouncer workflow might have started the user workflow and exited already, try again
-				continue
-			} else if err != nil {
-				return nil, err
-			}
-
-			// Retrieve the user workflow ID from the input of the internal debouncer workflow
-			// The input comes from the DB and was decoded as a typeless JSON string
-			encodedInputStr, ok := debouncerWorkflowStatus[0].Input.(string)
-			if !ok {
-				return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
-			}
-			var decodedInput debouncerInput[P]
-			if err := json.Unmarshal([]byte(encodedInputStr), &decodedInput); err != nil {
-				return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
-			}
-			return newWorkflowHandle[R](dc.Client.(*client).dbosCtx, decodedInput.TargetWorkflowID), nil
+		debouncerWorkflowStatus, err := dc.Client.ListWorkflows(WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
+		if err != nil {
+			return nil, err
 		}
-		return nil, err
+		if len(debouncerWorkflowStatus) == 0 {
+			continue
+		}
+		debouncerWorkflowID := handle.GetWorkflowID()
+
+		err = dc.Client.Send(debouncerWorkflowID, DebounceMessage[P]{
+			Input: input,
+			Delay: delay,
+			ID:    messageID,
+		}, _DEBOUNCER_TOPIC)
+		if err != nil {
+			return nil, err
+		}
+
+		_, err = dc.Client.GetEvent(debouncerWorkflowID, messageID, 2*time.Second)
+		if errors.Is(err, &DBOSError{Code: TimeoutError}) {
+			continue
+		} else if err != nil {
+			return nil, err
+		}
+
+		encodedInputStr, ok := debouncerWorkflowStatus[0].Input.(string)
+		if !ok {
+			return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
+		}
+		var decodedInput debouncerInput[P]
+		if err := json.Unmarshal([]byte(encodedInputStr), &decodedInput); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
+		}
+		return newWorkflowHandle[R](dc.Client.(*client).dbosCtx, decodedInput.TargetWorkflowID), nil
 	}
 }
 

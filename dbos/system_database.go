@@ -140,6 +140,8 @@ type sysDB struct {
 	isCockroachDB                 bool
 }
 
+var errDeduplicationCollision = errors.New("deduplication ID collision")
+
 /*******************************/
 /******* INITIALIZATION ********/
 /*******************************/
@@ -1064,13 +1066,9 @@ func (s *sysDB) insertWorkflowStatus(ctx context.Context, input insertWorkflowSt
 		result.ownerXID = *ownerXIDReturn
 	}
 	if err != nil {
-		// Handle unique constraint violation for the deduplication ID (this should be the only case)
+		// Deduplication collisions are resolved by attaching to the existing workflow.
 		if s.dialect.IsUniqueViolation(err) {
-			return nil, newQueueDeduplicatedError(
-				input.status.ID,
-				input.status.QueueName,
-				input.status.DeduplicationID,
-			)
+			return nil, errDeduplicationCollision
 		}
 		return nil, fmt.Errorf("failed to insert workflow status: %w", err)
 	}
@@ -1097,9 +1095,9 @@ func (s *sysDB) insertWorkflowStatus(ctx context.Context, input insertWorkflowSt
 	if result.status != WorkflowStatusSuccess && result.status != WorkflowStatusError &&
 		input.maxRetries > 0 && result.attempts > input.maxRetries+1 {
 
-		// Update workflow status to MAX_RECOVERY_ATTEMPTS_EXCEEDED and clear queue-related fields
+		// Update workflow status to MAX_RECOVERY_ATTEMPTS_EXCEEDED and clear execution fields.
 		dlqQuery := s.renderSQL(`UPDATE %sworkflow_status
-					 SET status = $1, deduplication_id = NULL, started_at_epoch_ms = NULL, queue_name = NULL
+					 SET status = $1, started_at_epoch_ms = NULL, queue_name = NULL
 					 WHERE workflow_uuid = $2 AND status = $3`, s.dialect.SchemaPrefix(s.schema))
 
 		_, err = input.tx.Exec(ctx, dlqQuery,
@@ -1445,7 +1443,7 @@ type updateWorkflowOutcomeDBInput struct {
 // Note that transitions from CANCELLED to SUCCESS or ERROR are forbidden
 func (s *sysDB) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
 	query := s.renderSQL(`UPDATE %sworkflow_status
-			  SET status = $1, output = $2, error = $3, updated_at = $4, completed_at = $4, deduplication_id = NULL
+			  SET status = $1, output = $2, error = $3, updated_at = $4, completed_at = $4
 			  WHERE workflow_uuid = $5 AND NOT (status = $6 AND CAST($1 AS TEXT) IN ($7, $8))`, s.dialect.SchemaPrefix(s.schema))
 
 	// input.output is already a *string from the database layer
@@ -1489,7 +1487,7 @@ func (s *sysDB) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInpu
 	if !s.dialect.SupportsDataModifyingCTE() {
 		updateQuery := s.renderSQL(`UPDATE %sworkflow_status
 			SET status = $1, updated_at = $2, completed_at = $2, started_at_epoch_ms = NULL,
-			    queue_name = NULL, deduplication_id = NULL
+			    queue_name = NULL
 			WHERE %s AND status NOT IN ($4, $5, $6)`, schemaPrefix, anyClause)
 		selectAnyClause := dialectAnyClause(s.dialect, "workflow_uuid", 1)
 		selectQuery := s.renderSQL(`SELECT workflow_uuid FROM %sworkflow_status WHERE %s`, schemaPrefix, selectAnyClause)
@@ -1554,7 +1552,7 @@ func (s *sysDB) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInpu
 		), updated AS (
 			UPDATE %sworkflow_status
 			SET status = $1, updated_at = $2, completed_at = $2, started_at_epoch_ms = NULL,
-			    queue_name = NULL, deduplication_id = NULL
+			    queue_name = NULL
 			WHERE %s AND status NOT IN ($4, $5, $6)
 			RETURNING workflow_uuid
 		)
@@ -1840,7 +1838,7 @@ func (s *sysDB) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInpu
 	if !s.dialect.SupportsDataModifyingCTE() {
 		updateQuery := s.renderSQL(`UPDATE %sworkflow_status
 			SET status = $1, queue_name = $2, recovery_attempts = $3,
-			    workflow_deadline_epoch_ms = NULL, deduplication_id = NULL,
+			    workflow_deadline_epoch_ms = NULL,
 			    started_at_epoch_ms = NULL, updated_at = $4, completed_at = NULL
 			WHERE %s AND status NOT IN ($6, $7)`, schemaPrefix, anyClause)
 		selectAnyClause := dialectAnyClause(s.dialect, "workflow_uuid", 1)
@@ -1898,7 +1896,7 @@ func (s *sysDB) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInpu
 		), updated AS (
 			UPDATE %sworkflow_status
 			SET status = $1, queue_name = $2, recovery_attempts = $3,
-			    workflow_deadline_epoch_ms = NULL, deduplication_id = NULL,
+			    workflow_deadline_epoch_ms = NULL,
 			    started_at_epoch_ms = NULL, updated_at = $4, completed_at = NULL
 			WHERE %s AND status NOT IN ($6, $7)
 			RETURNING workflow_uuid

@@ -4202,6 +4202,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		retention := time.Hour
 		workflow := NewWorkflow(dbosCtx, gcTestWorkflow, WithWorkflowRetention(retention))
+		require.NoError(t, Launch(dbosCtx))
 		handle, err := workflow(dbosCtx, 42)
 		require.NoError(t, err)
 		_, err = handle.GetResult()
@@ -4654,6 +4655,27 @@ func TestGarbageCollect(t *testing.T) {
 		require.Equal(t, workflows[0].ID, handles[numWorkflows-1].GetWorkflowID(), "expected newest workflow to remain")
 		require.Equal(t, workflows[1].ID, handles[numWorkflows-2].GetWorkflowID(), "expected 2nd newest workflow to remain")
 	})
+}
+
+func TestDeduplicationCollapsesIntoExistingWorkflow(t *testing.T) {
+	parallelTest(t)
+	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	workflow := NewWorkflow(dbosCtx, simpleWorkflow, WithWorkflowName("deduplicated-workflow"))
+	require.NoError(t, Launch(dbosCtx))
+
+	deduplicationID := uuid.NewString()
+	first, err := workflow(dbosCtx, "first", WithDeduplicationID(deduplicationID))
+	require.NoError(t, err)
+	firstResult, err := first.GetResult()
+	require.NoError(t, err)
+	require.Equal(t, "first", firstResult)
+
+	second, err := workflow(dbosCtx, "second", WithDeduplicationID(deduplicationID))
+	require.NoError(t, err)
+	require.Equal(t, first.GetWorkflowID(), second.GetWorkflowID())
+	secondResult, err := second.GetResult()
+	require.NoError(t, err)
+	require.Equal(t, firstResult, secondResult)
 }
 
 // TestSpecialSteps tests that special workflow functions (ListWorkflows, CancelWorkflow,

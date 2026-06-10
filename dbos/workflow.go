@@ -646,18 +646,6 @@ type WorkflowFunc func(ctx DBOSContext, input any) (any, error)
 
 type activeWorkflowEntry struct{}
 
-// DeduplicationPolicy controls how a colliding deduplication ID on the same queue is handled.
-type DeduplicationPolicy int
-
-const (
-	// DeduplicationPolicyReject (default) returns a QueueDeduplicated error if another workflow
-	// already holds the deduplication ID on the queue.
-	DeduplicationPolicyReject DeduplicationPolicy = iota
-	// DeduplicationPolicyReturnExisting returns a handle to the existing workflow instead of an
-	// error.
-	DeduplicationPolicyReturnExisting
-)
-
 type workflowOptions struct {
 	WorkflowName        string
 	CronSchedule        string
@@ -669,7 +657,6 @@ type workflowOptions struct {
 	ApplicationVersion  string
 	MaxRetries          int
 	DeduplicationID     string
-	DeduplicationPolicy DeduplicationPolicy
 	Priority            uint
 	AuthenticatedUser   string
 	AssumedRole         string
@@ -709,15 +696,6 @@ func WithApplicationVersion(version string) WorkflowOption {
 func WithDeduplicationID(id string) WorkflowOption {
 	return func(p *workflowOptions) {
 		p.DeduplicationID = id
-	}
-}
-
-// WithDeduplicationPolicy sets how a colliding deduplication ID is handled for a queue workflow.
-// DeduplicationPolicyReturnExisting requires both a queue (WithQueue) and a deduplication ID
-// (WithDeduplicationID).
-func WithDeduplicationPolicy(policy DeduplicationPolicy) WorkflowOption {
-	return func(p *workflowOptions) {
-		p.DeduplicationPolicy = policy
 	}
 }
 
@@ -855,16 +833,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 	// Validate delay is only provided when enqueuing
 	if params.DelayDuration > 0 && !enqueue {
 		return nil, newWorkflowExecutionError("", fmt.Errorf("delay can only be applied when enqueuing a workflow"))
-	}
-
-	// A non-default deduplication policy only applies to an enqueued workflow with a deduplication ID
-	if params.DeduplicationPolicy != DeduplicationPolicyReject {
-		if len(params.DeduplicationID) == 0 {
-			return nil, newWorkflowExecutionError("", fmt.Errorf("a deduplication policy requires a deduplication ID"))
-		}
-		if !enqueue {
-			return nil, newWorkflowExecutionError("", fmt.Errorf("a deduplication policy can only be applied when enqueuing a workflow"))
-		}
 	}
 
 	// Check if we are within a workflow (and thus a child workflow)
@@ -1015,8 +983,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 
 	var earlyReturnPollingHandle *WorkflowHandle[any]
 	var insertStatusResult *insertWorkflowResult
-	returnExisting := params.DeduplicationPolicy == DeduplicationPolicyReturnExisting
-
 	// Init status and record child workflow relationship in a single transaction
 	insertWorkflowStatusTx := func() error {
 		tx, err := c.systemDB.(*sysDB).pool.BeginTx(uncancellableCtx, TxOptions{})
@@ -1036,8 +1002,7 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		}
 		insertStatusResult, err = c.systemDB.insertWorkflowStatus(uncancellableCtx, insertInput)
 		if err != nil {
-			// Silence dedup error under return-existing policy.
-			if !(returnExisting && errors.Is(err, &DBOSError{Code: QueueDeduplicated})) {
+			if !errors.Is(err, errDeduplicationCollision) {
 				c.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowID)
 			}
 			return newWorkflowExecutionError(workflowID, fmt.Errorf("failed to insert workflow status: %w", err))
@@ -1099,8 +1064,8 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 			break
 		}
 		// Now handle the case where the insert failed because the deduplication ID is already held by another workflow.
-		// We must also handle the case were a parent workflow spawned a return-existing child, and record their parent-child relationship.
-		if !returnExisting || !errors.Is(err, &DBOSError{Code: QueueDeduplicated}) {
+		// We must also handle the case where a parent workflow attached to an existing child.
+		if !errors.Is(err, errDeduplicationCollision) {
 			return nil, err
 		}
 		existingID, lookupErr := retryWithResult(uncancellableCtx, func() (*string, error) {

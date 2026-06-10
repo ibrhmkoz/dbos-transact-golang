@@ -19,7 +19,7 @@ const (
 	StepExecutionError                                    // General step execution error
 	DeadLetterQueueError                                  // WorkflowFn moved to dead letter queue after max retries
 	MaxStepRetriesExceeded                                // Step exceeded maximum retry attempts
-	QueueDeduplicated                                     // WorkflowFn was deduplicated in the queue
+	queueDeduplicatedRemoved                              // Reserved to preserve error-code compatibility
 	PatchingNotEnabled                                    // Patching system is not enabled in the DBOS context configuration
 	TimeoutError                                          // Operation timed out (e.g., recv timeout)
 	NoApplicationVersions                                 // No application versions are registered in the system database
@@ -195,16 +195,6 @@ func newMaxStepRetriesExceededError(workflowID, stepName string, maxRetries int,
 		StepName:   stepName,
 		MaxRetries: maxRetries,
 		wrappedErr: err,
-	}
-}
-
-func newQueueDeduplicatedError(workflowID, queueName, deduplicationID string) *DBOSError {
-	return &DBOSError{
-		Message:         fmt.Sprintf("Workflow %s was deduplicated due to an existing workflow in queue %s with deduplication ID %s", workflowID, queueName, deduplicationID),
-		Code:            QueueDeduplicated,
-		WorkflowID:      workflowID,
-		QueueName:       queueName,
-		DeduplicationID: deduplicationID,
 	}
 }
 
