@@ -211,13 +211,16 @@ func TestWorkflowsRegistration(t *testing.T) {
 					return nil, err
 				}
 				result, err := handle.GetResult()
-				_, err2 := handle.GetResult()
-				if err2 == nil {
-					return nil, fmt.Errorf("Second call to GetResult should return an error")
+				if err != nil {
+					return nil, err
 				}
-				expectedErrorMsg := "workflow result channel is already closed. Did you call GetResult() twice on the same workflow handle?"
-				if err2.Error() != expectedErrorMsg {
-					return nil, fmt.Errorf("Unexpected error message: %v, expected: %s", err2, expectedErrorMsg)
+				// GetResult is idempotent: a second call returns the same result.
+				result2, err2 := handle.GetResult()
+				if err2 != nil {
+					return nil, fmt.Errorf("Second call to GetResult should not error: %w", err2)
+				}
+				if !reflect.DeepEqual(result, result2) {
+					return nil, fmt.Errorf("Second call to GetResult returned different result: %v vs %v", result2, result)
 				}
 				return result, err
 			},
