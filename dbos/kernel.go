@@ -488,11 +488,11 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, schema string, logge
 
 // q returns the sqlc query set bound to tx when one is supplied, otherwise the
 // pool-bound set. Lets optional-transaction methods share a single code path.
-func (s *Kernel) q(tx Tx) *db.Queries {
+func (k *Kernel) q(tx Tx) *db.Queries {
 	if tx != nil {
-		return s.queries.WithTx(PgxTx(tx))
+		return k.queries.WithTx(PgxTx(tx))
 	}
-	return s.queries
+	return k.queries
 }
 
 // splitSQLStatements splits a migration script into individual statements on
@@ -703,55 +703,55 @@ func NewKernel(ctx context.Context, config KernelConfig) (*Kernel, error) {
 }
 
 // Launch starts the system database notification loops.
-func (s *Kernel) Launch(ctx context.Context) {
-	s.launch(ctx)
+func (k *Kernel) Launch(ctx context.Context) {
+	k.launch(ctx)
 }
 
 // Shutdown stops the system database and closes its connection pool.
-func (s *Kernel) Shutdown(ctx context.Context, timeout time.Duration) {
-	s.shutdown(ctx, timeout)
+func (k *Kernel) Shutdown(ctx context.Context, timeout time.Duration) {
+	k.shutdown(ctx, timeout)
 }
 
-func (s *Kernel) listenNotifyPool() *pgxpool.Pool {
-	return PgxPool(s.pool)
+func (k *Kernel) listenNotifyPool() *pgxpool.Pool {
+	return PgxPool(k.pool)
 }
 
-func (s *Kernel) launch(ctx context.Context) {
-	go s.notificationListenerLoop(ctx)
-	s.launched = true
+func (k *Kernel) launch(ctx context.Context) {
+	go k.notificationListenerLoop(ctx)
+	k.launched = true
 }
 
-func (s *Kernel) shutdown(ctx context.Context, timeout time.Duration) {
-	s.logger.Debug("Closing system database connection pool")
+func (k *Kernel) shutdown(ctx context.Context, timeout time.Duration) {
+	k.logger.Debug("Closing system database connection pool")
 
-	if s.launched {
+	if k.launched {
 		// Wait for the notification loop to exit
 		// The context should be cancelled prior to calling shutdown
 		select {
-		case <-s.notificationLoopDone:
+		case <-k.notificationLoopDone:
 		case <-time.After(timeout):
-			s.logger.Warn("Notification listener loop did not finish in time", "timeout", timeout)
+			k.logger.Warn("Notification listener loop did not finish in time", "timeout", timeout)
 		}
 	}
 
-	if s.pool != nil {
+	if k.pool != nil {
 		poolClose := make(chan struct{})
 		go func() {
 			// Will block until every acquired connection is released
-			s.pool.Close()
+			k.pool.Close()
 			close(poolClose)
 		}()
 		select {
 		case <-poolClose:
 		case <-time.After(timeout):
-			s.logger.Warn("System database connection pool did not close in time", "timeout", timeout)
+			k.logger.Warn("System database connection pool did not close in time", "timeout", timeout)
 		}
 	}
 
-	s.workflowNotificationsMap.Clear()
-	s.workflowEventsMap.Clear()
+	k.workflowNotificationsMap.Clear()
+	k.workflowEventsMap.Clear()
 
-	s.launched = false
+	k.launched = false
 }
 
 /*******************************/
@@ -777,7 +777,7 @@ type insertWorkflowStatusDBInput struct {
 	incrementAttempts bool
 }
 
-func (s *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowStatusDBInput) (*insertWorkflowResult, error) {
+func (k *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowStatusDBInput) (*insertWorkflowResult, error) {
 	if input.tx == nil {
 		return nil, errors.New("transaction is required for InsertWorkflowStatus")
 	}
@@ -857,7 +857,7 @@ func (s *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 		inputs = &v
 	}
 
-	row, err := s.queries.WithTx(PgxTx(input.tx)).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
+	row, err := k.queries.WithTx(PgxTx(input.tx)).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
 		WorkflowUuid:            input.status.ID,
 		Status:                  string(input.status.Status),
 		Name:                    input.status.Name,
@@ -934,7 +934,7 @@ func (s *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 		input.maxRetries > 0 && result.attempts > input.maxRetries+1 {
 
 		// Update workflow status to MAX_RECOVERY_ATTEMPTS_EXCEEDED and clear execution fields.
-		if err := s.queries.WithTx(PgxTx(input.tx)).MarkWorkflowMaxRecoveryExceeded(ctx, db.MarkWorkflowMaxRecoveryExceededParams{
+		if err := k.queries.WithTx(PgxTx(input.tx)).MarkWorkflowMaxRecoveryExceeded(ctx, db.MarkWorkflowMaxRecoveryExceededParams{
 			NewStatus:     string(WorkflowStatusMaxRecoveryAttemptsExceeded),
 			WorkflowUuid:  input.status.ID,
 			PendingStatus: string(WorkflowStatusPending),
@@ -984,7 +984,7 @@ type listWorkflowsDBInput struct {
 }
 
 // ListWorkflows retrieves a list of workflows based on the provided filters
-func (s *Kernel) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
+func (k *Kernel) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
 	idPrefixes := make([]string, len(input.workflowIDPrefix))
 	for i, p := range input.workflowIDPrefix {
 		idPrefixes[i] = p + "%"
@@ -1048,7 +1048,7 @@ func (s *Kernel) listWorkflows(ctx context.Context, input listWorkflowsDBInput) 
 		Lim:                   lim,
 	}
 
-	rows, err := s.q(input.tx).ListWorkflows(ctx, params)
+	rows, err := k.q(input.tx).ListWorkflows(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute ListWorkflows query: %w", err)
 	}
@@ -1153,9 +1153,9 @@ type updateWorkflowOutcomeDBInput struct {
 
 // updateWorkflowOutcome updates the status, output, and error of a workflow
 // Note that transitions from CANCELLED to SUCCESS or ERROR are forbidden
-func (s *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
+func (k *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
 	// input.output is already a *string from the database layer
-	if err := s.q(input.tx).UpdateWorkflowOutcome(ctx, db.UpdateWorkflowOutcomeParams{
+	if err := k.q(input.tx).UpdateWorkflowOutcome(ctx, db.UpdateWorkflowOutcomeParams{
 		Status:          string(input.status),
 		Output:          input.output,
 		Error:           input.errStr,
@@ -1179,12 +1179,12 @@ type cancelWorkflowsDBInput struct {
 // are already in a terminal state (SUCCESS, ERROR, CANCELLED) are left untouched.
 // Returns the subset of input IDs that existed in workflow_status (including terminal
 // ones, which are considered existing even though they are not updated).
-func (s *Kernel) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInput) ([]string, error) {
+func (k *Kernel) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInput) ([]string, error) {
 	if len(input.workflowIDs) == 0 {
 		return nil, nil
 	}
 
-	found, err := s.q(input.tx).CancelWorkflows(ctx, db.CancelWorkflowsParams{
+	found, err := k.q(input.tx).CancelWorkflows(ctx, db.CancelWorkflowsParams{
 		WorkflowIds:     input.workflowIDs,
 		CancelledStatus: string(WorkflowStatusCancelled),
 		NowMs:           time.Now().UnixMilli(),
@@ -1203,12 +1203,12 @@ type deleteWorkflowsDBInput struct {
 	tx             Tx
 }
 
-func (s *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error {
+func (k *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error {
 	// If no transaction is provided, create one so the entire operation is atomic
 	tx := input.tx
 	if tx == nil {
 		var err error
-		tx, err = s.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, TxOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to begin transaction for deleteWorkflows: %w", err)
 		}
@@ -1221,7 +1221,7 @@ func (s *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInp
 
 	if input.deleteChildren {
 		for _, wfID := range input.workflowIDs {
-			children, err := s.getWorkflowChildren(ctx, getWorkflowChildrenDBInput{
+			children, err := k.getWorkflowChildren(ctx, getWorkflowChildrenDBInput{
 				workflowID: wfID,
 				tx:         tx,
 			})
@@ -1235,7 +1235,7 @@ func (s *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInp
 	}
 
 	// Delete all matching workflows regardless of their state
-	if err := s.queries.WithTx(PgxTx(tx)).DeleteWorkflows(ctx, workflowIDs); err != nil {
+	if err := k.queries.WithTx(PgxTx(tx)).DeleteWorkflows(ctx, workflowIDs); err != nil {
 		return fmt.Errorf("failed to delete workflow(s): %w", err)
 	}
 
@@ -1256,9 +1256,9 @@ type getWorkflowChildrenDBInput struct {
 
 // getWorkflowChildren retrieves all descendant workflows of the given parent workflow
 // (breadth-first) within the same transaction.
-func (s *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error) {
+func (k *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error) {
 
-	children, err := s.listWorkflows(ctx, listWorkflowsDBInput{
+	children, err := k.listWorkflows(ctx, listWorkflowsDBInput{
 		parentWorkflowID: []string{input.workflowID},
 		tx:               input.tx,
 	})
@@ -1274,7 +1274,7 @@ func (s *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChild
 		parentID := queue[0]
 		queue = queue[1:]
 
-		grandchildren, err := s.listWorkflows(ctx, listWorkflowsDBInput{
+		grandchildren, err := k.listWorkflows(ctx, listWorkflowsDBInput{
 			parentWorkflowID: []string{parentID},
 			tx:               input.tx,
 		})
@@ -1290,14 +1290,14 @@ func (s *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChild
 	return children, nil
 }
 
-func (s *Kernel) cancelAllBefore(ctx context.Context, cutoffTime time.Time) error {
+func (k *Kernel) cancelAllBefore(ctx context.Context, cutoffTime time.Time) error {
 	// List all workflows in PENDING, ENQUEUED, or DELAYED state ending at cutoffTime
 	listInput := listWorkflowsDBInput{
 		endTime: cutoffTime,
 		status:  []WorkflowStatusType{WorkflowStatusPending, WorkflowStatusEnqueued, WorkflowStatusDelayed},
 	}
 
-	workflows, err := s.listWorkflows(ctx, listInput)
+	workflows, err := k.listWorkflows(ctx, listInput)
 	if err != nil {
 		return fmt.Errorf("failed to list workflows for cancellation: %w", err)
 	}
@@ -1310,7 +1310,7 @@ func (s *Kernel) cancelAllBefore(ctx context.Context, cutoffTime time.Time) erro
 	for i, workflow := range workflows {
 		ids[i] = workflow.ID
 	}
-	if _, err := s.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIDs: ids}); err != nil {
+	if _, err := k.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIDs: ids}); err != nil {
 		return fmt.Errorf("failed to cancel workflows during cancelAllBefore: %w", err)
 	}
 	return nil
@@ -1321,7 +1321,7 @@ type garbageCollectWorkflowsInput struct {
 	rowsThreshold          *int
 }
 
-func (s *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageCollectWorkflowsInput) error {
+func (k *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageCollectWorkflowsInput) error {
 	// Validate input parameters
 	if input.rowsThreshold != nil && *input.rowsThreshold <= 0 {
 		return fmt.Errorf("rowsThreshold must be greater than 0, got %d", *input.rowsThreshold)
@@ -1331,7 +1331,7 @@ func (s *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageColle
 
 	// If rowsThreshold is provided, get the timestamp of the Nth newest workflow
 	if input.rowsThreshold != nil {
-		rowsBasedCutoff, err := s.queries.GetNthNewestCreatedAt(ctx, int32(*input.rowsThreshold-1))
+		rowsBasedCutoff, err := k.queries.GetNthNewestCreatedAt(ctx, int32(*input.rowsThreshold-1))
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return fmt.Errorf("failed to query cutoff timestamp by rows threshold: %w", err)
 		}
@@ -1345,16 +1345,16 @@ func (s *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageColle
 
 	// Without an administrative cutoff, enforce each workflow definition's retention policy.
 	if cutoffTimestamp == nil {
-		deletedCount, err := s.queries.GarbageCollectByRetention(ctx, time.Now().UnixMilli())
+		deletedCount, err := k.queries.GarbageCollectByRetention(ctx, time.Now().UnixMilli())
 		if err != nil {
 			return fmt.Errorf("failed to garbage collect workflows by definition retention: %w", err)
 		}
-		s.logger.Info("Garbage collected workflows by definition retention", "deleted_count", deletedCount)
+		k.logger.Info("Garbage collected workflows by definition retention", "deleted_count", deletedCount)
 		return nil
 	}
 
 	// Delete all workflows older than cutoff that are NOT PENDING, ENQUEUED, or DELAYED
-	deletedCount, err := s.queries.GarbageCollectByCutoff(ctx, db.GarbageCollectByCutoffParams{
+	deletedCount, err := k.queries.GarbageCollectByCutoff(ctx, db.GarbageCollectByCutoffParams{
 		Cutoff:         *cutoffTimestamp,
 		PendingStatus:  string(WorkflowStatusPending),
 		EnqueuedStatus: string(WorkflowStatusEnqueued),
@@ -1364,7 +1364,7 @@ func (s *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageColle
 		return fmt.Errorf("failed to garbage collect workflows: %w", err)
 	}
 
-	s.logger.Info("Garbage collected workflows",
+	k.logger.Info("Garbage collected workflows",
 		"cutoff_timestamp", *cutoffTimestamp,
 		"deleted_count", deletedCount)
 
@@ -1380,7 +1380,7 @@ type resumeWorkflowsDBInput struct {
 // resumeWorkflows re-enqueues the given workflows onto the specified queue (or the internal
 // queue if unset). It returns the subset of IDs that existed in workflow_status; IDs in
 // terminal states are considered existing even though they are not updated.
-func (s *Kernel) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error) {
+func (k *Kernel) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error) {
 	if len(input.workflowIDs) == 0 {
 		return nil, nil
 	}
@@ -1390,7 +1390,7 @@ func (s *Kernel) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInp
 		queueName = _DBOS_INTERNAL_QUEUE_NAME
 	}
 
-	found, err := s.q(input.tx).ResumeWorkflows(ctx, db.ResumeWorkflowsParams{
+	found, err := k.q(input.tx).ResumeWorkflows(ctx, db.ResumeWorkflowsParams{
 		WorkflowIds:    input.workflowIDs,
 		EnqueuedStatus: string(WorkflowStatusEnqueued),
 		QueueName:      queueName,
@@ -1414,7 +1414,7 @@ type forkWorkflowDBInput struct {
 	tx                 Tx
 }
 
-func (s *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error) {
+func (k *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error) {
 	// Generate new workflow ID if not provided
 	forkedWorkflowID := input.forkedWorkflowID
 	if forkedWorkflowID == "" {
@@ -1430,13 +1430,13 @@ func (s *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (s
 	ownTx := tx == nil
 	if ownTx {
 		var err error
-		tx, err = s.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, TxOptions{})
 		if err != nil {
 			return "", fmt.Errorf("failed to begin fork transaction: %w", err)
 		}
 		defer tx.Rollback(ctx)
 	}
-	txq := s.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(PgxTx(tx))
 
 	// Get the original workflow status. Use the same tx so the read sees the
 	// pre-fork state consistently with the writes below.
@@ -1445,7 +1445,7 @@ func (s *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (s
 		loadInput:   true,
 		tx:          tx,
 	}
-	wfs, err := s.listWorkflows(ctx, listInput)
+	wfs, err := k.listWorkflows(ctx, listInput)
 	if err != nil {
 		return "", fmt.Errorf("failed to list workflows: %w", err)
 	}
@@ -1562,7 +1562,7 @@ type awaitWorkflowResultOutput struct {
 	errStr        *string
 }
 
-func (s *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pollInterval time.Duration) (*awaitWorkflowResultOutput, error) {
+func (k *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pollInterval time.Duration) (*awaitWorkflowResultOutput, error) {
 	if pollInterval <= 0 {
 		pollInterval = _DB_RETRY_INTERVAL
 	}
@@ -1573,7 +1573,7 @@ func (s *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pol
 		default:
 		}
 
-		row, err := s.queries.GetWorkflowOutcome(ctx, workflowID)
+		row, err := k.queries.GetWorkflowOutcome(ctx, workflowID)
 		if err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				time.Sleep(pollInterval)
@@ -1625,11 +1625,11 @@ type recordOperationResultDBInput struct {
 	serialization string
 }
 
-func (s *Kernel) recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error {
+func (k *Kernel) recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error {
 	startedAtMs := input.startedAt.UnixMilli()
 	completedAtMs := input.completedAt.UnixMilli()
 
-	err := s.q(input.tx).RecordOperationResult(ctx, db.RecordOperationResultParams{
+	err := k.q(input.tx).RecordOperationResult(ctx, db.RecordOperationResultParams{
 		WorkflowUuid:       input.workflowID,
 		FunctionID:         int32(input.stepID),
 		Output:             input.output,
@@ -1651,8 +1651,8 @@ func (s *Kernel) recordOperationResult(ctx context.Context, input recordOperatio
 
 // getDeduplicatedWorkflow returns the ID of the workflow currently holding the
 // deduplication slot for (workflowName, deduplicationID), or nil if the slot is free.
-func (s *Kernel) getDeduplicatedWorkflow(ctx context.Context, workflowName, deduplicationID string) (*string, error) {
-	id, err := s.queries.GetDeduplicatedWorkflow(ctx, db.GetDeduplicatedWorkflowParams{
+func (k *Kernel) getDeduplicatedWorkflow(ctx context.Context, workflowName, deduplicationID string) (*string, error) {
+	id, err := k.queries.GetDeduplicatedWorkflow(ctx, db.GetDeduplicatedWorkflowParams{
 		Name:            &workflowName,
 		DeduplicationID: &deduplicationID,
 	})
@@ -1683,19 +1683,19 @@ type checkOperationExecutionDBInput struct {
 	tx         Tx
 }
 
-func (s *Kernel) checkOperationExecution(ctx context.Context, input checkOperationExecutionDBInput) (*recordedResult, error) {
+func (k *Kernel) checkOperationExecution(ctx context.Context, input checkOperationExecutionDBInput) (*recordedResult, error) {
 	// Use provided transaction or create a new one. We don't commit -- it is
 	// just useful for having READ COMMITTED across the two reads.
 	tx := input.tx
 	if tx == nil {
 		var err error
-		tx, err = s.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, TxOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to begin transaction: %w", err)
 		}
 		defer tx.Rollback(ctx)
 	}
-	q := s.queries.WithTx(PgxTx(tx))
+	q := k.queries.WithTx(PgxTx(tx))
 
 	// Retrieve the workflow status
 	status, err := q.GetWorkflowStatusOnly(ctx, input.workflowID)
@@ -1758,8 +1758,8 @@ type getWorkflowStepsInput struct {
 	loadOutput bool
 }
 
-func (s *Kernel) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInput) ([]stepInfo, error) {
-	rows, err := s.queries.GetWorkflowSteps(ctx, input.workflowID)
+func (k *Kernel) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInput) ([]stepInfo, error) {
+	rows, err := k.queries.GetWorkflowSteps(ctx, input.workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workflow steps: %w", err)
 	}
@@ -1940,7 +1940,7 @@ func aggInt64(v any) *int64 {
 	}
 }
 
-func (s *Kernel) getWorkflowAggregates(ctx context.Context, input getWorkflowAggregatesDBInput) ([]WorkflowAggregateRow, error) {
+func (k *Kernel) getWorkflowAggregates(ctx context.Context, input getWorkflowAggregatesDBInput) ([]WorkflowAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
@@ -1967,7 +1967,7 @@ func (s *Kernel) getWorkflowAggregates(ctx context.Context, input getWorkflowAgg
 		bucketSize = 1 // unused when groupByTimeBucket is false; avoids divide-by-zero
 	}
 
-	rows, err := s.q(input.tx).GetWorkflowAggregates(ctx, db.GetWorkflowAggregatesParams{
+	rows, err := k.q(input.tx).GetWorkflowAggregates(ctx, db.GetWorkflowAggregatesParams{
 		GroupStatus:      input.groupByStatus,
 		GroupName:        input.groupByName,
 		GroupQueue:       input.groupByQueueName,
@@ -2054,7 +2054,7 @@ type getStepAggregatesDBInput struct {
 // SUCCESS, otherwise ERROR. operation_outputs has no explicit status column.
 const stepStatusExpr = "(CASE WHEN error IS NULL THEN 'SUCCESS' ELSE 'ERROR' END)"
 
-func (s *Kernel) getStepAggregates(ctx context.Context, input getStepAggregatesDBInput) ([]StepAggregateRow, error) {
+func (k *Kernel) getStepAggregates(ctx context.Context, input getStepAggregatesDBInput) ([]StepAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
 	}
@@ -2080,7 +2080,7 @@ func (s *Kernel) getStepAggregates(ctx context.Context, input getStepAggregatesD
 		bucketSize = 1 // unused when groupByTimeBucket is false; avoids divide-by-zero
 	}
 
-	rows, err := s.q(input.tx).GetStepAggregates(ctx, db.GetStepAggregatesParams{
+	rows, err := k.q(input.tx).GetStepAggregates(ctx, db.GetStepAggregatesParams{
 		GroupFunctionName:     input.groupByFunctionName,
 		GroupStatus:           input.groupByStatus,
 		GroupTimeBucket:       groupByTimeBucket,
@@ -2137,7 +2137,7 @@ type sleepInput struct {
 // If we sleep is re-executed, it will only sleep for the remaining duration until the wakeup time
 // sleep can be called within other special steps (e.g., getEvent, recv) to provide durable sleep
 
-func (s *Kernel) sleep(ctx context.Context, input sleepInput) (time.Duration, error) {
+func (k *Kernel) sleep(ctx context.Context, input sleepInput) (time.Duration, error) {
 	functionName := "DBOS.sleep"
 
 	// Get workflow state from context
@@ -2162,7 +2162,7 @@ func (s *Kernel) sleep(ctx context.Context, input sleepInput) (time.Duration, er
 		stepID:     stepID,
 		stepName:   functionName,
 	}
-	recordedResult, err := s.checkOperationExecution(ctx, checkInput)
+	recordedResult, err := k.checkOperationExecution(ctx, checkInput)
 	if err != nil {
 		return 0, fmt.Errorf("failed to check operation execution: %w", err)
 	}
@@ -2208,7 +2208,7 @@ func (s *Kernel) sleep(ctx context.Context, input sleepInput) (time.Duration, er
 			serialization: "DBOS_JSON",
 		}
 
-		err = s.recordOperationResult(ctx, recordInput)
+		err = k.recordOperationResult(ctx, recordInput)
 		if err != nil {
 			// Check if this is a ConflictingWorkflowError (operation already recorded by another process)
 			if dbosErr, ok := err.(*DBOSError); ok && dbosErr.Code == ConflictingIDError {
@@ -2239,20 +2239,20 @@ type patchDBInput struct {
 	patchName  string
 }
 
-func (s *Kernel) doesPatchExists(ctx context.Context, input patchDBInput) (string, error) {
-	return s.queries.DoesPatchExist(ctx, db.DoesPatchExistParams{
+func (k *Kernel) doesPatchExists(ctx context.Context, input patchDBInput) (string, error) {
+	return k.queries.DoesPatchExist(ctx, db.DoesPatchExistParams{
 		WorkflowUuid: input.workflowID,
 		FunctionID:   int32(input.stepID),
 	})
 }
 
-func (s *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
-	functionName, err := s.doesPatchExists(ctx, input)
+func (k *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
+	functionName, err := k.doesPatchExists(ctx, input)
 	if err != nil {
 		// No result means this is a new workflow, or an existing workflow that has not reached this step yet
 		// Insert the patch marker and return true
 		if errors.Is(err, pgx.ErrNoRows) {
-			if err := s.queries.InsertPatchMarker(ctx, db.InsertPatchMarkerParams{
+			if err := k.queries.InsertPatchMarker(ctx, db.InsertPatchMarkerParams{
 				WorkflowUuid: input.workflowID,
 				FunctionID:   int32(input.stepID),
 				FunctionName: input.patchName,
@@ -2273,15 +2273,15 @@ func (s *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
 /******* WORKFLOW COMMUNICATIONS ********/
 /****************************************/
 
-func (s *Kernel) notificationListenerLoop(ctx context.Context) {
+func (k *Kernel) notificationListenerLoop(ctx context.Context) {
 	defer func() {
-		s.logger.Debug("Notification listener loop exiting")
-		s.notificationLoopDone <- struct{}{}
+		k.logger.Debug("Notification listener loop exiting")
+		k.notificationLoopDone <- struct{}{}
 	}()
 
-	pgxPool := s.listenNotifyPool()
+	pgxPool := k.listenNotifyPool()
 	if pgxPool == nil {
-		s.logger.Error("Notification listener loop started without a pgx-backed pool; aborting")
+		k.logger.Error("Notification listener loop started without a pgx-backed pool; aborting")
 		return
 	}
 
@@ -2299,7 +2299,7 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 		if _, err = tx.Exec(ctx, fmt.Sprintf("LISTEN %s", _DBOS_NOTIFICATIONS_CHANNEL)); err != nil {
 			rErr := tx.Rollback(ctx)
 			if rErr != nil {
-				s.logger.Error("Failed to rollback transaction after LISTEN error", "error", rErr)
+				k.logger.Error("Failed to rollback transaction after LISTEN error", "error", rErr)
 			}
 			pc.Release()
 			return nil, err
@@ -2307,7 +2307,7 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 		if _, err = tx.Exec(ctx, fmt.Sprintf("LISTEN %s", _DBOS_WORKFLOW_EVENTS_CHANNEL)); err != nil {
 			rErr := tx.Rollback(ctx)
 			if rErr != nil {
-				s.logger.Error("Failed to rollback transaction after LISTEN error", "error", rErr)
+				k.logger.Error("Failed to rollback transaction after LISTEN error", "error", rErr)
 			}
 			pc.Release()
 			return nil, err
@@ -2315,7 +2315,7 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 		if err = tx.Commit(ctx); err != nil {
 			rErr := tx.Rollback(ctx)
 			if rErr != nil {
-				s.logger.Error("Failed to rollback transaction after COMMIT error", "error", rErr)
+				k.logger.Error("Failed to rollback transaction after COMMIT error", "error", rErr)
 			}
 			pc.Release()
 			return nil, err
@@ -2323,13 +2323,13 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 		return pc, nil
 	}
 
-	s.logger.Debug("DBOS: Starting notification listener loop")
+	k.logger.Debug("DBOS: Starting notification listener loop")
 
 	poolConn, err := retryWithResult(ctx, func() (*pgxpool.Conn, error) {
 		return acquire(ctx)
-	}, withRetrierLogger(s.logger))
+	}, withRetrierLogger(k.logger))
 	if err != nil {
-		s.logger.Error("Failed to acquire listener connection", "error", err)
+		k.logger.Error("Failed to acquire listener connection", "error", err)
 		return
 	}
 	defer poolConn.Release()
@@ -2342,17 +2342,17 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 		if err != nil {
 			// Context cancellation -> graceful exit
 			if ctx.Err() != nil {
-				s.logger.Debug("Notification listener exiting (context canceled", "cause", context.Cause(ctx), "error", err)
+				k.logger.Debug("Notification listener exiting (context canceled", "cause", context.Cause(ctx), "error", err)
 				poolConn.Release()
 				return
 			}
 			// If the underlying connection is closed, attempt to re-acquire a new one
 			if poolConn.Conn().IsClosed() {
-				s.logger.Debug("Notification listener connection closed. re-acquiring")
+				k.logger.Debug("Notification listener connection closed. re-acquiring")
 				poolConn.Release()
 				for {
 					if ctx.Err() != nil {
-						s.logger.Debug("Notification listener exiting (context canceled)", "cause", context.Cause(ctx), "error", err)
+						k.logger.Debug("Notification listener exiting (context canceled)", "cause", context.Cause(ctx), "error", err)
 						return
 					}
 					poolConn, err = acquire(ctx)
@@ -2360,17 +2360,17 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 						retryAttempt = 0
 						break
 					}
-					s.logger.Debug("failed to re-acquire connection for notification listener", "error", err)
+					k.logger.Debug("failed to re-acquire connection for notification listener", "error", err)
 					time.Sleep(backoffWithJitter(retryAttempt))
 					retryAttempt++
 				}
 				// The connection is re-aquired. Signal to all waiters they should poll the database for a potentially missed value.
-				s.workflowNotificationRepollMap.Range(func(key, value any) bool {
+				k.workflowNotificationRepollMap.Range(func(key, value any) bool {
 					repollChannel := value.(chan struct{})
 					repollChannel <- struct{}{}
 					return true
 				})
-				s.workflowEventsRepollMap.Range(func(key, value any) bool {
+				k.workflowEventsRepollMap.Range(func(key, value any) bool {
 					repollChannel := value.(chan struct{})
 					repollChannel <- struct{}{}
 					return true
@@ -2378,7 +2378,7 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 				continue
 			}
 			// Other transient errors. Backoff and continue on same conn
-			s.logger.Error("Error waiting for notification", "error", err)
+			k.logger.Error("Error waiting for notification", "error", err)
 			time.Sleep(backoffWithJitter(retryAttempt))
 			retryAttempt++
 			continue
@@ -2391,13 +2391,13 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 
 		switch n.Channel {
 		case _DBOS_NOTIFICATIONS_CHANNEL:
-			if cond, ok := s.workflowNotificationsMap.Load(n.Payload); ok {
+			if cond, ok := k.workflowNotificationsMap.Load(n.Payload); ok {
 				cond.(*sync.Cond).L.Lock()
 				cond.(*sync.Cond).Broadcast()
 				cond.(*sync.Cond).L.Unlock()
 			}
 		case _DBOS_WORKFLOW_EVENTS_CHANNEL:
-			if cond, ok := s.workflowEventsMap.Load(n.Payload); ok {
+			if cond, ok := k.workflowEventsMap.Load(n.Payload); ok {
 				cond.(*sync.Cond).L.Lock()
 				cond.(*sync.Cond).Broadcast()
 				cond.(*sync.Cond).L.Unlock()
@@ -2406,13 +2406,13 @@ func (s *Kernel) notificationListenerLoop(ctx context.Context) {
 	}
 }
 
-func (s *Kernel) notificationPollerLoop(ctx context.Context) {
+func (k *Kernel) notificationPollerLoop(ctx context.Context) {
 	defer func() {
-		s.logger.Debug("Notification poller loop exiting")
-		s.notificationLoopDone <- struct{}{}
+		k.logger.Debug("Notification poller loop exiting")
+		k.notificationLoopDone <- struct{}{}
 	}()
 
-	s.logger.Debug("DBOS: Starting notification poller loop")
+	k.logger.Debug("DBOS: Starting notification poller loop")
 
 	ticker := time.NewTicker(1 * time.Second)
 	defer ticker.Stop()
@@ -2420,18 +2420,18 @@ func (s *Kernel) notificationPollerLoop(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			s.logger.Debug("Notification poller exiting (context canceled)", "cause", context.Cause(ctx))
+			k.logger.Debug("Notification poller exiting (context canceled)", "cause", context.Cause(ctx))
 			return
 		case <-ticker.C:
-			s.pollNotifications(ctx)
-			s.pollEvents(ctx)
+			k.pollNotifications(ctx)
+			k.pollEvents(ctx)
 		}
 	}
 }
 
-func (s *Kernel) pollNotifications(ctx context.Context) {
+func (k *Kernel) pollNotifications(ctx context.Context) {
 	// Iterate through all registered notification payloads
-	s.workflowNotificationsMap.Range(func(key, value any) bool {
+	k.workflowNotificationsMap.Range(func(key, value any) bool {
 		payload, ok := key.(string)
 		if !ok {
 			return true // Continue to next item
@@ -2440,7 +2440,7 @@ func (s *Kernel) pollNotifications(ctx context.Context) {
 		// Parse payload: format is "destinationID::topic"
 		parts := strings.SplitN(payload, "::", 2)
 		if len(parts) != 2 {
-			s.logger.Warn("Invalid notification payload format", "payload", payload)
+			k.logger.Warn("Invalid notification payload format", "payload", payload)
 			return true // Continue to next item
 		}
 
@@ -2448,12 +2448,12 @@ func (s *Kernel) pollNotifications(ctx context.Context) {
 		topic := parts[1]
 
 		// Query database to check if an unconsumed notification exists
-		exists, err := s.queries.HasUnconsumedMessage(ctx, db.HasUnconsumedMessageParams{
+		exists, err := k.queries.HasUnconsumedMessage(ctx, db.HasUnconsumedMessageParams{
 			DestinationUuid: destinationID,
 			Topic:           topic,
 		})
 		if err != nil {
-			s.logger.Warn("Failed to poll notification", "payload", payload, "error", err)
+			k.logger.Warn("Failed to poll notification", "payload", payload, "error", err)
 			return true // Continue to next item
 		}
 
@@ -2470,9 +2470,9 @@ func (s *Kernel) pollNotifications(ctx context.Context) {
 	})
 }
 
-func (s *Kernel) pollEvents(ctx context.Context) {
+func (k *Kernel) pollEvents(ctx context.Context) {
 	// Iterate through all registered event payloads
-	s.workflowEventsMap.Range(func(key, value any) bool {
+	k.workflowEventsMap.Range(func(key, value any) bool {
 		payload, ok := key.(string)
 		if !ok {
 			return true // Continue to next item
@@ -2481,7 +2481,7 @@ func (s *Kernel) pollEvents(ctx context.Context) {
 		// Parse payload: format is "targetWorkflowID::key"
 		parts := strings.SplitN(payload, "::", 2)
 		if len(parts) != 2 {
-			s.logger.Warn("Invalid event payload format", "payload", payload)
+			k.logger.Warn("Invalid event payload format", "payload", payload)
 			return true // Continue to next item
 		}
 
@@ -2489,12 +2489,12 @@ func (s *Kernel) pollEvents(ctx context.Context) {
 		eventKey := parts[1]
 
 		// Query database to check if event exists
-		exists, err := s.queries.HasWorkflowEvent(ctx, db.HasWorkflowEventParams{
+		exists, err := k.queries.HasWorkflowEvent(ctx, db.HasWorkflowEventParams{
 			WorkflowUuid: targetWorkflowID,
 			Key:          eventKey,
 		})
 		if err != nil {
-			s.logger.Warn("Failed to poll event", "payload", payload, "error", err)
+			k.logger.Warn("Failed to poll event", "payload", payload, "error", err)
 			return true // Continue to next item
 		}
 
@@ -2524,7 +2524,7 @@ type WorkflowSendInput struct {
 // Send is a special type of step that sends a message to another workflow.
 // Can be called both within a workflow (as a step) or outside a workflow (directly).
 // When called within a workflow: durability and the function run in the same transaction, and we forbid nested step execution
-func (s *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
+func (k *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
 	if _, ok := input.Message.(*string); !ok {
 		return fmt.Errorf("message must be a pointer to a string")
 	}
@@ -2535,7 +2535,7 @@ func (s *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
 		topic = input.Topic
 	}
 
-	err := s.q(input.tx).InsertNotification(ctx, db.InsertNotificationParams{
+	err := k.q(input.tx).InsertNotification(ctx, db.InsertNotificationParams{
 		DestinationUuid:  input.DestinationID,
 		Topic:            topic,
 		Message:          *(input.Message.(*string)),
@@ -2544,7 +2544,7 @@ func (s *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
 		CreatedAtEpochMs: time.Now().UnixMilli(),
 	})
 	if err != nil {
-		s.logger.Error("failed to insert notification", "error", err, "destination_id", input.DestinationID, "topic", topic, "message", input.Message)
+		k.logger.Error("failed to insert notification", "error", err, "destination_id", input.DestinationID, "topic", topic, "message", input.Message)
 		// Check for foreign key violation (destination workflow doesn't exist)
 		if isForeignKeyViolation(err) {
 			return newNonExistentWorkflowError(input.DestinationID)
@@ -2555,7 +2555,7 @@ func (s *Kernel) send(ctx context.Context, input WorkflowSendInput) error {
 }
 
 // Recv is a special type of step that receives a message destined for a given workflow
-func (s *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error) {
+func (k *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error) {
 	functionName := "DBOS.recv"
 
 	// Get workflow state from context
@@ -2580,7 +2580,7 @@ func (s *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error)
 		stepID:     stepID,
 		stepName:   functionName,
 	}
-	recordedResult, err := s.checkOperationExecution(ctx, checkInput)
+	recordedResult, err := k.checkOperationExecution(ctx, checkInput)
 	if err != nil {
 		return nil, err
 	}
@@ -2596,25 +2596,25 @@ func (s *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error)
 	payload := fmt.Sprintf("%s::%s", destinationID, topic)
 	cond := sync.NewCond(&sync.Mutex{})
 	cond.L.Lock()
-	_, loaded := s.workflowNotificationsMap.LoadOrStore(payload, cond)
+	_, loaded := k.workflowNotificationsMap.LoadOrStore(payload, cond)
 	if loaded {
 		cond.L.Unlock()
-		s.logger.Error("Receive already called for workflow", "destination_id", destinationID)
+		k.logger.Error("Receive already called for workflow", "destination_id", destinationID)
 		return nil, newWorkflowConflictIDError(destinationID)
 	}
 	repollChannel := make(chan struct{}, 1)
-	s.workflowNotificationRepollMap.LoadOrStore(payload, repollChannel)
+	k.workflowNotificationRepollMap.LoadOrStore(payload, repollChannel)
 	defer func() {
 		// Clean up the condition variable after we're done and broadcast to wake up any waiting goroutines
 		cond.Broadcast()
-		s.workflowNotificationsMap.Delete(payload)
-		s.workflowNotificationRepollMap.Delete(payload)
+		k.workflowNotificationsMap.Delete(payload)
+		k.workflowNotificationRepollMap.Delete(payload)
 	}()
 
 	// Now check if there is already an unconsumed message available in the database.
 	// If not, we'll wait for a notification and timeout
 	hasMsgParams := db.HasUnconsumedMessageParams{DestinationUuid: destinationID, Topic: topic}
-	exists, err := s.queries.HasUnconsumedMessage(ctx, hasMsgParams)
+	exists, err := k.queries.HasUnconsumedMessage(ctx, hasMsgParams)
 	if err != nil {
 		cond.L.Unlock()
 		return nil, fmt.Errorf("failed to check message: %w", err)
@@ -2637,7 +2637,7 @@ func (s *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error)
 
 loop:
 	for !exists {
-		timeout, err := s.sleep(ctx, sleepInput{
+		timeout, err := k.sleep(ctx, sleepInput{
 			duration:  input.Timeout,
 			skipSleep: true,
 			stepID:    &sleepStepID,
@@ -2651,19 +2651,19 @@ loop:
 			break loop
 		case <-time.After(timeout):
 			timeoutOccurred = true
-			s.logger.Warn("Recv() timeout reached", "payload", payload, "timeout", input.Timeout)
+			k.logger.Warn("Recv() timeout reached", "payload", payload, "timeout", input.Timeout)
 			break loop
 		case <-repollChannel:
-			s.logger.Warn("Receive polling after repoll channel signal", "payload", payload)
+			k.logger.Warn("Receive polling after repoll channel signal", "payload", payload)
 			// We were instructed to poll again because the connection was disconnected
-			exists, err = s.queries.HasUnconsumedMessage(ctx, hasMsgParams)
+			exists, err = k.queries.HasUnconsumedMessage(ctx, hasMsgParams)
 			if err != nil {
 				return nil, fmt.Errorf("failed to check message: %w", err)
 			}
 			// Restart at the beginning of the loop. If the value was found, we'll exit the loop and process to consuming the value.
 			continue
 		case <-ctx.Done():
-			s.logger.Warn("Recv() context cancelled", "payload", payload, "cause", context.Cause(ctx))
+			k.logger.Warn("Recv() context cancelled", "payload", payload, "cause", context.Cause(ctx))
 			return nil, ctx.Err()
 		}
 	}
@@ -2674,7 +2674,7 @@ loop:
 	// Find the oldest unconsumed message and atomically mark it consumed.
 	// Notifications are retained (consumed=true) so they remain visible for observability;
 	// rows are eventually cleaned up by FK cascade when the parent workflow is garbage-collected.
-	tx, err := s.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -2682,7 +2682,7 @@ loop:
 	// Use message_uuid so we update exactly one row; created_at_epoch_ms can match multiple rows when inserts occur in the same millisecond.
 	var messageString *string
 	var msgSerialization *string
-	consumed, err := s.queries.WithTx(PgxTx(tx)).ConsumeOldestMessage(ctx, db.ConsumeOldestMessageParams{
+	consumed, err := k.queries.WithTx(PgxTx(tx)).ConsumeOldestMessage(ctx, db.ConsumeOldestMessageParams{
 		DestinationUuid: destinationID,
 		Topic:           topic,
 	})
@@ -2722,7 +2722,7 @@ loop:
 		recordInput.errStr = &s
 	}
 
-	err = s.recordOperationResult(ctx, recordInput)
+	err = k.recordOperationResult(ctx, recordInput)
 	if err != nil {
 		return nil, err
 	}
@@ -2742,7 +2742,7 @@ type WorkflowSetEventInput struct {
 	serialization string
 }
 
-func (s *Kernel) setEvent(ctx context.Context, input WorkflowSetEventInput) error {
+func (k *Kernel) setEvent(ctx context.Context, input WorkflowSetEventInput) error {
 	// Get workflow state from context
 	wfState, ok := ctx.Value(workflowStateKey).(*workflowState)
 	if !ok || wfState == nil {
@@ -2755,7 +2755,7 @@ func (s *Kernel) setEvent(ctx context.Context, input WorkflowSetEventInput) erro
 
 	// input.Message is already encoded *string from the typed layer
 	value := *(input.Message.(*string))
-	q := s.q(input.tx)
+	q := k.q(input.tx)
 
 	// Insert or update the event using UPSERT
 	if err := q.UpsertWorkflowEvent(ctx, db.UpsertWorkflowEventParams{
@@ -2777,7 +2777,7 @@ func (s *Kernel) setEvent(ctx context.Context, input WorkflowSetEventInput) erro
 	})
 }
 
-func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventResult, error) {
+func (k *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventResult, error) {
 	functionName := "DBOS.getEvent"
 
 	// Get workflow state from context (optional for GetEvent as we can get an event from outside a workflow)
@@ -2801,7 +2801,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 			stepID:     stepID,
 			stepName:   functionName,
 		}
-		recordedResult, err := s.checkOperationExecution(ctx, checkInput)
+		recordedResult, err := k.checkOperationExecution(ctx, checkInput)
 		if err != nil {
 			return nil, err
 		}
@@ -2818,21 +2818,21 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 	payload := fmt.Sprintf("%s::%s", input.TargetWorkflowID, input.Key)
 	cond := sync.NewCond(&sync.Mutex{})
 	cond.L.Lock()
-	existingCond, loaded := s.workflowEventsMap.LoadOrStore(payload, cond)
+	existingCond, loaded := k.workflowEventsMap.LoadOrStore(payload, cond)
 	if loaded {
 		cond.L.Unlock()
 		// Reuse the existing condition variable
 		cond = existingCond.(*sync.Cond)
 	}
 	repollChannel := make(chan struct{}, 1)
-	s.workflowEventsRepollMap.LoadOrStore(payload, repollChannel)
+	k.workflowEventsRepollMap.LoadOrStore(payload, repollChannel)
 
 	// Defer broadcast to ensure any waiting goroutines eventually unlock
 	defer func() {
 		cond.Broadcast()
 		// Clean up the condition variable after we're done (Delete is a no-op if the key doesn't exist)
-		s.workflowEventsMap.Delete(payload)
-		s.workflowEventsRepollMap.Delete(payload)
+		k.workflowEventsMap.Delete(payload)
+		k.workflowEventsRepollMap.Delete(payload)
 	}()
 
 	// Check if the event already exists in the database
@@ -2842,7 +2842,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 
 	// Helper function to query the event and handle errors
 	queryEvent := func() error {
-		row, qerr := s.queries.GetWorkflowEvent(ctx, db.GetWorkflowEventParams{
+		row, qerr := k.queries.GetWorkflowEvent(ctx, db.GetWorkflowEventParams{
 			WorkflowUuid: input.TargetWorkflowID,
 			Key:          input.Key,
 		})
@@ -2883,7 +2883,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 			// Wait for notification with timeout using condition variable
 			timeout := input.Timeout
 			if isInWorkflow {
-				timeout, err = s.sleep(ctx, sleepInput{
+				timeout, err = k.sleep(ctx, sleepInput{
 					duration:  input.Timeout,
 					skipSleep: true,
 					stepID:    &sleepStepID,
@@ -2902,7 +2902,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 				break loop
 			case <-time.After(timeout):
 				timeoutOccurred = true
-				s.logger.Warn("GetEvent() timeout reached", "target_workflow_id", input.TargetWorkflowID, "key", input.Key, "timeout", input.Timeout)
+				k.logger.Warn("GetEvent() timeout reached", "target_workflow_id", input.TargetWorkflowID, "key", input.Key, "timeout", input.Timeout)
 				// Check if the event exists in the database -- we never know
 				if err := queryEvent(); err != nil {
 					return nil, err
@@ -2917,7 +2917,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 				// If the value was found, we'll exit the loop
 				continue
 			case <-ctx.Done():
-				s.logger.Warn("GetEvent() context cancelled", "target_workflow_id", input.TargetWorkflowID, "key", input.Key, "cause", context.Cause(ctx))
+				k.logger.Warn("GetEvent() context cancelled", "target_workflow_id", input.TargetWorkflowID, "key", input.Key, "cause", context.Cause(ctx))
 				if !loaded {
 					cond.L.Unlock()
 				}
@@ -2957,7 +2957,7 @@ func (s *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 			recordInput.errStr = &s
 		}
 
-		err = s.recordOperationResult(ctx, recordInput)
+		err = k.recordOperationResult(ctx, recordInput)
 		if err != nil {
 			return nil, err
 		}
@@ -2995,14 +2995,14 @@ type streamEntry struct {
 	Serialization string
 }
 
-func (s *Kernel) writeStream(ctx context.Context, input writeStreamDBInput) error {
+func (k *Kernel) writeStream(ctx context.Context, input writeStreamDBInput) error {
 	// Get workflow state from context
 	wfState, ok := ctx.Value(workflowStateKey).(*workflowState)
 	if !ok || wfState == nil {
 		return fmt.Errorf("workflow state not found in context: are you running this within a workflow?")
 	}
 
-	q := s.q(input.tx)
+	q := k.q(input.tx)
 
 	exists, err := q.CheckStreamClosed(ctx, db.CheckStreamClosedParams{
 		WorkflowUuid: wfState.workflowID,
@@ -3030,8 +3030,8 @@ func (s *Kernel) writeStream(ctx context.Context, input writeStreamDBInput) erro
 
 // readStream reads stream entries starting from a given offset.
 // Returns the entries, whether the stream is closed, and any error.
-func (s *Kernel) readStream(ctx context.Context, input readStreamDBInput) ([]streamEntry, bool, error) {
-	rows, err := s.queries.ReadStream(ctx, db.ReadStreamParams{
+func (k *Kernel) readStream(ctx context.Context, input readStreamDBInput) ([]streamEntry, bool, error) {
+	rows, err := k.queries.ReadStream(ctx, db.ReadStreamParams{
 		WorkflowUuid: input.WorkflowID,
 		Key:          input.Key,
 		Offset:       int32(input.FromOffset),
@@ -3069,8 +3069,8 @@ type eventRecord struct {
 }
 
 // getAllEvents returns every event row currently set on the workflow.
-func (s *Kernel) getAllEvents(ctx context.Context, workflowID string) ([]eventRecord, error) {
-	rows, err := s.queries.GetAllEvents(ctx, workflowID)
+func (k *Kernel) getAllEvents(ctx context.Context, workflowID string) ([]eventRecord, error) {
+	rows, err := k.queries.GetAllEvents(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query workflow events: %w", err)
 	}
@@ -3097,8 +3097,8 @@ type notificationRecord struct {
 
 // getAllNotifications returns every notification sent to the workflow, ordered by arrival time.
 // The __null__topic__ sentinel is normalized back to a nil Topic.
-func (s *Kernel) getAllNotifications(ctx context.Context, workflowID string) ([]notificationRecord, error) {
-	rows, err := s.queries.GetAllNotifications(ctx, workflowID)
+func (k *Kernel) getAllNotifications(ctx context.Context, workflowID string) ([]notificationRecord, error) {
+	rows, err := k.queries.GetAllNotifications(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query notifications: %w", err)
 	}
@@ -3130,8 +3130,8 @@ type streamRecord struct {
 
 // getAllStreamEntries returns every stream entry for the workflow, ordered by (key, offset).
 // Rows holding the stream-closed sentinel are filtered out; callers may group by Key.
-func (s *Kernel) getAllStreamEntries(ctx context.Context, workflowID string) ([]streamRecord, error) {
-	rows, err := s.queries.GetAllStreamEntries(ctx, workflowID)
+func (k *Kernel) getAllStreamEntries(ctx context.Context, workflowID string) ([]streamRecord, error) {
+	rows, err := k.queries.GetAllStreamEntries(ctx, workflowID)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query streams: %w", err)
 	}
@@ -3160,8 +3160,8 @@ type setWorkflowDelayDBInput struct {
 }
 
 // setWorkflowDelay updates the delay on a DELAYED workflow.
-func (s *Kernel) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBInput) error {
-	if err := s.q(input.tx).SetWorkflowDelay(ctx, db.SetWorkflowDelayParams{
+func (k *Kernel) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBInput) error {
+	if err := k.q(input.tx).SetWorkflowDelay(ctx, db.SetWorkflowDelayParams{
 		DelayUntil:   input.delayUntil.UnixMilli(),
 		UpdatedAt:    time.Now().UnixMilli(),
 		WorkflowUuid: input.workflowID,
@@ -3173,8 +3173,8 @@ func (s *Kernel) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBI
 }
 
 // transitionDelayedWorkflows transitions DELAYED workflows whose delay has expired to ENQUEUED.
-func (s *Kernel) transitionDelayedWorkflows(ctx context.Context) error {
-	if err := s.queries.TransitionDelayedWorkflows(ctx, db.TransitionDelayedWorkflowsParams{
+func (k *Kernel) transitionDelayedWorkflows(ctx context.Context) error {
+	if err := k.queries.TransitionDelayedWorkflows(ctx, db.TransitionDelayedWorkflowsParams{
 		NewStatus: string(WorkflowStatusEnqueued),
 		OldStatus: string(WorkflowStatusDelayed),
 		NowMs:     time.Now().UnixMilli(),
@@ -3191,7 +3191,7 @@ type dequeuedWorkflow struct {
 	serialization string
 }
 
-func (s *Kernel) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
+func (k *Kernel) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
 	var globalConcurrency, rateLimit *int32
 	var ratePeriodMs *int64
 	if concurrency != nil {
@@ -3204,7 +3204,7 @@ func (s *Kernel) upsertWorkflowDefinition(ctx context.Context, workflowName stri
 		per := rl.period.Milliseconds()
 		ratePeriodMs = &per
 	}
-	return s.queries.UpsertWorkflowDefinition(ctx, db.UpsertWorkflowDefinitionParams{
+	return k.queries.UpsertWorkflowDefinition(ctx, db.UpsertWorkflowDefinitionParams{
 		WorkflowName:        workflowName,
 		GlobalConcurrency:   globalConcurrency,
 		RateLimit:           rateLimit,
@@ -3219,11 +3219,11 @@ type dequeueWorkflowsInput struct {
 	applicationVersion string
 }
 
-func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
+func (k *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInput) ([]dequeuedWorkflow, error) {
 	var policyConcurrency *int
 	var policyRateLimit *rateLimiter
 
-	def, err := s.queries.GetWorkflowDefinition(ctx, input.workflowName)
+	def, err := k.queries.GetWorkflowDefinition(ctx, input.workflowName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
@@ -3243,12 +3243,12 @@ func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 	if policyConcurrency != nil || policyRateLimit != nil {
 		iso = IsoLevelRepeatableRead
 	}
-	tx, err := s.pool.BeginTx(ctx, TxOptions{IsoLevel: iso})
+	tx, err := k.pool.BeginTx(ctx, TxOptions{IsoLevel: iso})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	txq := s.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(PgxTx(tx))
 
 	// Rate limiter: count workflows started within the limiter period.
 	var numRecentQueries int64
@@ -3279,7 +3279,7 @@ func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 		}
 		concurrency := *policyConcurrency
 		if int(globalCount) > concurrency {
-			s.logger.Warn("Total pending workflows exceeds global concurrency limit", "total_pending", globalCount, "workflow_name", input.workflowName, "concurrency_limit", concurrency)
+			k.logger.Warn("Total pending workflows exceeds global concurrency limit", "total_pending", globalCount, "workflow_name", input.workflowName, "concurrency_limit", concurrency)
 		}
 		availableTasks := max(concurrency-int(globalCount), 0)
 		if availableTasks < maxTasks {
@@ -3314,7 +3314,7 @@ func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 	}
 
 	if len(dequeuedIDs) > 0 {
-		s.logger.Debug("attempting to claim workflow(s)", "workflow_name", input.workflowName, "numTasks", len(dequeuedIDs))
+		k.logger.Debug("attempting to claim workflow(s)", "workflow_name", input.workflowName, "numTasks", len(dequeuedIDs))
 	}
 
 	// Update workflows to PENDING status and get their details
@@ -3322,7 +3322,7 @@ func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 	for _, id := range dequeuedIDs {
 		select {
 		case <-ctx.Done():
-			s.logger.Warn("DequeueWorkflows context cancelled while claiming dequeue results", "cause", context.Cause(ctx))
+			k.logger.Warn("DequeueWorkflows context cancelled while claiming dequeue results", "cause", context.Cause(ctx))
 			return nil, ctx.Err()
 		default:
 		}
@@ -3366,8 +3366,8 @@ func (s *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 	return retWorkflows, nil
 }
 
-func (s *Kernel) clearQueueAssignment(ctx context.Context, workflowID string) (bool, error) {
-	n, err := s.queries.ClearQueueAssignment(ctx, db.ClearQueueAssignmentParams{
+func (k *Kernel) clearQueueAssignment(ctx context.Context, workflowID string) (bool, error) {
+	n, err := k.queries.ClearQueueAssignment(ctx, db.ClearQueueAssignmentParams{
 		EnqueuedStatus: string(WorkflowStatusEnqueued),
 		WorkflowUuid:   workflowID,
 		PendingStatus:  string(WorkflowStatusPending),
@@ -3389,7 +3389,7 @@ type metricData struct {
 	Value      float64 `json:"value"`
 }
 
-func (s *Kernel) getMetrics(ctx context.Context, startTime, endTime string) ([]metricData, error) {
+func (k *Kernel) getMetrics(ctx context.Context, startTime, endTime string) ([]metricData, error) {
 	// Parse ISO timestamp strings to time.Time
 	startTimeParsed, err := time.Parse(time.RFC3339, startTime)
 	if err != nil {
@@ -3407,14 +3407,14 @@ func (s *Kernel) getMetrics(ctx context.Context, startTime, endTime string) ([]m
 	var metrics []metricData
 
 	// Query workflow metrics
-	workflowMetrics, err := s.getMetricWorkflowCount(ctx, startEpochMs, endEpochMs)
+	workflowMetrics, err := k.getMetricWorkflowCount(ctx, startEpochMs, endEpochMs)
 	if err != nil {
 		return nil, err
 	}
 	metrics = append(metrics, workflowMetrics...)
 
 	// Query step metrics
-	stepMetrics, err := s.getMetricStepCount(ctx, startEpochMs, endEpochMs)
+	stepMetrics, err := k.getMetricStepCount(ctx, startEpochMs, endEpochMs)
 	if err != nil {
 		return nil, err
 	}
@@ -3423,8 +3423,8 @@ func (s *Kernel) getMetrics(ctx context.Context, startTime, endTime string) ([]m
 	return metrics, nil
 }
 
-func (s *Kernel) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
-	rows, err := s.queries.GetMetricWorkflowCount(ctx, db.GetMetricWorkflowCountParams{
+func (k *Kernel) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
+	rows, err := k.queries.GetMetricWorkflowCount(ctx, db.GetMetricWorkflowCountParams{
 		StartMs: startEpochMs,
 		EndMs:   endEpochMs,
 	})
@@ -3446,8 +3446,8 @@ func (s *Kernel) getMetricWorkflowCount(ctx context.Context, startEpochMs, endEp
 	return metrics, nil
 }
 
-func (s *Kernel) getMetricStepCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
-	rows, err := s.queries.GetMetricStepCount(ctx, db.GetMetricStepCountParams{
+func (k *Kernel) getMetricStepCount(ctx context.Context, startEpochMs, endEpochMs int64) ([]metricData, error) {
+	rows, err := k.queries.GetMetricStepCount(ctx, db.GetMetricStepCountParams{
 		StartMs: startEpochMs,
 		EndMs:   endEpochMs,
 	})
@@ -3518,7 +3518,7 @@ func scheduleFromRow(r db.WorkflowSchedule) WorkflowSchedule {
 	return sc
 }
 
-func (s *Kernel) createSchedule(ctx context.Context, input createScheduleDBInput) error {
+func (k *Kernel) createSchedule(ctx context.Context, input createScheduleDBInput) error {
 	var workflowClassName, queueName *string
 	if input.WorkflowClassName != "" {
 		workflowClassName = &input.WorkflowClassName
@@ -3526,7 +3526,7 @@ func (s *Kernel) createSchedule(ctx context.Context, input createScheduleDBInput
 	if input.QueueName != "" {
 		queueName = &input.QueueName
 	}
-	if err := s.q(input.tx).CreateSchedule(ctx, db.CreateScheduleParams{
+	if err := k.q(input.tx).CreateSchedule(ctx, db.CreateScheduleParams{
 		ScheduleID:        input.ScheduleID,
 		ScheduleName:      input.ScheduleName,
 		WorkflowName:      input.WorkflowName,
@@ -3550,7 +3550,7 @@ type listSchedulesDBInput struct {
 	tx                   Tx // optional: run inside an existing transaction
 }
 
-func (s *Kernel) listSchedules(ctx context.Context, input listSchedulesDBInput) ([]WorkflowSchedule, error) {
+func (k *Kernel) listSchedules(ctx context.Context, input listSchedulesDBInput) ([]WorkflowSchedule, error) {
 	statuses := make([]string, len(input.Statuses))
 	for i, st := range input.Statuses {
 		statuses[i] = string(st)
@@ -3560,7 +3560,7 @@ func (s *Kernel) listSchedules(ctx context.Context, input listSchedulesDBInput) 
 		patterns[i] = p + "%"
 	}
 
-	rows, err := s.q(input.tx).ListSchedules(ctx, db.ListSchedulesParams{
+	rows, err := k.q(input.tx).ListSchedules(ctx, db.ListSchedulesParams{
 		FilterStatuses:         len(statuses) > 0,
 		Statuses:               statuses,
 		FilterWorkflowNames:    len(input.WorkflowNames) > 0,
@@ -3586,13 +3586,13 @@ type updateScheduleDBInput struct {
 	tx           Tx // optional: run inside an existing transaction
 }
 
-func (s *Kernel) updateSchedule(ctx context.Context, input updateScheduleDBInput) error {
+func (k *Kernel) updateSchedule(ctx context.Context, input updateScheduleDBInput) error {
 	var lastFiredAt *string
 	if input.LastFiredAt != nil {
 		v := input.LastFiredAt.Format(time.RFC3339Nano)
 		lastFiredAt = &v
 	}
-	if err := s.q(input.tx).UpdateSchedule(ctx, db.UpdateScheduleParams{
+	if err := k.q(input.tx).UpdateSchedule(ctx, db.UpdateScheduleParams{
 		Status:       string(input.Status),
 		LastFiredAt:  lastFiredAt,
 		ScheduleName: input.ScheduleName,
@@ -3602,8 +3602,8 @@ func (s *Kernel) updateSchedule(ctx context.Context, input updateScheduleDBInput
 	return nil
 }
 
-func (s *Kernel) updateScheduleLastFiredAt(ctx context.Context, scheduleName string, lastFiredAt time.Time) error {
-	if err := s.queries.UpdateScheduleLastFiredAt(ctx, db.UpdateScheduleLastFiredAtParams{
+func (k *Kernel) updateScheduleLastFiredAt(ctx context.Context, scheduleName string, lastFiredAt time.Time) error {
+	if err := k.queries.UpdateScheduleLastFiredAt(ctx, db.UpdateScheduleLastFiredAtParams{
 		LastFiredAt:  lastFiredAt.Format(time.RFC3339Nano),
 		ScheduleName: scheduleName,
 	}); err != nil {
@@ -3617,8 +3617,8 @@ type deleteScheduleDBInput struct {
 	tx           Tx // optional: run inside an existing transaction
 }
 
-func (s *Kernel) deleteSchedule(ctx context.Context, input deleteScheduleDBInput) error {
-	if err := s.q(input.tx).DeleteSchedule(ctx, input.ScheduleName); err != nil {
+func (k *Kernel) deleteSchedule(ctx context.Context, input deleteScheduleDBInput) error {
+	if err := k.q(input.tx).DeleteSchedule(ctx, input.ScheduleName); err != nil {
 		return fmt.Errorf("failed to delete schedule: %w", err)
 	}
 	return nil
@@ -3631,8 +3631,8 @@ type backfillScheduleDBInput struct {
 	EndTime      time.Time
 }
 
-func (s *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBInput) ([]string, error) {
-	schedules, err := s.listSchedules(ctx, listSchedulesDBInput{ScheduleNamePrefixes: []string{input.ScheduleName}})
+func (k *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBInput) ([]string, error) {
+	schedules, err := k.listSchedules(ctx, listSchedulesDBInput{ScheduleNamePrefixes: []string{input.ScheduleName}})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get schedule: %w", err)
 	}
@@ -3668,21 +3668,21 @@ func (s *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBI
 	// version. If lookup fails (e.g. no versions registered yet) leave it unset.
 	var backfillAppVersion string
 	backfillLatest, err := retryWithResult(ctx, func() (*VersionInfo, error) {
-		return s.getLatestApplicationVersion(ctx)
-	}, withRetrierLogger(s.logger))
+		return k.getLatestApplicationVersion(ctx)
+	}, withRetrierLogger(k.logger))
 	if err != nil {
-		s.logger.Error("failed to fetch latest application version for schedule backfill", "schedule", input.ScheduleName, "error", err)
+		k.logger.Error("failed to fetch latest application version for schedule backfill", "schedule", input.ScheduleName, "error", err)
 	} else if backfillLatest != nil {
 		backfillAppVersion = backfillLatest.Name
 	}
 
-	tx, err := s.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	txq := s.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(PgxTx(tx))
 
 	nextTime := scheduleEntry.Next(input.StartTime)
 	now := time.Now()
@@ -3720,7 +3720,7 @@ func (s *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBI
 			Serialization:      ser.Name(),
 			ApplicationVersion: backfillAppVersion,
 		}
-		if _, err := s.insertWorkflowStatus(ctx, insertWorkflowStatusDBInput{status: status, tx: tx}); err != nil {
+		if _, err := k.insertWorkflowStatus(ctx, insertWorkflowStatusDBInput{status: status, tx: tx}); err != nil {
 			return nil, fmt.Errorf("failed to enqueue backfill workflow %s: %w", workflowID, err)
 		}
 
@@ -3736,18 +3736,18 @@ func (s *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBI
 // triggerSchedule immediately enqueues the named schedule's workflow at the
 // current time, using the schedule's queue (or the internal queue by default)
 // and preserving its workflow_class_name and context. Returns the workflow ID.
-func (s *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (string, error) {
+func (k *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (string, error) {
 	if scheduleName == "" {
 		return "", errors.New("schedule_name is required")
 	}
 
-	tx, err := s.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	schedules, err := s.listSchedules(ctx, listSchedulesDBInput{
+	schedules, err := k.listSchedules(ctx, listSchedulesDBInput{
 		ScheduleNamePrefixes: []string{scheduleName},
 		tx:                   tx,
 	})
@@ -3786,10 +3786,10 @@ func (s *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (stri
 	// version. If lookup fails (e.g. no versions registered yet) leave it unset.
 	var triggerAppVersion string
 	triggerLatest, err := retryWithResult(ctx, func() (*VersionInfo, error) {
-		return s.getLatestApplicationVersion(ctx)
-	}, withRetrierLogger(s.logger))
+		return k.getLatestApplicationVersion(ctx)
+	}, withRetrierLogger(k.logger))
 	if err != nil {
-		s.logger.Error("failed to fetch latest application version for schedule trigger", "schedule", scheduleName, "error", err)
+		k.logger.Error("failed to fetch latest application version for schedule trigger", "schedule", scheduleName, "error", err)
 	} else if triggerLatest != nil {
 		triggerAppVersion = triggerLatest.Name
 	}
@@ -3806,7 +3806,7 @@ func (s *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (stri
 		ApplicationVersion: triggerAppVersion,
 	}
 
-	if _, err := s.insertWorkflowStatus(ctx, insertWorkflowStatusDBInput{status: status, tx: tx}); err != nil {
+	if _, err := k.insertWorkflowStatus(ctx, insertWorkflowStatusDBInput{status: status, tx: tx}); err != nil {
 		return "", fmt.Errorf("failed to enqueue triggered workflow: %w", err)
 	}
 
@@ -3829,9 +3829,9 @@ type VersionInfo struct {
 	CreatedAt int64  `json:"created_at"`        // epoch milliseconds
 }
 
-func (s *Kernel) createApplicationVersion(ctx context.Context, versionName string) error {
+func (k *Kernel) createApplicationVersion(ctx context.Context, versionName string) error {
 	nowMs := time.Now().UnixMilli()
-	if err := s.queries.CreateApplicationVersion(ctx, db.CreateApplicationVersionParams{
+	if err := k.queries.CreateApplicationVersion(ctx, db.CreateApplicationVersionParams{
 		VersionID:        uuid.New().String(),
 		VersionName:      versionName,
 		VersionTimestamp: nowMs,
@@ -3842,8 +3842,8 @@ func (s *Kernel) createApplicationVersion(ctx context.Context, versionName strin
 	return nil
 }
 
-func (s *Kernel) updateApplicationVersionTimestamp(ctx context.Context, versionName string, newTimestamp int64) error {
-	if err := s.queries.UpdateApplicationVersionTimestamp(ctx, db.UpdateApplicationVersionTimestampParams{
+func (k *Kernel) updateApplicationVersionTimestamp(ctx context.Context, versionName string, newTimestamp int64) error {
+	if err := k.queries.UpdateApplicationVersionTimestamp(ctx, db.UpdateApplicationVersionTimestampParams{
 		VersionTimestamp: newTimestamp,
 		VersionName:      versionName,
 	}); err != nil {
@@ -3852,8 +3852,8 @@ func (s *Kernel) updateApplicationVersionTimestamp(ctx context.Context, versionN
 	return nil
 }
 
-func (s *Kernel) listApplicationVersions(ctx context.Context) ([]VersionInfo, error) {
-	rows, err := s.queries.ListApplicationVersions(ctx)
+func (k *Kernel) listApplicationVersions(ctx context.Context) ([]VersionInfo, error) {
+	rows, err := k.queries.ListApplicationVersions(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list application versions: %w", err)
 	}
@@ -3869,8 +3869,8 @@ func (s *Kernel) listApplicationVersions(ctx context.Context) ([]VersionInfo, er
 	return versions, nil
 }
 
-func (s *Kernel) getLatestApplicationVersion(ctx context.Context) (*VersionInfo, error) {
-	r, err := s.queries.GetLatestApplicationVersion(ctx)
+func (k *Kernel) getLatestApplicationVersion(ctx context.Context) (*VersionInfo, error) {
+	r, err := k.queries.GetLatestApplicationVersion(ctx)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, newNoApplicationVersionsError()
@@ -3899,9 +3899,9 @@ func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) er
 	return nil
 }
 
-func (s *Kernel) resetSystemDB(ctx context.Context) error {
+func (k *Kernel) resetSystemDB(ctx context.Context) error {
 	// Get the current database configuration from the pool
-	config := PgxPool(s.pool).Config()
+	config := PgxPool(k.pool).Config()
 	if config == nil || config.ConnConfig == nil {
 		return fmt.Errorf("failed to get pool configuration")
 	}
@@ -3913,7 +3913,7 @@ func (s *Kernel) resetSystemDB(ctx context.Context) error {
 	}
 
 	// Close the current pool before dropping the database
-	s.pool.Close()
+	k.pool.Close()
 
 	// Create a new connection configuration pointing to the postgres database
 	postgresConfig := config.ConnConfig.Copy()
@@ -4129,8 +4129,8 @@ func retryWithResult[T any](ctx context.Context, fn func() (T, error), options .
 	return result, nil
 }
 
-func (s *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportChildren bool) ([]ExportedWorkflow, error) {
-	tx, err := s.pool.BeginTx(ctx, TxOptions{})
+func (k *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportChildren bool) ([]ExportedWorkflow, error) {
+	tx, err := k.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction for exportWorkflow: %w", err)
 	}
@@ -4138,7 +4138,7 @@ func (s *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportCh
 
 	workflowIDs := []string{workflowID}
 	if exportChildren {
-		children, err := s.getWorkflowChildren(ctx, getWorkflowChildrenDBInput{
+		children, err := k.getWorkflowChildren(ctx, getWorkflowChildrenDBInput{
 			workflowID: workflowID,
 			tx:         tx,
 		})
@@ -4150,7 +4150,7 @@ func (s *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportCh
 		}
 	}
 
-	txq := s.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(PgxTx(tx))
 	exported := make([]ExportedWorkflow, 0, len(workflowIDs))
 
 	for _, wfID := range workflowIDs {
@@ -4271,14 +4271,14 @@ func (s *Kernel) exportWorkflow(ctx context.Context, workflowID string, exportCh
 	return exported, nil
 }
 
-func (s *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error {
-	tx, err := s.pool.BeginTx(ctx, TxOptions{})
+func (k *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error {
+	tx, err := k.pool.BeginTx(ctx, TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction for importWorkflow: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	txq := s.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(PgxTx(tx))
 
 	for _, wf := range workflows {
 		status := wf.WorkflowStatus
