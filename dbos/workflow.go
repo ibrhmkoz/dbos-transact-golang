@@ -329,6 +329,7 @@ func storeWorkflowRegistryEntry(ctx DBOSContext, workflowFQN string, fn wrappedW
 		MaxRetries:      maxRetries,
 		Name:            customName,
 		CronSchedule:    "",
+		Retention:       _DEFAULT_WORKFLOW_RETENTION,
 	}
 
 	workflowName := workflowFQN
@@ -380,6 +381,7 @@ func registerScheduledWorkflow(ctx DBOSContext, workflowFQN, customName string, 
 
 const (
 	_DEFAULT_MAX_RECOVERY_ATTEMPTS = 100
+	_DEFAULT_WORKFLOW_RETENTION    = 24 * time.Hour
 
 	// Step retry defaults
 	_DEFAULT_STEP_BASE_INTERVAL  = 100 * time.Millisecond
@@ -432,6 +434,14 @@ func WithRateLimit(limit int, period time.Duration) WorkflowOption {
 	}
 }
 
+// WithWorkflowRetention sets how long completed workflow executions and their results are retained.
+// Registration-time option for NewWorkflow.
+func WithWorkflowRetention(retention time.Duration) WorkflowOption {
+	return func(p *workflowOptions) {
+		p.Retention = &retention
+	}
+}
+
 // Workflow is a callable, self-contained, durable workflow.
 type Workflow[P any, R any] func(ctx DBOSContext, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
 
@@ -443,20 +453,29 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...Wor
 	if !ok {
 		panic("ctx must be a DBOS context")
 	}
-	registerWorkflow(ctx, fn, opts...)
 
-	name := resolveWorkflowFunctionName(fn)
 	params := workflowOptions{}
 	for _, opt := range opts {
 		opt(&params)
 	}
+	retention := _DEFAULT_WORKFLOW_RETENTION
+	if params.Retention != nil {
+		retention = *params.Retention
+	}
+	if retention <= 0 {
+		panic("workflow retention must be greater than 0")
+	}
+
+	registerWorkflow(ctx, fn, opts...)
+
+	name := resolveWorkflowFunctionName(fn)
 	if params.WorkflowName != "" {
 		name = params.WorkflowName
 	} else if resolved, exists := c.workflowRegistry.ResolveName(name); exists {
 		name = resolved
 	}
-	if !c.workflowRegistry.SetExecutionLimits(name, params.GlobalConcurrency, params.RateLimit) {
-		panic(fmt.Sprintf("workflow %s must be registered before assigning execution limits", name))
+	if !c.workflowRegistry.SetExecutionPolicies(name, params.GlobalConcurrency, params.RateLimit, retention) {
+		panic(fmt.Sprintf("workflow %s must be registered before assigning execution policies", name))
 	}
 
 	// Register the internal debouncer workflow for this P,R so the returned callable can debounce.
@@ -644,6 +663,7 @@ type workflowOptions struct {
 	CronSchedule        string
 	GlobalConcurrency   *int
 	RateLimit           *rateLimiter
+	Retention           *time.Duration
 	WorkflowID          string
 	QueueName           string
 	ApplicationVersion  string

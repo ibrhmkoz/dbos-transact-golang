@@ -12,7 +12,7 @@ type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization str
 // workflow to the system database. Called once at launch.
 func (c *dbosContext) persistWorkflowDefinitions() error {
 	for _, entry := range c.workflowRegistry.List(false) {
-		if err := c.systemDB.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit); err != nil {
+		if err := c.systemDB.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit, entry.Retention); err != nil {
 			return fmt.Errorf("persist workflow definition %s: %w", entry.Name, err)
 		}
 	}
@@ -36,6 +36,7 @@ type WorkflowRegistryEntry struct {
 	// Execution limits applied when the workflow is claimed by a worker.
 	GlobalConcurrency *int
 	RateLimit         *rateLimiter
+	Retention         time.Duration
 }
 
 type WorkflowRegistry struct {
@@ -92,8 +93,8 @@ func (wf *WorkflowRegistry) SetCronSchedule(workflowName, cronSchedule string) b
 	return true
 }
 
-// SetExecutionLimits attaches the global concurrency and rate-limit caps to a workflow.
-func (wf *WorkflowRegistry) SetExecutionLimits(workflowName string, globalConcurrency *int, rateLimit *rateLimiter) bool {
+// SetExecutionPolicies attaches persisted execution policies to a workflow.
+func (wf *WorkflowRegistry) SetExecutionPolicies(workflowName string, globalConcurrency *int, rateLimit *rateLimiter, retention time.Duration) bool {
 	wf.mu.Lock()
 	defer wf.mu.Unlock()
 	entry, exists := wf.store[workflowName]
@@ -103,6 +104,7 @@ func (wf *WorkflowRegistry) SetExecutionLimits(workflowName string, globalConcur
 
 	entry.GlobalConcurrency = globalConcurrency
 	entry.RateLimit = rateLimit
+	entry.Retention = retention
 	wf.store[workflowName] = entry
 	return true
 }

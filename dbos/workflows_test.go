@@ -123,8 +123,9 @@ func TestCallableWorkflowDefinition(t *testing.T) {
 	workerCtx := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: true})
 
 	globalConcurrency := 7
-	producerWorkflow := NewWorkflow(producerCtx, simpleWorkflow, WithGlobalConcurrency(globalConcurrency), WithWorkflowName("definition-workflow"))
-	NewWorkflow(workerCtx, simpleWorkflow, WithGlobalConcurrency(globalConcurrency), WithWorkflowName("definition-workflow"))
+	retention := 12 * time.Hour
+	producerWorkflow := NewWorkflow(producerCtx, simpleWorkflow, WithGlobalConcurrency(globalConcurrency), WithWorkflowRetention(retention), WithWorkflowName("definition-workflow"))
+	NewWorkflow(workerCtx, simpleWorkflow, WithGlobalConcurrency(globalConcurrency), WithWorkflowRetention(retention), WithWorkflowName("definition-workflow"))
 	NewWorkflow(producerCtx, simpleWorkflowError, WithWorkflowName("other-definition-workflow"))
 	registeredWorkflows, err := ListRegisteredWorkflows(producerCtx)
 	require.NoError(t, err)
@@ -138,6 +139,10 @@ func TestCallableWorkflowDefinition(t *testing.T) {
 	require.NotNil(t, registeredDefinition)
 	require.NotNil(t, registeredDefinition.GlobalConcurrency)
 	require.Equal(t, globalConcurrency, *registeredDefinition.GlobalConcurrency)
+	require.Equal(t, retention, registeredDefinition.Retention)
+	require.PanicsWithValue(t, "workflow retention must be greater than 0", func() {
+		NewWorkflow(producerCtx, Identity[int], WithWorkflowRetention(0))
+	})
 	require.Panics(t, func() {
 		NewWorkflow(producerCtx, simpleWorkflow, WithWorkflowName("definition-workflow"))
 	})
@@ -4190,6 +4195,37 @@ func gcBlockedWorkflow(dbosCtx DBOSContext, event *Event) (string, error) {
 
 func TestGarbageCollect(t *testing.T) {
 	parallelTest(t)
+	t.Run("GarbageCollectByWorkflowDefinitionRetention", func(t *testing.T) {
+		databaseURL := backendDatabaseURL(t)
+		resetTestDatabase(t, databaseURL)
+		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: true})
+
+		retention := time.Hour
+		workflow := NewWorkflow(dbosCtx, gcTestWorkflow, WithWorkflowRetention(retention))
+		handle, err := workflow(dbosCtx, 42)
+		require.NoError(t, err)
+		_, err = handle.GetResult()
+		require.NoError(t, err)
+
+		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
+		require.NoError(t, err)
+		workflows, err := ListWorkflows(dbosCtx)
+		require.NoError(t, err)
+		require.Len(t, workflows, 1, "workflow inside its retention period must remain")
+
+		expiredAt := time.Now().Add(-2 * retention).UnixMilli()
+		sysDB := dbosCtx.(*dbosContext).systemDB.(*sysDB)
+		query := sysDB.renderSQL(`UPDATE %sworkflow_status SET completed_at = $1 WHERE workflow_uuid = $2`, sysDB.dialect.SchemaPrefix(sysDB.schema))
+		_, err = sysDB.pool.Exec(dbosCtx, query, expiredAt, handle.GetWorkflowID())
+		require.NoError(t, err)
+
+		err = dbosCtx.(*dbosContext).systemDB.garbageCollectWorkflows(dbosCtx, garbageCollectWorkflowsInput{})
+		require.NoError(t, err)
+		workflows, err = ListWorkflows(dbosCtx)
+		require.NoError(t, err)
+		require.Empty(t, workflows, "workflow past its definition retention must be deleted")
+	})
+
 	t.Run("GarbageCollectWithOffset", func(t *testing.T) {
 		// Start with clean database for precise workflow counting
 		databaseURL := backendDatabaseURL(t)

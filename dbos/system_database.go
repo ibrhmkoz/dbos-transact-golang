@@ -44,7 +44,7 @@ type systemDatabase interface {
 	deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error
 	resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error)
 	forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error)
-	upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter) error
+	upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error
 
 	getDeduplicatedWorkflow(ctx context.Context, queueName, deduplicationID string) (*string, error)
 
@@ -307,6 +307,9 @@ var migration37SQL string
 //go:embed migrations/38_create_workflow_definitions.sql
 var migration38SQL string
 
+//go:embed migrations/39_add_workflow_retention.sql
+var migration39SQL string
+
 type migrationFile struct {
 	version int64
 	sql     string
@@ -411,6 +414,7 @@ func buildMigrations(schema string, isCockroach bool) []migrationFile {
 		{version: 36, sql: fmt.Sprintf(migration36SQL, sanitizedSchema, sanitizedSchema)},
 		{version: 37, sql: fmt.Sprintf(migration37SQL, c, sanitizedSchema), online: !isCockroach},
 		{version: 38, sql: fmt.Sprintf(migration38SQL, sanitizedSchema, c, sanitizedSchema, c, sanitizedSchema)},
+		{version: 39, sql: fmt.Sprintf(migration39SQL, sanitizedSchema)},
 	}
 }
 
@@ -1750,8 +1754,23 @@ func (s *sysDB) garbageCollectWorkflows(ctx context.Context, input garbageCollec
 		}
 	}
 
-	// If no cutoff is determined, no garbage collection is needed
+	// Without an administrative cutoff, enforce each workflow definition's retention policy.
 	if cutoffTimestamp == nil {
+		query := s.renderSQL(`DELETE FROM %sworkflow_status AS ws
+			  WHERE ws.completed_at IS NOT NULL
+			    AND EXISTS (
+			      SELECT 1
+			      FROM %sworkflow_definitions AS wd
+			      WHERE wd.workflow_name = ws.name
+			        AND ws.completed_at < $1 - wd.workflow_retention_ms
+			    )`, s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
+
+		commandTag, err := s.pool.Exec(ctx, query, time.Now().UnixMilli())
+		if err != nil {
+			return fmt.Errorf("failed to garbage collect workflows by definition retention: %w", err)
+		}
+		deletedCount, _ := commandTag.RowsAffected()
+		s.logger.Info("Garbage collected workflows by definition retention", "deleted_count", deletedCount)
 		return nil
 	}
 
@@ -3973,7 +3992,7 @@ type dequeuedWorkflow struct {
 	serialization string
 }
 
-func (s *sysDB) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter) error {
+func (s *sysDB) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
 	var globalConcurrency, rateLimit, ratePeriodMs any
 	if concurrency != nil {
 		globalConcurrency = *concurrency
@@ -3983,13 +4002,14 @@ func (s *sysDB) upsertWorkflowDefinition(ctx context.Context, workflowName strin
 		ratePeriodMs = rl.period.Milliseconds()
 	}
 	query := s.renderSQL(`
-		INSERT INTO %sworkflow_definitions (workflow_name, global_concurrency, rate_limit, rate_period_ms)
-		VALUES ($1, $2, $3, $4)
+		INSERT INTO %sworkflow_definitions (workflow_name, global_concurrency, rate_limit, rate_period_ms, workflow_retention_ms)
+		VALUES ($1, $2, $3, $4, $5)
 		ON CONFLICT (workflow_name) DO UPDATE SET
 			global_concurrency = EXCLUDED.global_concurrency,
 			rate_limit = EXCLUDED.rate_limit,
-			rate_period_ms = EXCLUDED.rate_period_ms`, s.dialect.SchemaPrefix(s.schema))
-	_, err := s.pool.Exec(ctx, query, workflowName, globalConcurrency, rateLimit, ratePeriodMs)
+			rate_period_ms = EXCLUDED.rate_period_ms,
+			workflow_retention_ms = EXCLUDED.workflow_retention_ms`, s.dialect.SchemaPrefix(s.schema))
+	_, err := s.pool.Exec(ctx, query, workflowName, globalConcurrency, rateLimit, ratePeriodMs, retention.Milliseconds())
 	return err
 }
 

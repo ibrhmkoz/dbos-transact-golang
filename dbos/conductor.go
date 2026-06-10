@@ -568,35 +568,33 @@ func (c *conductor) handleRetentionRequest(data []byte, requestID string) error 
 	success := true
 	var errorMsg *string
 
-	// Handle garbage collection if parameters are provided
-	if req.Body.GCCutoffEpochMs != nil || req.Body.GCRowsThreshold != nil {
-		var cutoffMs *int64
-		if req.Body.GCCutoffEpochMs != nil {
-			ms := int64(*req.Body.GCCutoffEpochMs)
-			cutoffMs = &ms
-		}
+	// Always run GC so an otherwise empty retention request enforces workflow-definition retention.
+	var cutoffMs *int64
+	if req.Body.GCCutoffEpochMs != nil {
+		ms := int64(*req.Body.GCCutoffEpochMs)
+		cutoffMs = &ms
+	}
 
-		var rowsThreshold *int
-		if req.Body.GCRowsThreshold != nil {
-			rowsThreshold = req.Body.GCRowsThreshold
-		}
+	var rowsThreshold *int
+	if req.Body.GCRowsThreshold != nil {
+		rowsThreshold = req.Body.GCRowsThreshold
+	}
 
-		input := garbageCollectWorkflowsInput{
-			cutoffEpochTimestampMs: cutoffMs,
-			rowsThreshold:          rowsThreshold,
-		}
+	input := garbageCollectWorkflowsInput{
+		cutoffEpochTimestampMs: cutoffMs,
+		rowsThreshold:          rowsThreshold,
+	}
 
-		err := retry(c.dbosCtx, func() error {
-			return c.dbosCtx.systemDB.garbageCollectWorkflows(c.dbosCtx, input)
-		}, withRetrierLogger(c.logger))
-		if err != nil {
-			c.logger.Error("Failed to garbage collect workflows", "error", err)
-			errStr := fmt.Sprintf("failed to garbage collect workflows: %v", err)
-			errorMsg = &errStr
-			success = false
-		} else {
-			c.logger.Info("Successfully garbage collected workflows", "cutoff_ms", cutoffMs, "rows_threshold", rowsThreshold)
-		}
+	err := retry(c.dbosCtx, func() error {
+		return c.dbosCtx.systemDB.garbageCollectWorkflows(c.dbosCtx, input)
+	}, withRetrierLogger(c.logger))
+	if err != nil {
+		c.logger.Error("Failed to garbage collect workflows", "error", err)
+		errStr := fmt.Sprintf("failed to garbage collect workflows: %v", err)
+		errorMsg = &errStr
+		success = false
+	} else {
+		c.logger.Info("Successfully garbage collected workflows", "cutoff_ms", cutoffMs, "rows_threshold", rowsThreshold)
 	}
 
 	// Handle timeout enforcement if parameter is provided and garbage collection succeeded
