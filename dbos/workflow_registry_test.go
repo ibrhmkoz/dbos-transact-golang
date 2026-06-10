@@ -17,6 +17,7 @@ func TestWorkflowRegistry(t *testing.T) {
 
 	stored, exists := registry.LoadOrStore(first.FQN, first)
 	require.False(t, exists)
+	first.Name = first.FQN
 	assert.Equal(t, first, stored)
 
 	found, exists := registry.Load(first.FQN)

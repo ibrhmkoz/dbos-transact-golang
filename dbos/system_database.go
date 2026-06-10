@@ -50,8 +50,6 @@ type systemDatabase interface {
 
 	// Child workflows
 	getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error)
-	recordChildWorkflow(ctx context.Context, input recordChildWorkflowDBInput) error
-	checkChildWorkflow(ctx context.Context, workflowUUID string, functionID int) (*string, error)
 
 	// Steps
 	recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error
@@ -312,6 +310,9 @@ var migration38SQL string
 //go:embed migrations/39_add_workflow_retention.sql
 var migration39SQL string
 
+//go:embed migrations/40_drop_child_workflow_id.sql
+var migration40SQL string
+
 type migrationFile struct {
 	version int64
 	sql     string
@@ -417,6 +418,7 @@ func buildMigrations(schema string, isCockroach bool) []migrationFile {
 		{version: 37, sql: fmt.Sprintf(migration37SQL, c, sanitizedSchema), online: !isCockroach},
 		{version: 38, sql: fmt.Sprintf(migration38SQL, sanitizedSchema, c, sanitizedSchema, c, sanitizedSchema)},
 		{version: 39, sql: fmt.Sprintf(migration39SQL, sanitizedSchema)},
+		{version: 40, sql: fmt.Sprintf(migration40SQL, sanitizedSchema)},
 	}
 }
 
@@ -2053,8 +2055,8 @@ func (s *sysDB) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (st
 	// If startStep > 0, copy the original workflow's outputs into the forked workflow
 	if input.startStep > 0 {
 		copyOutputsQuery := s.renderSQL(`INSERT INTO %soperation_outputs
-			(workflow_uuid, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms)
-			SELECT $1, function_id, output, error, function_name, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms
+			(workflow_uuid, function_id, output, error, function_name, started_at_epoch_ms, completed_at_epoch_ms)
+			SELECT $1, function_id, output, error, function_name, started_at_epoch_ms, completed_at_epoch_ms
 			FROM %soperation_outputs
 			WHERE workflow_uuid = $2 AND function_id < $3`, s.dialect.SchemaPrefix(s.schema), s.dialect.SchemaPrefix(s.schema))
 
@@ -2170,16 +2172,15 @@ func (s *sysDB) awaitWorkflowResult(ctx context.Context, workflowID string, poll
 }
 
 type recordOperationResultDBInput struct {
-	workflowID      string
-	childWorkflowID string
-	stepID          int
-	stepName        string
-	output          *string
-	errStr          *string
-	tx              Tx
-	startedAt       time.Time
-	completedAt     time.Time
-	serialization   string
+	workflowID    string
+	stepID        int
+	stepName      string
+	output        *string
+	errStr        *string
+	tx            Tx
+	startedAt     time.Time
+	completedAt   time.Time
+	serialization string
 }
 
 func (s *sysDB) recordOperationResult(ctx context.Context, input recordOperationResultDBInput) error {
@@ -2189,15 +2190,6 @@ func (s *sysDB) recordOperationResult(ctx context.Context, input recordOperation
 	columns := []string{"workflow_uuid", "function_id", "output", "error", "function_name", "started_at_epoch_ms", "completed_at_epoch_ms", "serialization"}
 	placeholders := []string{"$1", "$2", "$3", "$4", "$5", "$6", "$7", "$8"}
 	args := []any{input.workflowID, input.stepID, input.output, input.errStr, input.stepName, startedAtMs, completedAtMs, input.serialization}
-	argCounter := 8
-
-	if input.childWorkflowID != "" {
-		columns = append(columns, "child_workflow_id")
-		argCounter++
-		placeholders = append(placeholders, fmt.Sprintf("$%d", argCounter))
-		args = append(args, input.childWorkflowID)
-	}
-
 	query := s.renderSQL(`INSERT INTO %soperation_outputs (%s) VALUES (%s)`,
 		s.dialect.SchemaPrefix(s.schema), strings.Join(columns, ", "), strings.Join(placeholders, ", "))
 
@@ -2216,70 +2208,6 @@ func (s *sysDB) recordOperationResult(ctx context.Context, input recordOperation
 	}
 
 	return nil
-}
-
-/*******************************/
-/******* CHILD WORKFLOWS ********/
-/*******************************/
-
-type recordChildWorkflowDBInput struct {
-	parentWorkflowID string
-	childWorkflowID  string
-	stepID           int
-	stepName         string
-	tx               Tx
-}
-
-func (s *sysDB) recordChildWorkflow(ctx context.Context, input recordChildWorkflowDBInput) error {
-	query := s.renderSQL(`INSERT INTO %soperation_outputs
-            (workflow_uuid, function_id, function_name, child_workflow_id)
-            VALUES ($1, $2, $3, $4)`, s.dialect.SchemaPrefix(s.schema))
-
-	var result Result
-	var err error
-	if input.tx != nil {
-		result, err = input.tx.Exec(ctx, query,
-			input.parentWorkflowID, input.stepID, input.stepName, input.childWorkflowID)
-	} else {
-		result, err = s.pool.Exec(ctx, query,
-			input.parentWorkflowID, input.stepID, input.stepName, input.childWorkflowID)
-	}
-
-	if err != nil {
-		if s.dialect.IsUniqueViolation(err) {
-			return fmt.Errorf(
-				"child workflow %s already registered for parent workflow %s (operation ID: %d). Is your workflow deterministic?",
-				input.childWorkflowID, input.parentWorkflowID, input.stepID)
-		}
-		return fmt.Errorf("failed to record child workflow: %w", err)
-	}
-
-	n, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("failed to read rows affected after recording child workflow: %w", err)
-	}
-	if n == 0 {
-		s.logger.Warn("RecordChildWorkflow No rows were affected by the insert")
-	}
-
-	return nil
-}
-
-func (s *sysDB) checkChildWorkflow(ctx context.Context, workflowID string, functionID int) (*string, error) {
-	query := s.renderSQL(`SELECT child_workflow_id
-              FROM %soperation_outputs
-              WHERE workflow_uuid = $1 AND function_id = $2`, s.dialect.SchemaPrefix(s.schema))
-
-	var childWorkflowID *string
-	err := s.pool.QueryRow(ctx, query, workflowID, functionID).Scan(&childWorkflowID)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("failed to check child workflow: %w", err)
-	}
-
-	return childWorkflowID, nil
 }
 
 // getDeduplicatedWorkflow returns the ID of the workflow currently holding the
@@ -2396,14 +2324,13 @@ func (s *sysDB) checkOperationExecution(ctx context.Context, input checkOperatio
 
 // StepInfo contains information about a workflow step execution.
 type stepInfo struct {
-	StepID          int       // The sequential ID of the step within the workflow
-	StepName        string    // The name of the step function
-	Output          *string   // The output returned by the step (if any)
-	Error           error     // The error returned by the step (if any)
-	ChildWorkflowID string    // The ID of a child workflow spawned by this step (if applicable)
-	StartedAt       time.Time // When the step execution started
-	CompletedAt     time.Time // When the step execution completed
-	Serialization   string    // The serialization format used for this step
+	StepID        int       // The sequential ID of the step within the workflow
+	StepName      string    // The name of the step function
+	Output        *string   // The output returned by the step (if any)
+	Error         error     // The error returned by the step (if any)
+	StartedAt     time.Time // When the step execution started
+	CompletedAt   time.Time // When the step execution completed
+	Serialization string    // The serialization format used for this step
 }
 
 type getWorkflowStepsInput struct {
@@ -2412,7 +2339,7 @@ type getWorkflowStepsInput struct {
 }
 
 func (s *sysDB) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInput) ([]stepInfo, error) {
-	query := s.renderSQL(`SELECT function_id, function_name, output, error, child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms, serialization
+	query := s.renderSQL(`SELECT function_id, function_name, output, error, started_at_epoch_ms, completed_at_epoch_ms, serialization
 			  FROM %soperation_outputs
 			  WHERE workflow_uuid = $1
 			  ORDER BY function_id ASC`, s.dialect.SchemaPrefix(s.schema))
@@ -2428,11 +2355,10 @@ func (s *sysDB) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInpu
 		var step stepInfo
 		var outputString *string
 		var errorString *string
-		var childWorkflowID *string
 		var startedAtMs, completedAtMs *int64
 		var serialization *string
 
-		err := rows.Scan(&step.StepID, &step.StepName, &outputString, &errorString, &childWorkflowID, &startedAtMs, &completedAtMs, &serialization)
+		err := rows.Scan(&step.StepID, &step.StepName, &outputString, &errorString, &startedAtMs, &completedAtMs, &serialization)
 		if err != nil {
 			return nil, fmt.Errorf("failed to scan step row: %w", err)
 		}
@@ -2458,11 +2384,6 @@ func (s *sysDB) getWorkflowSteps(ctx context.Context, input getWorkflowStepsInpu
 		// Convert error string to error if present
 		if errorString != nil && *errorString != "" {
 			step.Error = errors.New(*errorString)
-		}
-
-		// Set child workflow ID if present
-		if childWorkflowID != nil {
-			step.ChildWorkflowID = *childWorkflowID
 		}
 
 		steps = append(steps, step)
@@ -5357,7 +5278,7 @@ func (s *sysDB) exportWorkflow(ctx context.Context, workflowID string, exportChi
 
 		// Export operation_outputs
 		outputsQuery := s.renderSQL(`SELECT workflow_uuid, function_id, function_name, output, error,
-				child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms
+				started_at_epoch_ms, completed_at_epoch_ms
 			FROM %soperation_outputs WHERE workflow_uuid = $1`, s.dialect.SchemaPrefix(s.schema))
 
 		outputRows, err := tx.Query(ctx, outputsQuery, wfID)
@@ -5368,9 +5289,9 @@ func (s *sysDB) exportWorkflow(ctx context.Context, workflowID string, exportChi
 		for outputRows.Next() {
 			var opWfUUID, opFuncName *string
 			var opFuncID *int
-			var opOutput, opError, opChildWfID *string
+			var opOutput, opError *string
 			var opStartedAt, opCompletedAt *int64
-			if err := outputRows.Scan(&opWfUUID, &opFuncID, &opFuncName, &opOutput, &opError, &opChildWfID, &opStartedAt, &opCompletedAt); err != nil {
+			if err := outputRows.Scan(&opWfUUID, &opFuncID, &opFuncName, &opOutput, &opError, &opStartedAt, &opCompletedAt); err != nil {
 				scanErr := fmt.Errorf("failed to scan operation_outputs row for %s: %w", wfID, err)
 				if cerr := outputRows.Close(); cerr != nil {
 					return nil, errors.Join(scanErr, fmt.Errorf("close operation_outputs rows: %w", cerr))
@@ -5383,7 +5304,6 @@ func (s *sysDB) exportWorkflow(ctx context.Context, workflowID string, exportChi
 				"function_name":         opFuncName,
 				"output":                opOutput,
 				"error":                 opError,
-				"child_workflow_id":     opChildWfID,
 				"started_at_epoch_ms":   opStartedAt,
 				"completed_at_epoch_ms": opCompletedAt,
 			})
@@ -5547,14 +5467,13 @@ func (s *sysDB) importWorkflow(ctx context.Context, workflows []ExportedWorkflow
 		for _, op := range wf.OperationOutputs {
 			insertOpQuery := s.renderSQL(`INSERT INTO %soperation_outputs (
 					workflow_uuid, function_id, function_name, output, error,
-					child_workflow_id, started_at_epoch_ms, completed_at_epoch_ms
-				) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+					started_at_epoch_ms, completed_at_epoch_ms
+				) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
 				s.dialect.SchemaPrefix(s.schema))
 
 			_, err := tx.Exec(ctx, insertOpQuery,
 				op["workflow_uuid"], op["function_id"], op["function_name"],
-				op["output"], op["error"], op["child_workflow_id"],
-				op["started_at_epoch_ms"], op["completed_at_epoch_ms"],
+				op["output"], op["error"], op["started_at_epoch_ms"], op["completed_at_epoch_ms"],
 			)
 			if err != nil {
 				return fmt.Errorf("failed to import operation_outputs: %w", err)

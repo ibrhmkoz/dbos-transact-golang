@@ -102,7 +102,6 @@ type AdminWorkflow struct {
 type AdminWorkflowStep struct {
 	FunctionID         int    `json:"function_id"`
 	FunctionName       string `json:"function_name"`
-	ChildWorkflowID    string `json:"child_workflow_id"`
 	StartedAtEpochMS   int64  `json:"started_at_epoch_ms"`
 	CompletedAtEpochMS int64  `json:"completed_at_epoch_ms"`
 	Output             string `json:"output"`

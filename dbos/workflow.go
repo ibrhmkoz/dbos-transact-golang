@@ -185,41 +185,6 @@ func newWorkflowHandle[R any](ctx DBOSContext, workflowID string) *WorkflowHandl
 	}
 }
 
-// checkGetResultExecution checks if GetResult was already executed as a step within a workflow.
-// Returns (result, found, err). Callers that need workflowState should retrieve it separately.
-func checkGetResultExecution[R any](dbosCtx context.Context) (R, bool, error) {
-	workflowState, ok := dbosCtx.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if !isWithinWorkflow {
-		return *new(R), false, nil
-	}
-	recordedOutputs, err := retryWithResult(dbosCtx, func() (*recordedResult, error) {
-		uncancelableCtx, cancel := context.WithCancel(dbosCtx)
-		defer cancel()
-		return dbosCtx.(*dbosContext).systemDB.checkOperationExecution(uncancelableCtx, checkOperationExecutionDBInput{
-			workflowID: workflowState.workflowID,
-			stepID:     workflowState.stepID + 1,
-			stepName:   "DBOS.getResult",
-		})
-	}, withRetrierLogger(dbosCtx.(*dbosContext).logger))
-	if err != nil {
-		return *new(R), false, newStepExecutionError(workflowState.workflowID, "DBOS.getResult", fmt.Errorf("Checking operation execution: %w", err))
-	}
-	if recordedOutputs != nil {
-		workflowState.nextStepID()
-		decoder, err := resolveDecoder[R](recordedOutputs.serialization, dbosCtx.(*dbosContext).serializer)
-		if err != nil {
-			return *new(R), false, fmt.Errorf("failed to resolve decoder: %w", err)
-		}
-		decodedOutput, err := decoder.Decode(recordedOutputs.output)
-		if err != nil {
-			return *new(R), false, fmt.Errorf("failed to decode operation result: %w", err)
-		}
-		return decodedOutput, true, nil
-	}
-	return *new(R), false, nil
-}
-
 type WorkflowHandle[R any] struct {
 	workflowHandle
 }
@@ -229,17 +194,6 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 	for _, opt := range opts {
 		opt(options)
 	}
-
-	// If within a workflow, check if we already ran that step
-	result, found, err := checkGetResultExecution[R](h.dbosContext)
-	if err != nil {
-		return *new(R), err
-	}
-	if found {
-		return result, nil
-	}
-
-	startTime := time.Now()
 
 	// Use timeout if specified, otherwise use DBOS context directly
 	ctx := h.dbosContext
@@ -253,10 +207,8 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 		return h.dbosContext.(*dbosContext).systemDB.awaitWorkflowResult(ctx, h.workflowID, options.pollInterval)
 	}, withRetrierLogger(h.dbosContext.(*dbosContext).logger))
 
-	completedTime := time.Now()
-
 	// awaitErr is a real DB/network/cancellation error; the workflow's recorded error is in awaitResult.errStr
-	err = awaitErr
+	err := awaitErr
 	if awaitErr == nil && awaitResult.errStr != nil {
 		err = deserializeWorkflowError(awaitResult.errStr, awaitResult.serialization)
 	}
@@ -280,29 +232,6 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 			return *new(R), fmt.Errorf("failed to deserialize workflow result: %w", deserErr)
 		}
 
-		// If we are calling GetResult inside a workflow, record the result as a step result
-		workflowState, ok := h.dbosContext.Value(workflowStateKey).(*workflowState)
-		isWithinWorkflow := ok && workflowState != nil
-		if isWithinWorkflow {
-			recordGetResultInput := recordOperationResultDBInput{
-				workflowID:      workflowState.workflowID,
-				childWorkflowID: h.workflowID,
-				stepID:          workflowState.nextStepID(),
-				output:          encodedStr,
-				errStr:          awaitResult.errStr,
-				startedAt:       startTime,
-				completedAt:     completedTime,
-				stepName:        "DBOS.getResult",
-				serialization:   storedSerialization,
-			}
-			recordResultErr := retry(h.dbosContext, func() error {
-				return h.dbosContext.(*dbosContext).systemDB.recordOperationResult(h.dbosContext, recordGetResultInput)
-			}, withRetrierLogger(h.dbosContext.(*dbosContext).logger))
-			if recordResultErr != nil {
-				h.dbosContext.(*dbosContext).logger.Error("failed to record get result", "error", recordResultErr)
-				return *new(R), newWorkflowExecutionError(workflowState.workflowID, fmt.Errorf("recording child workflow result: %w", recordResultErr))
-			}
-		}
 		return typedResult, err
 	}
 	return *new(R), err
@@ -446,7 +375,7 @@ func WithWorkflowRetention(retention time.Duration) WorkflowOption {
 type Workflow[P any, R any] func(ctx DBOSContext, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
 
 // NewWorkflow creates and registers a workflow.
-// Calling the returned function persists an execution request for an available worker.
+// Calling the returned function starts a workflow execution.
 // Execution behavior is configured with options such as WithGlobalConcurrency and WithRateLimit.
 func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
 	c, ok := ctx.(*dbosContext)
@@ -828,48 +757,21 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		params.WorkflowName = registeredWorkflow.Name
 	}
 	// A workflow is enqueued for a worker unless we are the worker dequeuing it or recovering it.
-	enqueue := !params.isDequeue && !params.isRecovery
+	enqueue := params.QueueName != "" && !params.isDequeue && !params.isRecovery
 
 	// Validate delay is only provided when enqueuing
 	if params.DelayDuration > 0 && !enqueue {
 		return nil, newWorkflowExecutionError("", fmt.Errorf("delay can only be applied when enqueuing a workflow"))
 	}
 
-	// Check if we are within a workflow (and thus a child workflow)
+	// Preserve the initiating workflow relationship for observability only.
 	parentWorkflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isChildWorkflow := ok && parentWorkflowState != nil
-
-	// Prevent spawning child workflows from within a step
-	if isChildWorkflow && parentWorkflowState.isWithinStep {
-		c.logger.Error("cannot spawn child workflow from within a step", "workflow_name", params.WorkflowName, "parent_workflow_id", parentWorkflowState.workflowID)
-		return nil, newStepExecutionError(parentWorkflowState.workflowID, params.WorkflowName, fmt.Errorf("cannot spawn child workflow from within a step"))
-	}
-
-	if isChildWorkflow {
-		// Advance step ID if we are a child workflow
-		parentWorkflowState.nextStepID()
-
-		// Propagate parent auth identity to child unless caller explicitlyoverrode  it
-		if params.AuthenticatedUser == "" {
-			params.AuthenticatedUser = parentWorkflowState.authenticatedUser
-		}
-		if params.AssumedRole == "" {
-			params.AssumedRole = parentWorkflowState.assumedRole
-		}
-		if len(params.AuthenticatedRoles) == 0 {
-			params.AuthenticatedRoles = parentWorkflowState.authenticatedRoles
-		}
-	}
+	hasParentWorkflow := ok && parentWorkflowState != nil
 
 	// Generate an ID for the workflow if not provided
 	var workflowID string
 	if params.WorkflowID == "" {
-		if isChildWorkflow {
-			stepID := parentWorkflowState.stepID
-			workflowID = fmt.Sprintf("%s-%d", parentWorkflowState.workflowID, stepID)
-		} else {
-			workflowID = uuid.New().String()
-		}
+		workflowID = uuid.New().String()
 	} else {
 		workflowID = params.WorkflowID
 	}
@@ -877,21 +779,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 	// Create an uncancellable context for the DBOS operations
 	// This detaches it from any deadline or cancellation signal set by the user
 	uncancellableCtx := WithoutCancel(c)
-
-	// If this is a child workflow that has already been recorded in operations_output, return directly a polling handle
-	if isChildWorkflow {
-		childWorkflowID, err := retryWithResult(uncancellableCtx, func() (*string, error) {
-			return c.systemDB.checkChildWorkflow(uncancellableCtx, parentWorkflowState.workflowID, parentWorkflowState.stepID)
-		}, withRetrierLogger(c.logger))
-		if err != nil {
-			c.logger.Error("failed to check child workflow", "error", err, "parent_workflow_id", parentWorkflowState.workflowID, "step_id", parentWorkflowState.stepID)
-			return nil, newWorkflowExecutionError(parentWorkflowState.workflowID, fmt.Errorf("checking child workflow: %w", err))
-		}
-		if childWorkflowID != nil {
-			c.logger.Info("child workflow already recorded", "workflow_name", params.WorkflowName, "parent_workflow_id", parentWorkflowState.workflowID, "step_id", parentWorkflowState.stepID, "child_workflow_id", *childWorkflowID)
-			return newWorkflowHandle[any](uncancellableCtx, *childWorkflowID), nil
-		}
-	}
 
 	var status WorkflowStatusType
 	if enqueue {
@@ -977,13 +864,13 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 			return resolveEncoder(c).Name()
 		}(),
 	}
-	if isChildWorkflow {
+	if hasParentWorkflow {
 		workflowStatus.ParentWorkflowID = parentWorkflowState.workflowID
 	}
 
 	var earlyReturnPollingHandle *WorkflowHandle[any]
 	var insertStatusResult *insertWorkflowResult
-	// Init status and record child workflow relationship in a single transaction
+	// Initialize workflow status.
 	insertWorkflowStatusTx := func() error {
 		tx, err := c.systemDB.(*sysDB).pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
@@ -1006,26 +893,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 				c.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowID)
 			}
 			return newWorkflowExecutionError(workflowID, fmt.Errorf("failed to insert workflow status: %w", err))
-		}
-
-		// Record child workflow relationship if this is a child workflow
-		// We already have checked this earlier so this path should only be taken if the child is executing the first time
-		if isChildWorkflow {
-			// Get the step ID that was used for generating the child workflow ID
-			childInput := recordChildWorkflowDBInput{
-				parentWorkflowID: parentWorkflowState.workflowID,
-				childWorkflowID:  workflowID,
-				stepName:         params.WorkflowName,
-				stepID:           parentWorkflowState.stepID,
-				tx:               tx,
-			}
-			err = retry(uncancellableCtx, func() error {
-				return c.systemDB.recordChildWorkflow(uncancellableCtx, childInput)
-			}, withRetrierLogger(c.logger))
-			if err != nil {
-				c.logger.Error("failed to record child workflow", "error", err, "parent_workflow_id", parentWorkflowState.workflowID, "child_workflow_id", workflowID)
-				return newWorkflowExecutionError(parentWorkflowState.workflowID, fmt.Errorf("recording child workflow: %w", err))
-			}
 		}
 
 		var loaded bool
@@ -1064,7 +931,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 			break
 		}
 		// Now handle the case where the insert failed because the deduplication ID is already held by another workflow.
-		// We must also handle the case where a parent workflow attached to an existing child.
 		if !errors.Is(err, errDeduplicationCollision) {
 			return nil, err
 		}
@@ -1076,19 +942,6 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		}
 		if existingID == nil {
 			continue // the slot was cleared between our insert and the lookup; try to claim it
-		}
-		// Attach to the existing workflow holding the deduplication slot. For a child workflow, record
-		// the parent->child mapping at the reserved step ID so replay resolves to the same workflow.
-		if isChildWorkflow {
-			childInput := recordChildWorkflowDBInput{
-				parentWorkflowID: parentWorkflowState.workflowID,
-				childWorkflowID:  *existingID,
-				stepName:         params.WorkflowName,
-				stepID:           parentWorkflowState.stepID,
-			}
-			if err := c.systemDB.recordChildWorkflow(uncancellableCtx, childInput); err != nil {
-				return nil, newWorkflowExecutionError(parentWorkflowState.workflowID, fmt.Errorf("recording child workflow: %w", err))
-			}
 		}
 		c.logger.Info("returning handle to existing deduplicated workflow", "workflow_name", params.WorkflowName, "queue_name", params.QueueName, "deduplication_id", params.DeduplicationID, "existing_workflow_id", *existingID)
 		return newWorkflowHandle[any](uncancellableCtx, *existingID), nil
@@ -1502,6 +1355,18 @@ func Run[R any](ctx DBOSContext, fn Step[R], opts ...StepOption) (R, error) {
 		return *new(R), convertErr
 	}
 	return typedResult, err
+}
+
+// UUID returns a durable UUIDv7. Within a workflow, the generated value is recorded as a step
+// result and the same value is returned on replay.
+func UUID(ctx DBOSContext) (string, error) {
+	return Run(ctx, func(context.Context) (string, error) {
+		id, err := uuid.NewV7()
+		if err != nil {
+			return "", err
+		}
+		return id.String(), nil
+	}, WithStepName("DBOS.uuid"))
 }
 
 func (c *dbosContext) RunAsStep(fn StepFunc, opts ...StepOption) (any, error) {
@@ -3782,13 +3647,12 @@ func ListWorkflows(ctx DBOSContext, opts ...ListWorkflowsOption) ([]WorkflowStat
 }
 
 type StepInfo struct {
-	StepID          int       // The sequential ID of the step within the workflow
-	StepName        string    // The name of the step function
-	Output          any       // The output returned by the step (if any)
-	Error           error     // The error returned by the step (if any)
-	ChildWorkflowID string    // The ID of a child workflow spawned by this step (if applicable)
-	StartedAt       time.Time // When the step execution started
-	CompletedAt     time.Time // When the step execution completed
+	StepID      int       // The sequential ID of the step within the workflow
+	StepName    string    // The name of the step function
+	Output      any       // The output returned by the step (if any)
+	Error       error     // The error returned by the step (if any)
+	StartedAt   time.Time // When the step execution started
+	CompletedAt time.Time // When the step execution completed
 }
 
 // getWorkflowStepsOptions holds optional parameters for GetWorkflowSteps.
@@ -3847,12 +3711,11 @@ func (c *dbosContext) GetWorkflowSteps(workflowID string, opts ...GetWorkflowSte
 			stepErr = deserializeWorkflowError(&s, step.Serialization)
 		}
 		stepInfos[i] = StepInfo{
-			StepID:          step.StepID,
-			StepName:        step.StepName,
-			Error:           stepErr,
-			ChildWorkflowID: step.ChildWorkflowID,
-			StartedAt:       step.StartedAt,
-			CompletedAt:     step.CompletedAt,
+			StepID:      step.StepID,
+			StepName:    step.StepName,
+			Error:       stepErr,
+			StartedAt:   step.StartedAt,
+			CompletedAt: step.CompletedAt,
 		}
 	}
 

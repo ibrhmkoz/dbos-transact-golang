@@ -68,6 +68,7 @@ func (wf *WorkflowRegistry) LoadOrStore(workflowName string, entry WorkflowRegis
 	if found, exists := wf.store[workflowName]; exists {
 		return found, true
 	}
+	entry.Name = workflowName
 	wf.store[workflowName] = entry
 	wf.fqnToName[entry.FQN] = workflowName
 	return entry, false

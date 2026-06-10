@@ -371,9 +371,8 @@ func newAdminServer(ctx *dbosContext, port int) *adminServer {
 		formattedSteps := make([]map[string]any, len(steps))
 		for i, step := range steps {
 			formattedStep := map[string]any{
-				"function_id":       step.StepID,
-				"function_name":     step.StepName,
-				"child_workflow_id": step.ChildWorkflowID,
+				"function_id":   step.StepID,
+				"function_name": step.StepName,
 			}
 
 			// Add timestamps if present

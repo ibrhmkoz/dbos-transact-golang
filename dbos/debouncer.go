@@ -115,6 +115,20 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 		}
 		debouncerWorkflowID := handle.GetWorkflowID()
 
+		encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
+		if !ok {
+			return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
+		}
+		var decodedInput debouncerInput[P]
+		if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
+			return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
+		}
+
+		switch debouncerWorkflowStatus[0].Status {
+		case WorkflowStatusSuccess, WorkflowStatusError, WorkflowStatusCancelled, WorkflowStatusMaxRecoveryAttemptsExceeded:
+			return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
+		}
+
 		err = Send(ctx, debouncerWorkflowID, DebounceMessage[P]{
 			Input: input,
 			Delay: delay,
@@ -131,14 +145,6 @@ func debounceWorkflow[P any, R any](ctx DBOSContext, targetWorkflowName, interna
 			return nil, err
 		}
 
-		encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
-		if !ok {
-			return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
-		}
-		var decodedInput debouncerInput[P]
-		if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
-		}
 		return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
 	}
 }

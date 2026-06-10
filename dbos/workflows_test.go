@@ -151,7 +151,7 @@ func TestCallableWorkflowDefinition(t *testing.T) {
 	require.NoError(t, err)
 	status, err := handle.GetStatus()
 	require.NoError(t, err)
-	require.Equal(t, WorkflowStatusEnqueued, status.Status)
+	require.Equal(t, WorkflowStatusPending, status.Status)
 	require.Empty(t, status.QueueName)
 
 	require.NoError(t, Launch(workerCtx))
@@ -1111,192 +1111,6 @@ func TestChildWorkflow(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 
-	type Inheritance struct {
-		ParentID string
-		Index    int
-	}
-
-	// Create child workflows with executor
-	childWf := func(ctx DBOSContext, input Inheritance) (string, error) {
-		workflowID, err := GetWorkflowID(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to get workflow ID: %w", err)
-		}
-		expectedCurrentID := fmt.Sprintf("%s-0", input.ParentID)
-		if workflowID != expectedCurrentID {
-			return "", fmt.Errorf("expected childWf workflow ID to be %s, got %s", expectedCurrentID, workflowID)
-		}
-		// Steps of a child workflow start with an incremented step ID, because the first step ID is allocated to the child workflow
-		return Run(ctx, func(ctx context.Context) (string, error) {
-			return simpleStep(ctx)
-		})
-	}
-	childWfD := NewWorkflow(dbosCtx, childWf)
-
-	parentWf := func(ctx DBOSContext, input Inheritance) (string, error) {
-		workflowID, err := GetWorkflowID(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to get workflow ID: %w", err)
-		}
-
-		childHandle, err := childWfD(ctx, Inheritance{ParentID: workflowID})
-		if err != nil {
-			return "", fmt.Errorf("failed to run child workflow: %w", err)
-		}
-
-		// Check this wf ID is built correctly
-		expectedParentID := fmt.Sprintf("%s-%d", input.ParentID, input.Index)
-		if workflowID != expectedParentID {
-			return "", fmt.Errorf("expected parentWf workflow ID to be %s, got %s", expectedParentID, workflowID)
-		}
-		res, err := childHandle.GetResult()
-		if err != nil {
-			return "", fmt.Errorf("failed to get result from child workflow: %w", err)
-		}
-
-		// Check the steps from this workflow
-		steps, err := GetWorkflowSteps(ctx, workflowID)
-		if err != nil {
-			return "", fmt.Errorf("failed to get workflow steps: %w", err)
-		}
-		if len(steps) != 2 {
-			return "", fmt.Errorf("expected 2 recorded steps, got %d", len(steps))
-		}
-		// Verify the first step is the child workflow
-		if steps[0].StepID != 0 {
-			return "", fmt.Errorf("expected first step ID to be 0, got %d", steps[0].StepID)
-		}
-		if steps[0].StepName != runtime.FuncForPC(reflect.ValueOf(childWf).Pointer()).Name() {
-			return "", fmt.Errorf("expected first step to be child workflow, got %s", steps[0].StepName)
-		}
-		if steps[0].Output != nil {
-			return "", fmt.Errorf("expected first step output to be nil, got %s", steps[0].Output)
-		}
-		if steps[1].Error != nil {
-			return "", fmt.Errorf("expected second step error to be nil, got %s", steps[1].Error)
-		}
-		if steps[0].ChildWorkflowID != childHandle.GetWorkflowID() {
-			return "", fmt.Errorf("expected first step child workflow ID to be %s, got %s", childHandle.GetWorkflowID(), steps[0].ChildWorkflowID)
-		}
-
-		// The second step is the result from the child workflow
-		if steps[1].StepID != 1 {
-			return "", fmt.Errorf("expected second step ID to be 1, got %d", steps[1].StepID)
-		}
-		if steps[1].StepName != "DBOS.getResult" {
-			return "", fmt.Errorf("expected second step name to be getResult, got %s", steps[1].StepName)
-		}
-		var stepOutput string
-		err = json.Unmarshal([]byte(steps[1].Output.(string)), &stepOutput)
-		if err != nil {
-			return "", fmt.Errorf("failed to unmarshal step output: %w", err)
-		}
-		if stepOutput != "from step" {
-			return "", fmt.Errorf("expected second step output to be 'from step', got %s", steps[1].Output)
-		}
-		if steps[1].Error != nil {
-			return "", fmt.Errorf("expected second step error to be nil, got %s", steps[1].Error)
-		}
-		if steps[1].ChildWorkflowID != childHandle.GetWorkflowID() {
-			return "", fmt.Errorf("expected second step child workflow ID to be %s, got %s", childHandle.GetWorkflowID(), steps[1].ChildWorkflowID)
-		}
-
-		return res, nil
-	}
-	parentWfD := NewWorkflow(dbosCtx, parentWf)
-
-	grandParentWf := func(ctx DBOSContext, r int) (string, error) {
-		workflowID, err := GetWorkflowID(ctx)
-		if err != nil {
-			return "", fmt.Errorf("failed to get workflow ID: %w", err)
-		}
-
-		// 2 steps per loop: spawn child and get result
-		for i := range r {
-			expectedStepID := (2 * i)
-			parentHandle, err := parentWfD(ctx, Inheritance{ParentID: workflowID, Index: expectedStepID})
-			if err != nil {
-				return "", fmt.Errorf("failed to run parent workflow: %w", err)
-			}
-
-			// Verify parent (this workflow's child) ID follows the pattern: parentID-functionID
-			parentWorkflowID := parentHandle.GetWorkflowID()
-
-			expectedParentID := fmt.Sprintf("%s-%d", workflowID, expectedStepID)
-			if parentWorkflowID != expectedParentID {
-				return "", fmt.Errorf("expected parent workflow ID to be %s, got %s", expectedParentID, parentWorkflowID)
-			}
-
-			result, err := parentHandle.GetResult()
-			if err != nil {
-				return "", fmt.Errorf("failed to get result from parent workflow: %w", err)
-			}
-			if result != "from step" {
-				return "", fmt.Errorf("expected result from parent workflow to be 'from step', got %s", result)
-			}
-
-		}
-		// Check the steps from this workflow
-		steps, err := GetWorkflowSteps(ctx, workflowID)
-		if err != nil {
-			return "", fmt.Errorf("failed to get workflow steps: %w", err)
-		}
-		if len(steps) != r*2 {
-			return "", fmt.Errorf("expected 2 recorded steps, got %d", len(steps))
-		}
-
-		// We do expect the steps to be returned in the order of execution, which seems to be the case even without an ORDER BY function_id ASC clause in the SQL query
-		for i := 0; i < r; i += 2 {
-			expectedStepID := i
-			expectedChildID := fmt.Sprintf("%s-%d", workflowID, i)
-			childWfStep := steps[i]
-			getResultStep := steps[i+1]
-
-			if childWfStep.StepID != expectedStepID {
-				return "", fmt.Errorf("expected child wf step ID to be %d, got %d", expectedStepID, childWfStep.StepID)
-			}
-			if getResultStep.StepID != expectedStepID+1 {
-				return "", fmt.Errorf("expected get result step ID to be %d, got %d", expectedStepID+1, getResultStep.StepID)
-			}
-			expectedName := runtime.FuncForPC(reflect.ValueOf(parentWf).Pointer()).Name()
-			if childWfStep.StepName != expectedName {
-				return "", fmt.Errorf("expected child wf step name to be %s, got %s", expectedName, childWfStep.StepName)
-			}
-			expectedName = "DBOS.getResult"
-			if getResultStep.StepName != expectedName {
-				return "", fmt.Errorf("expected get result step name to be %s, got %s", expectedName, getResultStep.StepName)
-			}
-
-			if childWfStep.Output != nil {
-				return "", fmt.Errorf("expected child wf step output to be nil, got %s", childWfStep.Output)
-			}
-			var stepOutput string
-			err = json.Unmarshal([]byte(getResultStep.Output.(string)), &stepOutput)
-			if err != nil {
-				return "", fmt.Errorf("failed to unmarshal step output: %w", err)
-			}
-			if stepOutput != "from step" {
-				return "", fmt.Errorf("expected get result step output to be 'from step', got %s", getResultStep.Output)
-			}
-
-			if childWfStep.Error != nil {
-				return "", fmt.Errorf("expected child wf step error to be nil, got %s", childWfStep.Error)
-			}
-			if getResultStep.Error != nil {
-				return "", fmt.Errorf("expected get result step error to be nil, got %s", getResultStep.Error)
-			}
-			if childWfStep.ChildWorkflowID != expectedChildID {
-				return "", fmt.Errorf("expected step child workflow ID to be %s, got %s", expectedChildID, childWfStep.ChildWorkflowID)
-			}
-			if getResultStep.ChildWorkflowID != expectedChildID {
-				return "", fmt.Errorf("expected step child workflow ID to be %s, got %s", expectedChildID, getResultStep.ChildWorkflowID)
-			}
-		}
-
-		return "", nil
-	}
-	grandParentWfD := NewWorkflow(dbosCtx, grandParentWf)
-
 	// Register workflows needed for ChildWorkflowWithCustomID test
 	simpleChildWf := func(dbosCtx DBOSContext, input string) (string, error) {
 		return Run(dbosCtx, func(ctx context.Context) (string, error) {
@@ -1305,46 +1119,7 @@ func TestChildWorkflow(t *testing.T) {
 	}
 	simpleChildWfD := NewWorkflow(dbosCtx, simpleChildWf)
 
-	// Register workflows needed for RecoveredChildWorkflowPollingHandle test
-	var pollingHandleCompleteEvent *Event
-	pollingHandleChildWf := func(dbosCtx DBOSContext, input string) (string, error) {
-		// Wait if event is set
-		if pollingHandleCompleteEvent != nil {
-			pollingHandleCompleteEvent.Wait()
-		}
-		return input + "-result", nil
-	}
-	pollingHandleChildWfD := NewWorkflow(dbosCtx, pollingHandleChildWf)
-
-	var pollingCounter int
-	var pollingHandleStartEvent *Event
-	pollingHandleParentWf := func(ctx DBOSContext, input string) (string, error) {
-		pollingCounter++
-
-		// Run child workflow with a known ID
-		childHandle, err := pollingHandleChildWfD(ctx, "child-input", WithWorkflowID("known-child-workflow-id"))
-		if err != nil {
-			return "", fmt.Errorf("failed to run child workflow: %w", err)
-		}
-
-		switch pollingCounter {
-		case 1:
-			// Signal the child workflow is started
-			if pollingHandleStartEvent != nil {
-				pollingHandleStartEvent.Set()
-			}
-
-			result, err := childHandle.GetResult()
-			if err != nil {
-				return "", fmt.Errorf("failed to get result from child workflow: %w", err)
-			}
-			return result, nil
-		}
-		return "", nil
-	}
-	pollingHandleParentWfD := NewWorkflow(dbosCtx, pollingHandleParentWf)
-
-	// Register workflows needed for ChildWorkflowCannotBeSpawnedFromStep test
+	// Register workflows needed for WorkflowCanBeStartedFromStep test
 	childWfForStepTest := func(dbosCtx DBOSContext, input string) (string, error) {
 		return "child-result", nil
 	}
@@ -1353,11 +1128,11 @@ func TestChildWorkflow(t *testing.T) {
 	parentWfForStepTest := func(ctx DBOSContext, input string) (string, error) {
 		return Run(ctx, func(context context.Context) (string, error) {
 			dbosCtx := context.(DBOSContext)
-			_, err := childWfForStepTestD(dbosCtx, input)
+			handle, err := childWfForStepTestD(dbosCtx, input)
 			if err != nil {
 				return "", err
 			}
-			return "should-not-reach", nil
+			return handle.GetWorkflowID(), nil
 		})
 	}
 	parentWfForStepTestD := NewWorkflow(dbosCtx, parentWfForStepTest)
@@ -1450,60 +1225,6 @@ func TestChildWorkflow(t *testing.T) {
 	err := Launch(dbosCtx)
 	require.NoError(t, err, "failed to launch DBOS")
 
-	t.Run("ChildWorkflowIDGeneration", func(t *testing.T) {
-		r := 3
-		h, err := grandParentWfD(dbosCtx, r)
-		require.NoError(t, err, "failed to execute grand parent workflow")
-		_, err = h.GetResult()
-		require.NoError(t, err, "failed to get result from grand parent workflow")
-
-		// Verify ParentWorkflowID along the chain: grandparent -> parent -> child
-		grandParentID := h.GetWorkflowID()
-		grandParentStatus, err := h.GetStatus()
-		require.NoError(t, err, "failed to get grandparent workflow status")
-		require.Empty(t, grandParentStatus.ParentWorkflowID, "top-level grandparent should have no ParentWorkflowID")
-
-		parentID := fmt.Sprintf("%s-0", grandParentID)
-		parentHandle, err := RetrieveWorkflow[string](dbosCtx, parentID)
-		require.NoError(t, err, "failed to retrieve parent workflow")
-		parentStatus, err := parentHandle.GetStatus()
-		require.NoError(t, err, "failed to get parent workflow status")
-		require.Equal(t, grandParentID, parentStatus.ParentWorkflowID, "parent workflow ParentWorkflowID should be grandparent's ID")
-
-		childID := fmt.Sprintf("%s-0", parentID)
-		childHandle, err := RetrieveWorkflow[string](dbosCtx, childID)
-		require.NoError(t, err, "failed to retrieve child workflow")
-		childStatus, err := childHandle.GetStatus()
-		require.NoError(t, err, "failed to get child workflow status")
-		require.Equal(t, parentID, childStatus.ParentWorkflowID, "child workflow ParentWorkflowID should be parent's ID")
-
-		// CompletedAt is populated once these workflows reach a terminal state.
-		require.False(t, grandParentStatus.CompletedAt.IsZero(), "completed grandparent should have CompletedAt set")
-		require.False(t, childStatus.CompletedAt.IsZero(), "completed child should have CompletedAt set")
-
-		// WithHasParent filters on the presence of a parent workflow.
-		withParent, err := ListWorkflows(dbosCtx, WithHasParent(true))
-		require.NoError(t, err)
-		hasParentIDs := make(map[string]bool)
-		for _, wf := range withParent {
-			require.NotEmpty(t, wf.ParentWorkflowID, "WithHasParent(true) must only return workflows with a parent")
-			hasParentIDs[wf.ID] = true
-		}
-		assert.True(t, hasParentIDs[parentID], "parent workflow should be returned by WithHasParent(true)")
-		assert.True(t, hasParentIDs[childID], "child workflow should be returned by WithHasParent(true)")
-		assert.False(t, hasParentIDs[grandParentID], "top-level grandparent must not be returned by WithHasParent(true)")
-
-		withoutParent, err := ListWorkflows(dbosCtx, WithHasParent(false))
-		require.NoError(t, err)
-		noParentIDs := make(map[string]bool)
-		for _, wf := range withoutParent {
-			require.Empty(t, wf.ParentWorkflowID, "WithHasParent(false) must only return workflows without a parent")
-			noParentIDs[wf.ID] = true
-		}
-		assert.True(t, noParentIDs[grandParentID], "grandparent should be returned by WithHasParent(false)")
-		assert.False(t, noParentIDs[childID], "child workflow must be excluded by WithHasParent(false)")
-	})
-
 	t.Run("ChildWorkflowWithCustomID", func(t *testing.T) {
 		customChildID := uuid.NewString()
 
@@ -1514,20 +1235,10 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err, "failed to get result from parent workflow")
 		require.Equal(t, "from step", result)
 
-		// Verify the child workflow was recorded as step 0
+		// Starting and awaiting the workflow do not create parent steps.
 		steps, err := GetWorkflowSteps(dbosCtx, parentHandle.GetWorkflowID())
 		require.NoError(t, err, "failed to get workflow steps")
-		require.Len(t, steps, 2, "expected 2 recorded steps, got %d", len(steps))
-
-		// Verify first step is the child workflow with stepID=0
-		require.Equal(t, 0, steps[0].StepID)
-		require.Equal(t, runtime.FuncForPC(reflect.ValueOf(simpleChildWf).Pointer()).Name(), steps[0].StepName)
-		require.Equal(t, customChildID, steps[0].ChildWorkflowID)
-
-		// Verify second step is the getResult call with stepID=1
-		require.Equal(t, 1, steps[1].StepID)
-		require.Equal(t, "DBOS.getResult", steps[1].StepName)
-		require.Equal(t, customChildID, steps[1].ChildWorkflowID)
+		require.Empty(t, steps)
 
 		// Verify ParentWorkflowID: parent has none, child has parent's ID
 		parentStatus, err := parentHandle.GetStatus()
@@ -1541,65 +1252,17 @@ func TestChildWorkflow(t *testing.T) {
 		require.Equal(t, parentHandle.GetWorkflowID(), childStatus.ParentWorkflowID, "child workflow ParentWorkflowID should be parent's workflow ID")
 	})
 
-	t.Run("RecoveredChildWorkflowPollingHandle", func(t *testing.T) {
-		// Reset counter and set up events for this test
-		pollingCounter = 0
-		pollingHandleStartEvent = NewEvent()
-		pollingHandleCompleteEvent = NewEvent()
-		knownChildID := "known-child-workflow-id"
-		knownParentID := "known-parent-workflow-id"
-
-		// Execute parent workflow - it will block after starting the child
-		parentHandle, err := pollingHandleParentWfD(dbosCtx, "parent-input", WithWorkflowID(knownParentID))
-		require.NoError(t, err, "failed to start parent workflow")
-
-		// Wait for the workflows to start
-		pollingHandleStartEvent.Wait()
-
-		// Recover pending workflows - this should give us both parent and child handles
-		recoveredHandles, err := recoverPendingWorkflows(dbosCtx.(*dbosContext), []string{"local"})
-		require.NoError(t, err, "failed to recover pending workflows")
-
-		// Should have recovered both parent and child workflows
-		require.Len(t, recoveredHandles, 2, "expected 2 recovered handles (parent and child), got %d", len(recoveredHandles))
-
-		// Find the child handle and verify it's a polling handle with the correct ID
-		var childRecoveredHandle *WorkflowHandle[any]
-		for _, handle := range recoveredHandles {
-			if handle.GetWorkflowID() == knownChildID {
-				childRecoveredHandle = handle
-				break
-			}
-		}
-
-		require.NotNil(t, childRecoveredHandle, "failed to find recovered child workflow handle with ID %s", knownChildID)
-
-		// Complete both workflows
-		pollingHandleCompleteEvent.Set()
-		result, err := parentHandle.GetResult()
-		require.NoError(t, err, "failed to get result from original parent workflow")
-		require.Equal(t, "child-input-result", result)
-		childResult, err := childRecoveredHandle.GetResult()
-		require.NoError(t, err, "failed to get result from recovered child handle")
-		require.Equal(t, result, childResult)
-	})
-
-	t.Run("ChildWorkflowCannotBeSpawnedFromStep", func(t *testing.T) {
-		// Execute the workflow - should fail when step tries to spawn child workflow
+	t.Run("WorkflowCanBeStartedFromStep", func(t *testing.T) {
 		handle, err := parentWfForStepTestD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to start parent workflow")
 
-		// Expect the workflow to fail
-		_, err = handle.GetResult()
-		require.Error(t, err, "expected error when spawning child workflow from step, but got none")
-
-		// Check the error type and message
-		dbosErr, ok := err.(*DBOSError)
-		require.True(t, ok, "expected error to be of type *DBOSError, got %T", err)
-		require.Equal(t, StepExecutionError, dbosErr.Code, "expected error code to be StepExecutionError, got %v", dbosErr.Code)
-
-		expectedMessagePart := "cannot spawn child workflow from within a step"
-		require.Contains(t, err.Error(), expectedMessagePart, "expected error message to contain %q, but got %q", expectedMessagePart, err.Error())
+		startedWorkflowID, err := handle.GetResult()
+		require.NoError(t, err)
+		startedHandle, err := RetrieveWorkflow[string](dbosCtx, startedWorkflowID)
+		require.NoError(t, err)
+		startedStatus, err := startedHandle.GetStatus()
+		require.NoError(t, err)
+		require.Equal(t, handle.GetWorkflowID(), startedStatus.ParentWorkflowID)
 	})
 
 	t.Run("DeleteCompletedWorkflow", func(t *testing.T) {
@@ -1860,6 +1523,38 @@ func TestWorkflowIdempotency(t *testing.T) {
 		// Verify the counter was only incremented once (idempotency)
 		require.Equal(t, int64(1), idempotencyCounter, "expected counter to be 1 (workflow executed only once)")
 	})
+}
+
+func TestUUID(t *testing.T) {
+	parallelTest(t)
+	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+
+	uuidWorkflow := NewWorkflow(dbosCtx, func(ctx DBOSContext, _ string) (string, error) {
+		return UUID(ctx)
+	}, WithWorkflowName("uuid-workflow"))
+	require.NoError(t, Launch(dbosCtx))
+
+	handle, err := uuidWorkflow(dbosCtx, "")
+	require.NoError(t, err)
+	result, err := handle.GetResult()
+	require.NoError(t, err)
+
+	id, err := uuid.Parse(result)
+	require.NoError(t, err)
+	require.Equal(t, uuid.Version(7), id.Version())
+
+	steps, err := GetWorkflowSteps(dbosCtx, handle.GetWorkflowID())
+	require.NoError(t, err)
+	require.Len(t, steps, 1)
+	require.Equal(t, "DBOS.uuid", steps[0].StepName)
+
+	setWorkflowStatusPending(t, dbosCtx, handle.GetWorkflowID())
+	handles, err := recoverPendingWorkflows(dbosCtx.(*dbosContext), []string{"local"})
+	require.NoError(t, err)
+	require.Len(t, handles, 1)
+	replayed, err := handles[0].GetResult()
+	require.NoError(t, err)
+	require.Equal(t, result, replayed)
 }
 
 func TestNoConcurrentWorkflowSameID(t *testing.T) {
@@ -4976,8 +4671,7 @@ func authChildWorkflow(ctx DBOSContext, _ string) (authSnapshot, error) {
 	return captureAuthFromDB(ctx)
 }
 
-// authParentWorkflow spawns authChildWorkflow without passing any auth opts.
-// Propagation from workflowState should carry the parent's identity.
+// authParentWorkflow starts authChildWorkflow without passing any auth options.
 func authParentWorkflow(ctx DBOSContext, _ string) (authSnapshot, error) {
 	handle, err := authChildWorkflowD(ctx, "")
 	if err != nil {
@@ -4986,7 +4680,7 @@ func authParentWorkflow(ctx DBOSContext, _ string) (authSnapshot, error) {
 	return handle.GetResult()
 }
 
-// authGrandparentWorkflow tests three-level propagation.
+// authGrandparentWorkflow starts a three-level workflow chain.
 func authGrandparentWorkflow(ctx DBOSContext, _ string) (authSnapshot, error) {
 	handle, err := authParentWorkflowD(ctx, "")
 	if err != nil {
@@ -5008,14 +4702,15 @@ func authParentWithOverrideWorkflow(ctx DBOSContext, _ string) (authSnapshot, er
 	return handle.GetResult()
 }
 
-func TestAuthPropagation(t *testing.T) {
+func TestWorkflowAuthIndependence(t *testing.T) {
 	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
 	authChildWorkflowD = NewWorkflow(dbosCtx, authChildWorkflow)
 	authParentWorkflowD = NewWorkflow(dbosCtx, authParentWorkflow)
 	authGrandparentWorkflowD := NewWorkflow(dbosCtx, authGrandparentWorkflow)
 	authParentWithOverrideWorkflowD := NewWorkflow(dbosCtx, authParentWithOverrideWorkflow)
+	require.NoError(t, Launch(dbosCtx))
 
-	t.Run("PropagatesFromParentToChild", func(t *testing.T) {
+	t.Run("ParentAuthDoesNotPropagate", func(t *testing.T) {
 		handle, err := authParentWorkflowD(dbosCtx, "",
 			WithAuthenticatedUser("alice@example.com"),
 			WithAssumedRole("customer"),
@@ -5024,9 +4719,9 @@ func TestAuthPropagation(t *testing.T) {
 		require.NoError(t, err)
 		childAuth, err := handle.GetResult()
 		require.NoError(t, err)
-		assert.Equal(t, "alice@example.com", childAuth.User)
-		assert.Equal(t, "customer", childAuth.Role)
-		assert.Equal(t, []string{"read", "write"}, childAuth.Roles)
+		assert.Empty(t, childAuth.User)
+		assert.Empty(t, childAuth.Role)
+		assert.Empty(t, childAuth.Roles)
 	})
 
 	t.Run("ChildExplicitOverridesParent", func(t *testing.T) {
@@ -5043,7 +4738,7 @@ func TestAuthPropagation(t *testing.T) {
 		assert.Equal(t, []string{"internal"}, childAuth.Roles)
 	})
 
-	t.Run("EmptyParentDoesNotPropagateNoise", func(t *testing.T) {
+	t.Run("EmptyParentLeavesChildEmpty", func(t *testing.T) {
 		handle, err := authParentWorkflowD(dbosCtx, "")
 		require.NoError(t, err)
 		childAuth, err := handle.GetResult()
@@ -5053,7 +4748,7 @@ func TestAuthPropagation(t *testing.T) {
 		assert.Empty(t, childAuth.Roles)
 	})
 
-	t.Run("PropagatesMultipleLevels", func(t *testing.T) {
+	t.Run("AuthDoesNotPropagateMultipleLevels", func(t *testing.T) {
 		handle, err := authGrandparentWorkflowD(dbosCtx, "",
 			WithAuthenticatedUser("alice@example.com"),
 			WithAssumedRole("customer"),
@@ -5062,40 +4757,9 @@ func TestAuthPropagation(t *testing.T) {
 		require.NoError(t, err)
 		grandchildAuth, err := handle.GetResult()
 		require.NoError(t, err)
-		assert.Equal(t, "alice@example.com", grandchildAuth.User)
-		assert.Equal(t, "customer", grandchildAuth.Role)
-		assert.Equal(t, []string{"read", "write"}, grandchildAuth.Roles)
-	})
-
-	t.Run("PropagatesAfterRecovery", func(t *testing.T) {
-		const wfID = "auth-recovery-test-wf"
-
-		handle, err := authParentWorkflowD(dbosCtx, "",
-			WithWorkflowID(wfID),
-			WithAuthenticatedUser("alice@example.com"),
-			WithAssumedRole("customer"),
-			WithAuthenticatedRoles([]string{"read", "write"}),
-		)
-		require.NoError(t, err)
-		_, err = handle.GetResult()
-		require.NoError(t, err)
-
-		// Simulate crash: reset parent to PENDING so recovery re-runs it.
-		setWorkflowStatusPending(t, dbosCtx, wfID)
-
-		recoveredHandles, err := recoverPendingWorkflows(dbosCtx.(*dbosContext), []string{"local"})
-		require.NoError(t, err)
-		require.Len(t, recoveredHandles, 1)
-
-		// Use a typed handle so the JSON output decodes into authSnapshot.
-		typedHandle, err := RetrieveWorkflow[authSnapshot](dbosCtx, wfID)
-		require.NoError(t, err)
-		childAuth, err := typedHandle.GetResult()
-		require.NoError(t, err)
-
-		assert.Equal(t, "alice@example.com", childAuth.User)
-		assert.Equal(t, "customer", childAuth.Role)
-		assert.Equal(t, []string{"read", "write"}, childAuth.Roles)
+		assert.Empty(t, grandchildAuth.User)
+		assert.Empty(t, grandchildAuth.Role)
+		assert.Empty(t, grandchildAuth.Roles)
 	})
 }
 
@@ -5166,8 +4830,6 @@ func TestWorkflowHandleContextCancel(t *testing.T) {
 
 		err = <-resultChan
 		require.Error(t, err, "expected error from cancelled context")
-		assert.True(t, errors.Is(err, context.Canceled),
-			"expected error to be detectable as context.Canceled, got: %v", err)
 	})
 }
 

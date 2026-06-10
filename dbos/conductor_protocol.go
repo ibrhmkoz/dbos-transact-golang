@@ -316,7 +316,6 @@ type workflowStepsConductorResponseBody struct {
 	FunctionName       string  `json:"function_name"`
 	Output             *string `json:"output,omitempty"`
 	Error              *string `json:"error,omitempty"`
-	ChildWorkflowID    *string `json:"child_workflow_id,omitempty"`
 	StartedAtEpochMs   *string `json:"started_at_epoch_ms,omitempty"`
 	CompletedAtEpochMs *string `json:"completed_at_epoch_ms,omitempty"`
 }
@@ -346,11 +345,6 @@ func formatWorkflowStepsResponseBody(step StepInfo) workflowStepsConductorRespon
 	if step.Error != nil {
 		errorStr := step.Error.Error()
 		output.Error = &errorStr
-	}
-
-	// Set child workflow ID if present
-	if step.ChildWorkflowID != "" {
-		output.ChildWorkflowID = &step.ChildWorkflowID
 	}
 
 	// Convert timestamps to epoch milliseconds strings
