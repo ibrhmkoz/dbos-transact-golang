@@ -125,6 +125,16 @@ func PgxPool(p Pool) *pgxpool.Pool {
 	return nil
 }
 
+// PgxTx unwraps the underlying pgx.Tx from a Tx. Returns nil if the Tx is not
+// pgx-backed. Used to bind sqlc-generated queries to an in-flight transaction
+// via db.Queries.WithTx.
+func PgxTx(t Tx) pgx.Tx {
+	if a, ok := t.(*pgxTxAdapter); ok {
+		return a.tx
+	}
+	return nil
+}
+
 type pgxTxAdapter struct{ tx pgx.Tx }
 
 func (t *pgxTxAdapter) Exec(ctx context.Context, q string, args ...any) (Result, error) {
