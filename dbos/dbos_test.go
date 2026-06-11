@@ -82,7 +82,7 @@ func TestConfig(t *testing.T) {
 
 		assert.Equal(t, InitializationError, dbosErr.Code)
 
-		expectedMsg := "Error initializing DBOS Transact: one of databaseURL, systemDBPool, or systemDatabase must be provided"
+		expectedMsg := "Error initializing DBOS Transact: one of databaseURL, systemDBPool, or kernel must be provided"
 		assert.Equal(t, expectedMsg, dbosErr.Message)
 	})
 
@@ -297,7 +297,7 @@ func TestConfig(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT version FROM dbos.dbos_migrations").Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(37), version, "migration version should be 37 (after all migrations including completed_at and started_at index)")
+		assert.Equal(t, int64(40), version, "migration version should be 40 (latest migration: drop child_workflow_id)")
 
 		// Test manual shutdown and recreate
 		Shutdown(ctx, 1*time.Minute)
@@ -591,7 +591,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT version FROM %s.dbos_migrations", customSchema)).Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(37), version, "migration version should be 37 (after all migrations including completed_at and started_at index)")
+		assert.Equal(t, int64(40), version, "migration version should be 40 (latest migration: drop child_workflow_id)")
 	})
 
 	// Test workflows for exercising Send/Recv and SetEvent/GetEvent

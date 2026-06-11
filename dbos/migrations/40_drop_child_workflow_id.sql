@@ -1,1 +1,1 @@
-ALTER TABLE %s.operation_outputs DROP COLUMN child_workflow_id;
+ALTER TABLE %s.operation_outputs DROP COLUMN IF EXISTS child_workflow_id;
