@@ -1,37 +1,19 @@
-CREATE TABLE IF NOT EXISTS test_runs (
-    run_id VARCHAR PRIMARY KEY,
-    started_at TIMESTAMP NOT NULL,
-    finished_at TIMESTAMP NOT NULL,
-    duration_seconds DOUBLE NOT NULL,
-    status VARCHAR NOT NULL,
-    exit_code INTEGER NOT NULL,
-    backend VARCHAR NOT NULL,
-    race BOOLEAN NOT NULL,
-    pattern VARCHAR,
-    command VARCHAR NOT NULL
-);
+-- Workspace database schema: views over the immutable per-run parquet files.
+-- __TEST_RESULTS_ROOT__ is replaced with the absolute .test-results path by
+-- record-tests.sh when it creates the workspace database. Globs are expanded
+-- at query time, so new runs appear without reconnecting.
 
-CREATE TABLE IF NOT EXISTS test_events (
-    run_id VARCHAR NOT NULL,
-    event_index BIGINT,
-    event_time TIMESTAMP,
-    action VARCHAR NOT NULL,
-    package VARCHAR,
-    test VARCHAR,
-    elapsed_seconds DOUBLE,
-    output VARCHAR
-);
+CREATE OR REPLACE VIEW test_runs AS
+SELECT *
+FROM read_parquet('__TEST_RESULTS_ROOT__/runs/*/runs.parquet', union_by_name = true);
 
-CREATE TABLE IF NOT EXISTS test_results (
-    run_id VARCHAR NOT NULL,
-    package VARCHAR NOT NULL,
-    test VARCHAR NOT NULL,
-    status VARCHAR NOT NULL,
-    elapsed_seconds DOUBLE,
-    parallel BOOLEAN NOT NULL DEFAULT false,
-    output VARCHAR,
-    PRIMARY KEY (run_id, package, test)
-);
+CREATE OR REPLACE VIEW test_events AS
+SELECT *
+FROM read_parquet('__TEST_RESULTS_ROOT__/runs/*/events.parquet', union_by_name = true);
+
+CREATE OR REPLACE VIEW test_results AS
+SELECT *
+FROM read_parquet('__TEST_RESULTS_ROOT__/runs/*/results.parquet', union_by_name = true);
 
 CREATE OR REPLACE VIEW latest_test_run AS
 SELECT *

@@ -48,7 +48,7 @@ ORDER BY events.elapsed_seconds DESC;
 -- Output for one test from the latest run.
 -- Usage:
 -- TEST_NAME='TestGarbageCollect/GarbageCollectOnlyCompletedWorkflows' \
---   duckdb -readonly .test-results/latest.duckdb -f scripts/test-results.sql
+--   duckdb -readonly .test-results/results.duckdb -f scripts/test-results.sql
 SELECT output
 FROM latest_test_results
 WHERE test = getenv('TEST_NAME');

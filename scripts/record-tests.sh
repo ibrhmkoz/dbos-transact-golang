@@ -17,22 +17,32 @@ backend="${DBOS_TEST_BACKEND:-postgres}"
 race="${TEST_RACE:-false}"
 pattern="${TEST_PATTERN:-}"
 run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-results_dir="${TEST_RESULTS_DIR:-.test-results/runs}"
-db_path="${TEST_RESULTS_DB:-$results_dir/$run_id.duckdb}"
-latest_path="${TEST_RESULTS_LATEST:-.test-results/latest.duckdb}"
+results_root="${TEST_RESULTS_DIR:-.test-results}"
+workspace_db="${TEST_RESULTS_DB:-$results_root/results.duckdb}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 started_epoch="$(date +%s)"
 events_file="$(mktemp "${TMPDIR:-/tmp}/go-test-events.XXXXXX")"
 
+mkdir -p "$results_root/runs"
+if [[ "$results_root" = /* ]]; then
+    results_root_absolute="$results_root"
+else
+    results_root_absolute="$PWD/$results_root"
+fi
+
+# Stage parquet files on the same filesystem as the final location so the
+# move into place is an atomic rename. Readers never see a partial run.
+staging_dir="$results_root/.staging-$run_id"
+mkdir -p "$staging_dir"
+
 cleanup() {
     rm -f "$events_file"
+    rm -rf "$staging_dir"
 }
 trap cleanup EXIT
 
-mkdir -p "$(dirname "$db_path")"
-
 command_display="$(printf '%q ' "$@")"
-printf 'Recording test run %s in %s\n' "$run_id" "$db_path"
+printf 'Recording test run %s in %s/runs/%s\n' "$run_id" "$results_root" "$run_id"
 
 set +e
 "$@" 2>&1 | tee "$events_file" | jq -jr 'select(.Action == "output" or .Action == "build-output") | .Output'
@@ -53,7 +63,9 @@ if [[ "$test_exit_code" -ne 0 ]]; then
     status="fail"
 fi
 
-if ! TEST_RUN_ID="$run_id" \
+if ! (
+    cd "$staging_dir" &&
+    TEST_RUN_ID="$run_id" \
     TEST_STARTED_AT="$started_at" \
     TEST_FINISHED_AT="$finished_at" \
     TEST_DURATION_SECONDS="$duration_seconds" \
@@ -64,21 +76,22 @@ if ! TEST_RUN_ID="$run_id" \
     TEST_PATTERN="$pattern" \
     TEST_COMMAND="$command_display" \
     TEST_EVENTS_FILE="$events_file" \
-    duckdb "$db_path" \
-        -f "$script_dir/test-results-schema.sql" \
-        -f "$script_dir/load-test-results.sql" >/dev/null; then
-    echo "Failed to record test run in $db_path" >&2
+    duckdb -f "$script_dir/load-test-results.sql" >/dev/null
+); then
+    echo "Failed to record test run $run_id" >&2
     exit 2
 fi
 
-mkdir -p "$(dirname "$latest_path")"
-if [[ "$db_path" = /* ]]; then
-    db_absolute_path="$db_path"
-else
-    db_absolute_path="$PWD/$db_path"
+mv "$staging_dir" "$results_root/runs/$run_id"
+
+# Create the workspace database once: views over the per-run parquet files.
+# It is never written to afterwards, so an open DataGrip connection to it
+# cannot conflict with recording new runs.
+if [[ ! -e "$workspace_db" ]]; then
+    sed "s|__TEST_RESULTS_ROOT__|$results_root_absolute|g" \
+        "$script_dir/test-results-schema.sql" | duckdb "$workspace_db" >/dev/null
 fi
-ln -sfn "$db_absolute_path" "$latest_path"
 
 printf '\nRecorded run %s: %s in %ss\n' "$run_id" "$status" "$duration_seconds"
-printf 'Latest results: %s\n' "$latest_path"
+printf 'Query results: duckdb -readonly %s -f scripts/test-results.sql\n' "$workspace_db"
 exit "$test_exit_code"

@@ -9,4 +9,4 @@ test:
 
 # Query the latest recorded test run.
 results:
-    duckdb -readonly .test-results/latest.duckdb -f scripts/test-results.sql
+    duckdb -readonly .test-results/results.duckdb -f scripts/test-results.sql
