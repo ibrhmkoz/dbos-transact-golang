@@ -18,16 +18,38 @@ import (
 	"go.uber.org/goleak"
 )
 
-func getDatabaseURL() string {
-	databaseURL := os.Getenv("DBOS_SYSTEM_DATABASE_URL")
-	if databaseURL == "" {
+// getDatabaseURL returns the backend database URL shared by all tests. When
+// DBOS_SYSTEM_DATABASE_URL is not set, it starts a throwaway Postgres
+// testcontainer (once per test binary; torn down in TestMain) so tests don't
+// depend on a locally running server.
+func getDatabaseURL(t *testing.T) string {
+	t.Helper()
+	pgContainerOnce.Do(func() {
+		if databaseURL := os.Getenv("DBOS_SYSTEM_DATABASE_URL"); databaseURL != "" {
+			pgDatabaseURL = databaseURL
+			return
+		}
 		password := os.Getenv("PGPASSWORD")
 		if password == "" {
 			password = "dbos"
 		}
-		databaseURL = fmt.Sprintf("postgres://postgres:%s@localhost:5432/dbos?sslmode=disable", url.QueryEscape(password))
-	}
-	return databaseURL
+		// context.Background() rather than t.Context(): the container outlives the
+		// first test that happens to start it.
+		container, err := postgres.Run(context.Background(), "postgres:16-alpine",
+			postgres.WithDatabase("dbos"),
+			postgres.WithUsername("postgres"),
+			postgres.WithPassword(password),
+			postgres.BasicWaitStrategies(),
+		)
+		if err != nil {
+			pgContainerErr = err
+			return
+		}
+		pgContainer = container
+		pgDatabaseURL, pgContainerErr = container.ConnectionString(context.Background(), "sslmode=disable")
+	})
+	require.NoError(t, pgContainerErr)
+	return pgDatabaseURL
 }
 
 var (
@@ -40,7 +62,10 @@ var (
 	pgTemplateName    string
 	pgTemplateErr     error
 	pgTemplateCloneMu sync.Mutex
+	pgContainerOnce   sync.Once
 	pgContainer       *postgres.PostgresContainer
+	pgContainerErr    error
+	pgDatabaseURL     string
 )
 
 var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -106,8 +131,7 @@ func createPostgresTestDatabase(t *testing.T) string {
 	pgTemplateCloneMu.Unlock()
 	require.NoError(t, err)
 
-	config.Database = dbName
-	databaseURL := config.ConnString()
+	databaseURL := replaceDatabaseInURL(t, pgTemplateURL, dbName)
 	t.Cleanup(func() {
 		cleanupConfig := adminConfig.Copy()
 		cleanupConn, cleanupErr := pgx.ConnectConfig(context.Background(), cleanupConfig)
@@ -121,33 +145,7 @@ func createPostgresTestDatabase(t *testing.T) string {
 func ensurePostgresTemplate(t *testing.T) {
 	t.Helper()
 	pgTemplateOnce.Do(func() {
-		// When no database is configured, start a throwaway Postgres testcontainer so
-		// tests don't depend on a locally running server. It is torn down in TestMain.
-		if os.Getenv("DBOS_SYSTEM_DATABASE_URL") == "" {
-			password := os.Getenv("PGPASSWORD")
-			if password == "" {
-				password = "dbos"
-			}
-			container, err := postgres.Run(t.Context(), "postgres:16-alpine",
-				postgres.WithDatabase("dbos"),
-				postgres.WithUsername("postgres"),
-				postgres.WithPassword(password),
-				postgres.BasicWaitStrategies(),
-			)
-			if err != nil {
-				pgTemplateErr = err
-				return
-			}
-			pgContainer = container
-			dbURL, err := container.ConnectionString(t.Context(), "sslmode=disable")
-			if err != nil {
-				pgTemplateErr = err
-				return
-			}
-			os.Setenv("DBOS_SYSTEM_DATABASE_URL", dbURL)
-		}
-
-		config, err := pgx.ParseConfig(getDatabaseURL())
+		config, err := pgx.ParseConfig(getDatabaseURL(t))
 		if err != nil {
 			pgTemplateErr = err
 			return
@@ -171,9 +169,7 @@ func ensurePostgresTemplate(t *testing.T) {
 			return
 		}
 
-		templateConfig := config.Copy()
-		templateConfig.Database = pgTemplateName
-		pgTemplateURL = templateConfig.ConnString()
+		pgTemplateURL = replaceDatabaseInURL(t, getDatabaseURL(t), pgTemplateName)
 		ctx, err := NewDBOSContext(context.Background(), Config{
 			DatabaseURL: pgTemplateURL,
 			AppName:     "test-template",
@@ -185,6 +181,17 @@ func ensurePostgresTemplate(t *testing.T) {
 		Shutdown(ctx, time.Minute)
 	})
 	require.NoError(t, pgTemplateErr)
+}
+
+// replaceDatabaseInURL returns baseURL pointing at dbName. Mutating
+// pgx.ConnConfig.Database and calling ConnString() does NOT work: ConnString
+// returns the original string passed to ParseConfig, ignoring mutations.
+func replaceDatabaseInURL(t *testing.T, baseURL, dbName string) string {
+	t.Helper()
+	u, err := url.Parse(baseURL)
+	require.NoError(t, err)
+	u.Path = "/" + dbName
+	return u.String()
 }
 
 func testDatabaseName(testName string) string {
@@ -264,6 +271,9 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+				// Ignore the testcontainers reaper (ryuk) connection; it lives for
+				// the whole test binary, not per test.
+				goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
 			)
 		}
 	})
