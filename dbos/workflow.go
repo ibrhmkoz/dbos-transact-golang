@@ -424,8 +424,100 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...Wor
 		}
 
 		// Debounce path: delay execution, collapsing rapid repeated calls under the same key.
+		// Each call pushes the start time back by delay, capped at timeout from the first call (0 = no cap).
 		if callParams.debounce {
-			return debounceWorkflow[P, R](ctx, name, internalDebouncerFQN, callParams.debounceTimeout, callParams.debounceDelay, callParams.debounceKey, input, workflowOpts...)
+			timeout := callParams.debounceTimeout
+			delay := callParams.debounceDelay
+			key := callParams.debounceKey
+
+			// The target workflow ID is always internally generated (callers group calls
+			// via the deduplication key, not WorkflowID). UUID is durable: recorded as a
+			// step within a workflow, returned identically on replay.
+			options := workflowOptions{}
+			for _, opt := range workflowOpts {
+				opt(&options)
+			}
+			targetWorkflowID, err := UUID(ctx)
+			if err != nil {
+				return nil, err
+			}
+			options.WorkflowID = targetWorkflowID
+
+			// Message ID for communicating with an existing internal debouncing workflow.
+			messageID, err := UUID(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			dInput := debouncerInput[P]{
+				InitialInput:                  input,
+				TargetWorkflowFQNOrCustomName: name,
+				TargetWorkflowID:              options.WorkflowID,
+				Delay:                         delay,
+				Timeout:                       timeout,
+				WorkflowOptions:               options,
+			}
+
+			// Type-erased wrapper so we can start the internal debouncer via the engine without pre-encoding.
+			internalWF := WorkflowFunc(func(ctx DBOSContext, in any) (any, error) {
+				return internalDebouncerWF[P, R](ctx, in.(debouncerInput[P]))
+			})
+
+			internalWorkflowID, err := UUID(ctx)
+			if err != nil {
+				return nil, err
+			}
+
+			for {
+				handle, err := ctx.RunWorkflow(internalWF, dInput, WithWorkflowID(internalWorkflowID), WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
+				if err != nil {
+					return nil, err
+				}
+				if handle.GetWorkflowID() == internalWorkflowID {
+					return newWorkflowHandle[R](ctx, dInput.TargetWorkflowID), nil
+				}
+
+				debouncerWorkflowStatus, err := ListWorkflows(ctx, WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
+				if err != nil {
+					return nil, err
+				}
+				if len(debouncerWorkflowStatus) == 0 {
+					continue
+				}
+				debouncerWorkflowID := handle.GetWorkflowID()
+
+				encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
+				if !ok {
+					return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
+				}
+				var decodedInput debouncerInput[P]
+				if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
+					return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
+				}
+
+				switch debouncerWorkflowStatus[0].Status {
+				case WorkflowStatusSuccess, WorkflowStatusError, WorkflowStatusCancelled, WorkflowStatusMaxRecoveryAttemptsExceeded:
+					return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
+				}
+
+				err = Send(ctx, debouncerWorkflowID, DebounceMessage[P]{
+					Input: input,
+					Delay: delay,
+					ID:    messageID,
+				}, _DEBOUNCER_TOPIC)
+				if err != nil {
+					return nil, err
+				}
+
+				_, err = GetEvent[bool](ctx, debouncerWorkflowID, messageID, 2*time.Second) // XXX unclear what's a good timeout here.
+				if errors.Is(err, &DBOSError{Code: TimeoutError}) {
+					continue
+				} else if err != nil {
+					return nil, err
+				}
+
+				return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowID), nil
+			}
 		}
 
 		workflowOpts = append(workflowOpts, withWorkflowName(name))
