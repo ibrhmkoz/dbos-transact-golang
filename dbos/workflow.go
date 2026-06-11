@@ -2019,35 +2019,21 @@ func Recv[R any](ctx DBOSContext, topic string, timeout time.Duration) (R, error
 		return *new(R), nil
 	}
 
-	var typedMessage R
-	// Check if we're in a real DBOS context (not a mock)
-	if _, ok := ctx.(*dbosContext); ok {
-		result, ok := msg.(*recvResult)
-		if !ok {
-			workflowID, _ := GetWorkflowID(ctx) // Must be within a workflow so we can ignore the error
-			return *new(R), newWorkflowUnexpectedResultType(workflowID, "*recvResult", fmt.Sprintf("%T", msg))
-		}
-		if result.message == nil {
-			return *new(R), nil
-		}
-		msgDecoder, resolveErr := resolveDecoder[R](result.serialization, getCustomSerializerFromCtx(ctx))
-		if resolveErr != nil {
-			return *new(R), resolveErr
-		}
-		var decodeErr error
-		typedMessage, decodeErr = msgDecoder.Decode(result.message)
-		if decodeErr != nil {
-			return *new(R), fmt.Errorf("decoding received message to type %T: %w", *new(R), decodeErr)
-		}
-		return typedMessage, nil
-	} else {
-		// Fallback for testing/mocking scenarios where serializer is nil
-		var ok bool
-		typedMessage, ok = msg.(R)
-		if !ok {
-			workflowID, _ := GetWorkflowID(ctx) // Must be within a workflow so we can ignore the error
-			return *new(R), newWorkflowUnexpectedResultType(workflowID, fmt.Sprintf("%T", new(R)), fmt.Sprintf("%T", msg))
-		}
+	result, ok := msg.(*recvResult)
+	if !ok {
+		workflowID, _ := GetWorkflowID(ctx) // Must be within a workflow so we can ignore the error
+		return *new(R), newWorkflowUnexpectedResultType(workflowID, "*recvResult", fmt.Sprintf("%T", msg))
+	}
+	if result.message == nil {
+		return *new(R), nil
+	}
+	msgDecoder, resolveErr := resolveDecoder[R](result.serialization, getCustomSerializerFromCtx(ctx))
+	if resolveErr != nil {
+		return *new(R), resolveErr
+	}
+	typedMessage, decodeErr := msgDecoder.Decode(result.message)
+	if decodeErr != nil {
+		return *new(R), fmt.Errorf("decoding received message to type %T: %w", *new(R), decodeErr)
 	}
 	return typedMessage, nil
 }
