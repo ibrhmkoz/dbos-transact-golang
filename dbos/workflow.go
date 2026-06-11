@@ -208,9 +208,19 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 	}, withRetrierLogger(h.dbosContext.(*dbosContext).logger))
 
 	// awaitErr is a real DB/network/cancellation error; the workflow's recorded error is in awaitResult.errStr
+	if awaitErr != nil && options.timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+		return *new(R), fmt.Errorf("workflow result timeout after %v: %w", options.timeout, context.DeadlineExceeded)
+	}
 	err := awaitErr
-	if awaitErr == nil && awaitResult.errStr != nil {
-		err = deserializeWorkflowError(awaitResult.errStr, awaitResult.serialization)
+	if awaitResult != nil && awaitResult.errStr != nil {
+		if awaitErr == nil {
+			err = deserializeWorkflowError(awaitResult.errStr, awaitResult.errEncoded, awaitResult.serialization)
+		} else if dbosErr, ok := awaitErr.(*DBOSError); ok && dbosErr.Code == AwaitedWorkflowCancelled {
+			// Cancelled workflows deterministically yield AwaitedWorkflowCancelled.
+			// When the workflow already recorded its outcome, attach the precise
+			// cause (e.g. context.Canceled) as the wrapped error.
+			dbosErr.wrappedErr = deserializeWorkflowError(awaitResult.errStr, awaitResult.errEncoded, awaitResult.serialization)
+		}
 	}
 
 	// Deserialize the result directly into the target type
@@ -295,11 +305,18 @@ func registerScheduledWorkflow(ctx DBOSContext, workflowFQN, customName string, 
 	scheduled := ScheduledWorkflowFunc(func(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
 		scheduledTime := input.ScheduledTime
 		wfID := fmt.Sprintf("sched-%s-%s", name, scheduledTime)
+		// fn is the type-erased wrapper, which expects an encoded input.
+		ser := resolveEncoder(ctx)
+		encodedInput, err := ser.Encode(scheduledTime)
+		if err != nil {
+			return nil, fmt.Errorf("failed to encode scheduled workflow input: %w", err)
+		}
 		opts := []WorkflowOption{
 			WithWorkflowID(wfID),
 			withWorkflowName(workflowFQN),
+			withAlreadyEncodedInput(),
 		}
-		return ctx.RunWorkflow(fn, scheduledTime, opts...)
+		return ctx.RunWorkflow(fn, encodedInput, opts...)
 	})
 
 	if _, err := c.addScheduleCronEntry(name, cronSchedule, scheduled, nil); err != nil {
@@ -1134,14 +1151,17 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		}
 
 		var serializedErr string
+		var encodedErr *string
 		if err != nil {
 			serializedErr = serializeWorkflowError(err, resolveEncoder(workflowCtx).Name())
+			encodedErr = encodeWorkflowError(err)
 		}
 		recordErr := retry(c, func() error {
 			return c.kernel.updateWorkflowOutcome(uncancellableCtx, updateWorkflowOutcomeDBInput{
 				workflowID: workflowID,
 				status:     status,
 				errStr:     serializedErr,
+				errEncoded: encodedErr,
 				output:     encodedOutput,
 			})
 		}, withRetrierLogger(c.logger))
@@ -1450,15 +1470,19 @@ func Run[R any](ctx DBOSContext, fn Step[R], opts ...StepOption) (R, error) {
 }
 
 // UUID returns a durable UUIDv7. Within a workflow, the generated value is recorded as a step
-// result and the same value is returned on replay.
+// result and the same value is returned on replay. Outside a workflow, it returns a fresh UUID.
 func UUID(ctx DBOSContext) (string, error) {
-	return Run(ctx, func(context.Context) (string, error) {
+	newUUID := func(context.Context) (string, error) {
 		id, err := uuid.NewV7()
 		if err != nil {
 			return "", err
 		}
 		return id.String(), nil
-	}, WithStepName("DBOS.uuid"))
+	}
+	if workflowState, ok := ctx.Value(workflowStateKey).(*workflowState); !ok || workflowState == nil {
+		return newUUID(ctx)
+	}
+	return Run(ctx, newUUID, WithStepName("DBOS.uuid"))
 }
 
 func (c *dbosContext) RunAsStep(fn StepFunc, opts ...StepOption) (any, error) {
@@ -1491,7 +1515,7 @@ func (c *dbosContext) RunAsStep(fn StepFunc, opts ...StepOption) (any, error) {
 	if recordedOutput != nil {
 		// Return the encoded output wrapped in stepCheckpointedOutcome
 		// This allows RunAsStep[R] to distinguish encoded values from direct values
-		return stepCheckpointedOutcome{value: recordedOutput.output, serialization: recordedOutput.serialization}, deserializeWorkflowError(recordedOutput.errStr, recordedOutput.serialization)
+		return stepCheckpointedOutcome{value: recordedOutput.output, serialization: recordedOutput.serialization}, deserializeWorkflowError(recordedOutput.errStr, recordedOutput.errEncoded, recordedOutput.serialization)
 	}
 
 	stepCtx := WithValue(c, workflowStateKey, stepState)
@@ -1508,15 +1532,18 @@ func (c *dbosContext) RunAsStep(fn StepFunc, opts ...StepOption) (any, error) {
 	// Record the final result
 	stepCompletedTime := time.Now()
 	var serializedStepErr *string
+	var encodedStepErr *string
 	if stepError != nil {
 		s := serializeWorkflowError(stepError, ser.Name())
 		serializedStepErr = &s
+		encodedStepErr = encodeWorkflowError(stepError)
 	}
 	dbInput := recordOperationResultDBInput{
 		workflowID:    stepState.workflowID,
 		stepName:      stepOpts.stepName,
 		stepID:        stepState.stepID,
 		errStr:        serializedStepErr,
+		errEncoded:    encodedStepErr,
 		startedAt:     stepStartTime,
 		completedAt:   stepCompletedTime,
 		output:        encodedStepOutput,
@@ -1605,7 +1632,7 @@ func (c *dbosContext) runAsTxn(fn txnFunc, opts ...StepOption) (any, error) {
 			return nil, newStepExecutionError(stepState.workflowID, stepOpts.stepName, fmt.Errorf("checking operation execution: %w", err))
 		}
 		if recordedOutput != nil {
-			return stepCheckpointedOutcome{value: recordedOutput.output, serialization: recordedOutput.serialization}, deserializeWorkflowError(recordedOutput.errStr, recordedOutput.serialization)
+			return stepCheckpointedOutcome{value: recordedOutput.output, serialization: recordedOutput.serialization}, deserializeWorkflowError(recordedOutput.errStr, recordedOutput.errEncoded, recordedOutput.serialization)
 		}
 
 		stepOutput, stepError := executeStepWithRetry(c, stepState.workflowID, stepOpts, func() (any, error) { return fn(stepCtx, tx) })
@@ -1617,15 +1644,18 @@ func (c *dbosContext) runAsTxn(fn txnFunc, opts ...StepOption) (any, error) {
 		}
 
 		var serializedTxnErr *string
+		var encodedTxnErr *string
 		if stepError != nil {
 			s := serializeWorkflowError(stepError, txnSer.Name())
 			serializedTxnErr = &s
+			encodedTxnErr = encodeWorkflowError(stepError)
 		}
 		dbInput := recordOperationResultDBInput{
 			workflowID:    stepState.workflowID,
 			stepName:      stepOpts.stepName,
 			stepID:        stepState.stepID,
 			errStr:        serializedTxnErr,
+			errEncoded:    encodedTxnErr,
 			startedAt:     stepStartTime,
 			completedAt:   time.Now(),
 			output:        encodedStepOutput,
@@ -3661,7 +3691,7 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 			}
 			if params.loadOutput && workflows[i].Error != nil {
 				s := workflows[i].Error.Error()
-				workflows[i].Error = deserializeWorkflowError(&s, workflows[i].Serialization)
+				workflows[i].Error = deserializeWorkflowError(&s, nil, workflows[i].Serialization)
 			}
 		}
 	}
@@ -3782,7 +3812,7 @@ func (c *dbosContext) GetWorkflowSteps(workflowID string, opts ...GetWorkflowSte
 		var stepErr error
 		if step.Error != nil {
 			s := step.Error.Error()
-			stepErr = deserializeWorkflowError(&s, step.Serialization)
+			stepErr = deserializeWorkflowError(&s, nil, step.Serialization)
 		}
 		stepInfos[i] = StepInfo{
 			StepID:      step.StepID,

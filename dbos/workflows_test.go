@@ -3096,7 +3096,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// Wait for the workflow to complete and get the result
 		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected deadline exceeded error, got: %v", err)
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected result to be an empty string")
 
 		// Check the workflow status: should be cancelled
@@ -3143,7 +3143,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		wfcStop.Set()
 
 		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.Canceled), "expected context.Canceled error, got: %v", err)
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected result to be an empty string")
 	})
 
@@ -3172,7 +3172,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// Wait for the workflow to complete and get the result
 		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected deadline exceeded error, got: %v", err)
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected result to be an empty string")
 
 		// Check the workflow status: should be cancelled
@@ -3225,11 +3225,11 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// Wait for the workflow to complete and get the result
 		result, err := handle.GetResult()
-		// The workflow should return a WorkflowCancelled error from the step
+		// A cancelled workflow deterministically yields AwaitedWorkflowCancelled
 		require.Error(t, err, "expected error from workflow")
 
-		targetErr := &DBOSError{Code: WorkflowCancelled}
-		assert.True(t, errors.Is(err, targetErr), "expected WorkflowCancelled error, got: %v", err)
+		targetErr := &DBOSError{Code: AwaitedWorkflowCancelled}
+		assert.True(t, errors.Is(err, targetErr), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected result to be an empty string")
 
 		// Check the workflow status: should be cancelled
@@ -3296,10 +3296,11 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		handle, err := detachedStepWorkflowD(cancelCtx, 1*time.Second)
 		require.NoError(t, err, "failed to start detached step workflow")
-		// Wait for the workflow to complete and get the result
-		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected deadline exceeded error, got: %v", err)
-		assert.Equal(t, "detached-step-completed", result, "expected result to be 'detached-step-completed'")
+		// Wait for the workflow to complete and get the result. The detached step's
+		// outcome is asserted inside the workflow body; the handle deterministically
+		// reports the cancellation.
+		_, err = handle.GetResult()
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		// Check the workflow status: should be cancelled
 		status, err := handle.GetStatus()
 		require.NoError(t, err, "failed to get workflow status")
@@ -3335,7 +3336,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// Wait for the parent workflow to complete and get the result
 		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected deadline exceeded error, got: %v", err)
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected result to be an empty string")
 
 		// Check the workflow status: should be cancelled
@@ -3385,10 +3386,11 @@ func TestWorkflowTimeout(t *testing.T) {
 		handle, err := detachedChildWorkflowParentD(cancelCtx, timeout)
 		require.NoError(t, err, "failed to start parent workflow with detached child")
 
-		// Wait for the parent workflow to complete and get the result
-		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, context.DeadlineExceeded), "Expected deadline exceeded error, got: %v", err)
-		assert.Equal(t, "detached-step-completed", result, "expected result to be 'detached-step-completed'")
+		// Wait for the parent workflow to complete and get the result. The detached
+		// child's result is asserted inside the parent workflow body; the handle
+		// deterministically reports the cancellation.
+		_, err = handle.GetResult()
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 
 		// Check the workflow status: should be cancelled
 		status, err := handle.GetStatus()
@@ -3413,7 +3415,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 		// Wait for the workflow to complete (timeout cancels the workflow)
 		_, err = handle.GetResult()
-		require.True(t, errors.Is(err, context.DeadlineExceeded), "expected context.DeadlineExceeded, got: %v", err)
+		require.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled, got: %v", err)
 		// Check the workflow status: should be cancelled
 		status, err := handle.GetStatus()
 		require.NoError(t, err, "failed to get workflow status")
@@ -3791,10 +3793,10 @@ func TestWorkflowCancel(t *testing.T) {
 		require.Error(t, err, "expected error from cancelled workflow")
 		assert.Equal(t, "", result, "expected empty result from cancelled workflow")
 
-		// Check that we get a DBOSError with WorkflowCancelled code
+		// Check that we get a DBOSError with AwaitedWorkflowCancelled code
 		var dbosErr *DBOSError
 		require.ErrorAs(t, err, &dbosErr, "expected error to be of type *DBOSError, got %T", err)
-		assert.Equal(t, WorkflowCancelled, dbosErr.Code, "expected AwaitedWorkflowCancelled error code, got: %v", dbosErr.Code)
+		assert.Equal(t, AwaitedWorkflowCancelled, dbosErr.Code, "expected AwaitedWorkflowCancelled error code, got: %v", dbosErr.Code)
 
 		// Ensure the workflow status is of an error type
 		status, err := handle.GetStatus()
@@ -3828,10 +3830,11 @@ func TestWorkflowCancel(t *testing.T) {
 		// Signal the event so the workflow can move on to Recv()
 		blockingEventNoError.Set()
 
-		// Check the return values of the workflow
-		// Because this is a direct handle it'll not return an error
+		// Check the return values of the workflow: cancellation is reported
+		// deterministically regardless of how the handle was obtained
 		result, err := handle.GetResult()
-		require.NoError(t, err, "expected no error from direct handle")
+		require.Error(t, err, "expected error from cancelled workflow")
+		assert.True(t, errors.Is(err, &DBOSError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
 		assert.Equal(t, "", result, "expected empty result from cancelled workflow")
 
 		// Now use a polling handle to get result -- observe the error
@@ -4393,8 +4396,10 @@ func TestSpecialSteps(t *testing.T) {
 			return "", fmt.Errorf("failed to get current workflow ID: %w", err)
 		}
 
-		// Step 0: Start a child workflow to use in other operations
-		childHandle, err := childWorkflowD(dbosCtx, "test")
+		// Start a child workflow to use in other operations. Spawning a workflow
+		// is not durable (no parent step is recorded), so the child ID must be
+		// deterministic for the recovery rerun to observe the same child.
+		childHandle, err := childWorkflowD(dbosCtx, "test", WithWorkflowID(currentWorkflowID+"-child"))
 		if err != nil {
 			return "", fmt.Errorf("failed to start child workflow: %w", err)
 		}
@@ -4444,17 +4449,21 @@ func TestSpecialSteps(t *testing.T) {
 			return "", fmt.Errorf("ForkWorkflow returned empty workflow ID")
 		}
 
-		// Step 6: Use GetWorkflowSteps on current workflow
+		// Step 6: Use GetWorkflowSteps on current workflow.
+		// Starting the child workflow does not create a parent step, and the
+		// DBOS.getWorkflowSteps step itself is recorded after its body runs,
+		// so 5 steps are visible here: cancelWorkflow, retrieveWorkflow,
+		// getStatus, resumeWorkflow, forkWorkflow.
 		steps, err := GetWorkflowSteps(dbosCtx, currentWorkflowID)
 		if err != nil {
 			return "", fmt.Errorf("GetWorkflowSteps failed: %w", err)
 		}
-		if len(steps) != 6 {
-			t.Logf("Expected 6 steps so far, got %d", len(steps))
+		if len(steps) != 5 {
+			t.Logf("Expected 5 steps so far, got %d", len(steps))
 			for step := range steps {
 				t.Logf("Step %d: %s (Error: %v)\n", steps[step].StepID, steps[step].StepName, steps[step].Error)
 			}
-			return "", fmt.Errorf("Expected 6 steps so far, got %d", len(steps))
+			return "", fmt.Errorf("Expected 5 steps so far, got %d", len(steps))
 		}
 
 		// Step 7: Use ListWorkflows at the end to check expected count
@@ -4518,18 +4527,18 @@ func TestSpecialSteps(t *testing.T) {
 		require.NoError(t, err, "recovered workflow should complete successfully")
 		require.Equal(t, "success", recoveredResult, "recovered workflow should return same result")
 
-		// Check the steps are as expected
+		// Check the steps are as expected. Spawning the child workflow does not
+		// record a parent step.
 		steps, err := GetWorkflowSteps(dbosCtx, workflowID)
 		require.NoError(t, err, "failed to get workflow steps")
-		require.Len(t, steps, 8, "expected 8 steps")
-		require.Equal(t, "child-workflow", steps[0].StepName, "first step should be child-workflow")
-		require.Equal(t, "DBOS.cancelWorkflow", steps[1].StepName, "second step should be DBOS.cancelWorkflow")
-		require.Equal(t, "DBOS.retrieveWorkflow", steps[2].StepName, "third step should be DBOS.retrieveWorkflow")
-		require.Equal(t, "DBOS.getStatus", steps[3].StepName, "fourth step should be DBOS.getStatus")
-		require.Equal(t, "DBOS.resumeWorkflow", steps[4].StepName, "fifth step should be DBOS.resumeWorkflow")
-		require.Equal(t, "DBOS.forkWorkflow", steps[5].StepName, "sixth step should be DBOS.forkWorkflow")
-		require.Equal(t, "DBOS.getWorkflowSteps", steps[6].StepName, "seventh step should be DBOS.getWorkflowSteps")
-		require.Equal(t, "DBOS.listWorkflows", steps[7].StepName, "eighth step should be DBOS.listWorkflows")
+		require.Len(t, steps, 7, "expected 7 steps")
+		require.Equal(t, "DBOS.cancelWorkflow", steps[0].StepName, "first step should be DBOS.cancelWorkflow")
+		require.Equal(t, "DBOS.retrieveWorkflow", steps[1].StepName, "second step should be DBOS.retrieveWorkflow")
+		require.Equal(t, "DBOS.getStatus", steps[2].StepName, "third step should be DBOS.getStatus")
+		require.Equal(t, "DBOS.resumeWorkflow", steps[3].StepName, "fourth step should be DBOS.resumeWorkflow")
+		require.Equal(t, "DBOS.forkWorkflow", steps[4].StepName, "fifth step should be DBOS.forkWorkflow")
+		require.Equal(t, "DBOS.getWorkflowSteps", steps[5].StepName, "sixth step should be DBOS.getWorkflowSteps")
+		require.Equal(t, "DBOS.listWorkflows", steps[6].StepName, "seventh step should be DBOS.listWorkflows")
 	})
 }
 
@@ -5695,7 +5704,12 @@ func TestExportImportWorkflow(t *testing.T) {
 	grandchildWfD := NewWorkflow(dbosCtx, grandchildWf)
 
 	childWf := func(ctx DBOSContext, input exportTestPerson) (exportTestPerson, error) {
-		gcHandle, err := grandchildWfD(ctx, input.Name)
+		// Spawning a workflow is not durable: assign a deterministic ID.
+		myID, err := GetWorkflowID(ctx)
+		if err != nil {
+			return exportTestPerson{}, err
+		}
+		gcHandle, err := grandchildWfD(ctx, input.Name, WithWorkflowID(myID+"-grandchild"))
 		if err != nil {
 			return exportTestPerson{}, err
 		}
@@ -5709,8 +5723,12 @@ func TestExportImportWorkflow(t *testing.T) {
 	childWfD := NewWorkflow(dbosCtx, childWf)
 
 	parentWf := func(ctx DBOSContext, input exportTestPerson) (exportTestPerson, error) {
-		// Step 0: spawn child workflow
-		childHandle, err := childWfD(ctx, input)
+		// Spawn child workflow. Spawning is not durable: assign a deterministic ID.
+		myID, err := GetWorkflowID(ctx)
+		if err != nil {
+			return exportTestPerson{}, err
+		}
+		childHandle, err := childWfD(ctx, input, WithWorkflowID(myID+"-child"))
 		if err != nil {
 			return exportTestPerson{}, err
 		}
@@ -5777,19 +5795,20 @@ func TestExportImportWorkflow(t *testing.T) {
 	assert.Equal(t, "Alice-grandchild", result.Tags["grandchild_result"])
 	assert.Equal(t, float64(100.0), result.Scores[len(result.Scores)-1])
 
-	childID := fmt.Sprintf("%s-0", parentID)
-	grandchildID := fmt.Sprintf("%s-0", childID)
+	childID := parentID + "-child"
+	grandchildID := childID + "-grandchild"
 
-	// Parent: spawn child (0) + getResult (1) + 5 steps (2-6) + setEvent (7) + writeStream (8) = 9 steps
-	// Child: spawn grandchild (0) + getResult (1) = 2 steps
+	// Spawning and awaiting child workflows do not create parent steps.
+	// Parent: 5 steps (0-4) + setEvent (5) + writeStream (6) = 7 steps
+	// Child: no steps (spawns and awaits the grandchild)
 	// Grandchild: no steps (just returns)
 	originalParentSteps, err := GetWorkflowSteps(dbosCtx, parentID)
 	require.NoError(t, err)
-	require.Len(t, originalParentSteps, 9, "parent should have 9 steps")
+	require.Len(t, originalParentSteps, 7, "parent should have 7 steps")
 
 	originalChildSteps, err := GetWorkflowSteps(dbosCtx, childID)
 	require.NoError(t, err)
-	require.Len(t, originalChildSteps, 2, "child should have 2 steps")
+	require.Empty(t, originalChildSteps, "child should have no steps")
 
 	originalGrandchildSteps, err := GetWorkflowSteps(dbosCtx, grandchildID)
 	require.NoError(t, err)
@@ -5803,7 +5822,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		require.Len(t, exported, 3, "expected 3 exported workflows (parent + child + grandchild)")
 
 		parentExport := exported[0]
-		assert.Equal(t, parentID, *parentExport.WorkflowStatus["workflow_uuid"].(*string))
+		assert.Equal(t, parentID, parentExport.WorkflowStatus["workflow_uuid"].(string))
 		assert.NotEmpty(t, parentExport.OperationOutputs, "expected operation outputs for parent")
 		assert.NotEmpty(t, parentExport.WorkflowEvents, "expected workflow events for parent")
 		assert.NotEmpty(t, parentExport.WorkflowEventsHistory, "expected workflow events history for parent")
@@ -5907,7 +5926,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		// Verify steps for all 3 workflows
 		importedParentSteps, err := GetWorkflowSteps(dbosCtx, parentID)
 		require.NoError(t, err)
-		require.Len(t, importedParentSteps, 9, "imported parent should have 9 steps")
+		require.Len(t, importedParentSteps, 7, "imported parent should have 7 steps")
 		for i, imported := range importedParentSteps {
 			assert.Equal(t, originalParentSteps[i].StepID, imported.StepID, "parent step ID mismatch at index %d", i)
 			assert.Equal(t, originalParentSteps[i].StepName, imported.StepName, "parent step name mismatch at index %d", i)
@@ -5915,11 +5934,7 @@ func TestExportImportWorkflow(t *testing.T) {
 
 		importedChildSteps, err := GetWorkflowSteps(dbosCtx, childID)
 		require.NoError(t, err)
-		require.Len(t, importedChildSteps, 2, "imported child should have 2 steps")
-		for i, imported := range importedChildSteps {
-			assert.Equal(t, originalChildSteps[i].StepID, imported.StepID, "child step ID mismatch at index %d", i)
-			assert.Equal(t, originalChildSteps[i].StepName, imported.StepName, "child step name mismatch at index %d", i)
-		}
+		require.Empty(t, importedChildSteps, "imported child should have no steps")
 
 		importedGrandchildSteps, err := GetWorkflowSteps(dbosCtx, grandchildID)
 		require.NoError(t, err)

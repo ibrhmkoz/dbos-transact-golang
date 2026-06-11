@@ -31,7 +31,7 @@ SELECT workflow_uuid FROM existing;
 
 -- name: UpdateWorkflowOutcome :exec
 UPDATE workflow_status
-SET status = @status::text, output = @output, error = @error::text,
+SET status = @status::text, output = @output, error = @error::text, error_encoded = @error_encoded,
     updated_at = @now_ms::bigint, completed_at = @now_ms::bigint
 WHERE workflow_uuid = @workflow_uuid
   AND NOT (status = @cancelled_status::text AND @status::text IN (@success_status::text, @error_status::text));
@@ -57,7 +57,7 @@ WHERE created_at < @cutoff::bigint
   AND status NOT IN (@pending_status::text, @enqueued_status::text, @delayed_status::text);
 
 -- name: GetWorkflowOutcome :one
-SELECT status, output, error, recovery_attempts, serialization
+SELECT status, output, error, error_encoded, recovery_attempts, serialization
 FROM workflow_status
 WHERE workflow_uuid = $1;
 

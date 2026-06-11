@@ -10,7 +10,7 @@ import (
 )
 
 const exportOperationOutputs = `-- name: ExportOperationOutputs :many
-SELECT workflow_uuid, function_id, function_name, output, error,
+SELECT workflow_uuid, function_id, function_name, output, error, error_encoded,
        started_at_epoch_ms, completed_at_epoch_ms
 FROM operation_outputs WHERE workflow_uuid = $1
 `
@@ -21,6 +21,7 @@ type ExportOperationOutputsRow struct {
 	FunctionName       string
 	Output             *string
 	Error              *string
+	ErrorEncoded       *string
 	StartedAtEpochMs   *int64
 	CompletedAtEpochMs *int64
 }
@@ -40,6 +41,7 @@ func (q *Queries) ExportOperationOutputs(ctx context.Context, workflowUuid strin
 			&i.FunctionName,
 			&i.Output,
 			&i.Error,
+			&i.ErrorEncoded,
 			&i.StartedAtEpochMs,
 			&i.CompletedAtEpochMs,
 		); err != nil {
@@ -159,7 +161,7 @@ func (q *Queries) ExportWorkflowEventsHistory(ctx context.Context, workflowUuid 
 
 const exportWorkflowStatus = `-- name: ExportWorkflowStatus :one
 SELECT workflow_uuid, status, name, authenticated_user, assumed_role, authenticated_roles,
-       output, error, executor_id, created_at, updated_at, application_version, application_id,
+       output, error, error_encoded, executor_id, created_at, updated_at, application_version, application_id,
        class_name, config_name, recovery_attempts, queue_name, workflow_timeout_ms,
        workflow_deadline_epoch_ms, started_at_epoch_ms, deduplication_id, inputs, priority,
        queue_partition_key, forked_from, parent_workflow_id, delay_until_epoch_ms, serialization
@@ -175,6 +177,7 @@ type ExportWorkflowStatusRow struct {
 	AuthenticatedRoles      *string
 	Output                  *string
 	Error                   *string
+	ErrorEncoded            *string
 	ExecutorID              *string
 	CreatedAt               int64
 	UpdatedAt               int64
@@ -209,6 +212,7 @@ func (q *Queries) ExportWorkflowStatus(ctx context.Context, workflowUuid string)
 		&i.AuthenticatedRoles,
 		&i.Output,
 		&i.Error,
+		&i.ErrorEncoded,
 		&i.ExecutorID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
@@ -235,9 +239,9 @@ func (q *Queries) ExportWorkflowStatus(ctx context.Context, workflowUuid string)
 
 const importOperationOutput = `-- name: ImportOperationOutput :exec
 INSERT INTO operation_outputs (
-    workflow_uuid, function_id, function_name, output, error,
+    workflow_uuid, function_id, function_name, output, error, error_encoded,
     started_at_epoch_ms, completed_at_epoch_ms
-) VALUES ($1, $2::int, $3, $4, $5, $6, $7)
+) VALUES ($1, $2::int, $3, $4, $5, $6, $7, $8)
 `
 
 type ImportOperationOutputParams struct {
@@ -246,6 +250,7 @@ type ImportOperationOutputParams struct {
 	FunctionName       string
 	Output             *string
 	Error              *string
+	ErrorEncoded       *string
 	StartedAtEpochMs   *int64
 	CompletedAtEpochMs *int64
 }
@@ -257,6 +262,7 @@ func (q *Queries) ImportOperationOutput(ctx context.Context, arg ImportOperation
 		arg.FunctionName,
 		arg.Output,
 		arg.Error,
+		arg.ErrorEncoded,
 		arg.StartedAtEpochMs,
 		arg.CompletedAtEpochMs,
 	)
@@ -328,16 +334,16 @@ func (q *Queries) ImportWorkflowEventHistory(ctx context.Context, arg ImportWork
 const importWorkflowStatus = `-- name: ImportWorkflowStatus :exec
 INSERT INTO workflow_status (
     workflow_uuid, status, name, authenticated_user, assumed_role, authenticated_roles,
-    output, error, executor_id, created_at, updated_at, application_version, application_id,
+    output, error, error_encoded, executor_id, created_at, updated_at, application_version, application_id,
     class_name, config_name, recovery_attempts, queue_name, workflow_timeout_ms,
     workflow_deadline_epoch_ms, started_at_epoch_ms, deduplication_id, inputs, priority,
     queue_partition_key, forked_from, parent_workflow_id, delay_until_epoch_ms, serialization
 ) VALUES (
     $1, $2, $3, $4, $5, $6,
-    $7, $8, $9, $10::bigint, $11::bigint, $12, $13,
-    $14, $15, $16, $17, $18,
-    $19, $20, $21, $22, $23::int,
-    $24, $25, $26, $27, $28
+    $7, $8, $9, $10, $11::bigint, $12::bigint, $13, $14,
+    $15, $16, $17, $18, $19,
+    $20, $21, $22, $23, $24::int,
+    $25, $26, $27, $28, $29
 )
 `
 
@@ -350,6 +356,7 @@ type ImportWorkflowStatusParams struct {
 	AuthenticatedRoles      *string
 	Output                  *string
 	Error                   *string
+	ErrorEncoded            *string
 	ExecutorID              *string
 	CreatedAt               int64
 	UpdatedAt               int64
@@ -382,6 +389,7 @@ func (q *Queries) ImportWorkflowStatus(ctx context.Context, arg ImportWorkflowSt
 		arg.AuthenticatedRoles,
 		arg.Output,
 		arg.Error,
+		arg.ErrorEncoded,
 		arg.ExecutorID,
 		arg.CreatedAt,
 		arg.UpdatedAt,

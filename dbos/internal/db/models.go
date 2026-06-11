@@ -40,6 +40,7 @@ type OperationOutput struct {
 	FunctionName       string
 	Output             *string
 	Error              *string
+	ErrorEncoded       *string
 	StartedAtEpochMs   *int64
 	CompletedAtEpochMs *int64
 	Serialization      *string
@@ -113,6 +114,7 @@ type WorkflowStatus struct {
 	Request                 *string
 	Output                  *string
 	Error                   *string
+	ErrorEncoded            *string
 	ExecutorID              *string
 	CreatedAt               int64
 	UpdatedAt               int64

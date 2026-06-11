@@ -357,12 +357,17 @@ func serializeWorkflowError(err error, serialization string) string {
 
 // deserializeWorkflowError deserializes an error from DB storage.
 // For portable serialization, parses the JSON into a PortableWorkflowError.
-// For all others, creates a plain error from the string.
-func deserializeWorkflowError(errStr *string, serialization string) error {
+// For all others, prefers the cockroachdb/errors encoded representation
+// (preserving error types and errors.Is identity) and falls back to a plain
+// error built from the human-readable string.
+func deserializeWorkflowError(errStr *string, errEncoded *string, serialization string) error {
 	if errStr == nil || *errStr == "" {
 		return nil
 	}
 	if serialization != PortableSerializerName {
+		if decoded := decodeWorkflowError(errEncoded); decoded != nil {
+			return decoded
+		}
 		return errors.New(*errStr)
 	}
 	var pe PortableWorkflowError

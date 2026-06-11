@@ -27,7 +27,7 @@ func (q *Queries) DoesPatchExist(ctx context.Context, arg DoesPatchExistParams) 
 }
 
 const getOperationOutput = `-- name: GetOperationOutput :one
-SELECT output, error, function_name, serialization
+SELECT output, error, error_encoded, function_name, serialization
 FROM operation_outputs
 WHERE workflow_uuid = $1 AND function_id = $2
 `
@@ -40,6 +40,7 @@ type GetOperationOutputParams struct {
 type GetOperationOutputRow struct {
 	Output        *string
 	Error         *string
+	ErrorEncoded  *string
 	FunctionName  string
 	Serialization *string
 }
@@ -50,6 +51,7 @@ func (q *Queries) GetOperationOutput(ctx context.Context, arg GetOperationOutput
 	err := row.Scan(
 		&i.Output,
 		&i.Error,
+		&i.ErrorEncoded,
 		&i.FunctionName,
 		&i.Serialization,
 	)
@@ -120,9 +122,9 @@ func (q *Queries) InsertPatchMarker(ctx context.Context, arg InsertPatchMarkerPa
 
 const recordOperationResult = `-- name: RecordOperationResult :exec
 INSERT INTO operation_outputs (
-    workflow_uuid, function_id, output, error, function_name,
+    workflow_uuid, function_id, output, error, error_encoded, function_name,
     started_at_epoch_ms, completed_at_epoch_ms, serialization
-) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 `
 
 type RecordOperationResultParams struct {
@@ -130,6 +132,7 @@ type RecordOperationResultParams struct {
 	FunctionID         int32
 	Output             *string
 	Error              *string
+	ErrorEncoded       *string
 	FunctionName       string
 	StartedAtEpochMs   *int64
 	CompletedAtEpochMs *int64
@@ -142,6 +145,7 @@ func (q *Queries) RecordOperationResult(ctx context.Context, arg RecordOperation
 		arg.FunctionID,
 		arg.Output,
 		arg.Error,
+		arg.ErrorEncoded,
 		arg.FunctionName,
 		arg.StartedAtEpochMs,
 		arg.CompletedAtEpochMs,

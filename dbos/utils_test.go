@@ -183,6 +183,22 @@ func ensurePostgresTemplate(t *testing.T) {
 	require.NoError(t, pgTemplateErr)
 }
 
+// verifyNoLeaks asserts no goroutines leaked, ignoring goroutines that
+// legitimately outlive a single test.
+func verifyNoLeaks(t *testing.T) {
+	t.Helper()
+	goleak.VerifyNone(t,
+		// Ignore pgx health checks
+		// https://github.com/jackc/pgx/blob/15bca4a4e14e0049777c1245dba4c16300fe4fd0/pgxpool/pool.go#L417
+		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
+		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
+		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
+		// Ignore the testcontainers reaper (ryuk) connection; it lives for
+		// the whole test binary, not per test.
+		goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
+	)
+}
+
 // replaceDatabaseInURL returns baseURL pointing at dbName. Mutating
 // pgx.ConnConfig.Database and calling ConnString() does NOT work: ConnString
 // returns the original string passed to ParseConfig, ignoring mutations.
@@ -265,16 +281,7 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 		}
 		dbosCtx = nil
 		if opts.checkLeaks && parallelTestCount.Load() == 0 {
-			goleak.VerifyNone(t,
-				// Ignore pgx health checks
-				// https://github.com/jackc/pgx/blob/15bca4a4e14e0049777c1245dba4c16300fe4fd0/pgxpool/pool.go#L417
-				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
-				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
-				goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
-				// Ignore the testcontainers reaper (ryuk) connection; it lives for
-				// the whole test binary, not per test.
-				goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
-			)
+			verifyNoLeaks(t)
 		}
 	})
 

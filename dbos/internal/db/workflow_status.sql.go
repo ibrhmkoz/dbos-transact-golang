@@ -162,7 +162,7 @@ func (q *Queries) GetNthNewestCreatedAt(ctx context.Context, offset int32) (int6
 }
 
 const getWorkflowOutcome = `-- name: GetWorkflowOutcome :one
-SELECT status, output, error, recovery_attempts, serialization
+SELECT status, output, error, error_encoded, recovery_attempts, serialization
 FROM workflow_status
 WHERE workflow_uuid = $1
 `
@@ -171,6 +171,7 @@ type GetWorkflowOutcomeRow struct {
 	Status           *string
 	Output           *string
 	Error            *string
+	ErrorEncoded     *string
 	RecoveryAttempts *int64
 	Serialization    *string
 }
@@ -182,6 +183,7 @@ func (q *Queries) GetWorkflowOutcome(ctx context.Context, workflowUuid string) (
 		&i.Status,
 		&i.Output,
 		&i.Error,
+		&i.ErrorEncoded,
 		&i.RecoveryAttempts,
 		&i.Serialization,
 	)
@@ -430,16 +432,17 @@ func (q *Queries) TransitionDelayedWorkflows(ctx context.Context, arg Transition
 
 const updateWorkflowOutcome = `-- name: UpdateWorkflowOutcome :exec
 UPDATE workflow_status
-SET status = $1::text, output = $2, error = $3::text,
-    updated_at = $4::bigint, completed_at = $4::bigint
-WHERE workflow_uuid = $5
-  AND NOT (status = $6::text AND $1::text IN ($7::text, $8::text))
+SET status = $1::text, output = $2, error = $3::text, error_encoded = $4,
+    updated_at = $5::bigint, completed_at = $5::bigint
+WHERE workflow_uuid = $6
+  AND NOT (status = $7::text AND $1::text IN ($8::text, $9::text))
 `
 
 type UpdateWorkflowOutcomeParams struct {
 	Status          string
 	Output          *string
 	Error           string
+	ErrorEncoded    *string
 	NowMs           int64
 	WorkflowUuid    string
 	CancelledStatus string
@@ -452,6 +455,7 @@ func (q *Queries) UpdateWorkflowOutcome(ctx context.Context, arg UpdateWorkflowO
 		arg.Status,
 		arg.Output,
 		arg.Error,
+		arg.ErrorEncoded,
 		arg.NowMs,
 		arg.WorkflowUuid,
 		arg.CancelledStatus,

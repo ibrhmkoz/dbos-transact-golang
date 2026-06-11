@@ -222,6 +222,9 @@ var migration39SQL string
 //go:embed migrations/40_drop_child_workflow_id.sql
 var migration40SQL string
 
+//go:embed migrations/41_add_error_encoded.sql
+var migration41SQL string
+
 type migrationFile struct {
 	version int64
 	sql     string
@@ -302,6 +305,7 @@ func buildMigrations(schema string) []migrationFile {
 		{version: 38, sql: fmt.Sprintf(migration38SQL, sanitizedSchema, c, sanitizedSchema, c, sanitizedSchema), online: true},
 		{version: 39, sql: fmt.Sprintf(migration39SQL, sanitizedSchema)},
 		{version: 40, sql: fmt.Sprintf(migration40SQL, sanitizedSchema)},
+		{version: 41, sql: fmt.Sprintf(migration41SQL, sanitizedSchema, sanitizedSchema)},
 	}
 }
 
@@ -1148,6 +1152,7 @@ type updateWorkflowOutcomeDBInput struct {
 	status     WorkflowStatusType
 	output     *string
 	errStr     string
+	errEncoded *string
 	tx         Tx
 }
 
@@ -1159,6 +1164,7 @@ func (k *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflow
 		Status:          string(input.status),
 		Output:          input.output,
 		Error:           input.errStr,
+		ErrorEncoded:    input.errEncoded,
 		NowMs:           time.Now().UnixMilli(),
 		WorkflowUuid:    input.workflowID,
 		CancelledStatus: string(WorkflowStatusCancelled),
@@ -1560,6 +1566,7 @@ type awaitWorkflowResultOutput struct {
 	output        *string
 	serialization string
 	errStr        *string
+	errEncoded    *string
 }
 
 func (k *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pollInterval time.Duration) (*awaitWorkflowResultOutput, error) {
@@ -1586,7 +1593,7 @@ func (k *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pol
 		if row.Serialization != nil {
 			storedSerialization = *row.Serialization
 		}
-		result := &awaitWorkflowResultOutput{output: row.Output, serialization: storedSerialization}
+		result := &awaitWorkflowResultOutput{output: row.Output, serialization: storedSerialization, errEncoded: row.ErrorEncoded}
 
 		var status WorkflowStatusType
 		if row.Status != nil {
@@ -1604,6 +1611,11 @@ func (k *Kernel) awaitWorkflowResult(ctx context.Context, workflowID string, pol
 			}
 			return result, nil
 		case WorkflowStatusCancelled:
+			// Surface the recorded error (if any) so callers can recover the precise
+			// cancellation cause alongside the AwaitedWorkflowCancelled error.
+			if row.Error != nil && len(*row.Error) > 0 {
+				result.errStr = row.Error
+			}
 			return result, newAwaitedWorkflowCancelledError(workflowID)
 		case WorkflowStatusMaxRecoveryAttemptsExceeded:
 			return result, newDeadLetterQueueError(workflowID, int(attempts)-2)
@@ -1619,6 +1631,7 @@ type recordOperationResultDBInput struct {
 	stepName      string
 	output        *string
 	errStr        *string
+	errEncoded    *string
 	tx            Tx
 	startedAt     time.Time
 	completedAt   time.Time
@@ -1634,6 +1647,7 @@ func (k *Kernel) recordOperationResult(ctx context.Context, input recordOperatio
 		FunctionID:         int32(input.stepID),
 		Output:             input.output,
 		Error:              input.errStr,
+		ErrorEncoded:       input.errEncoded,
 		FunctionName:       input.stepName,
 		StartedAtEpochMs:   &startedAtMs,
 		CompletedAtEpochMs: &completedAtMs,
@@ -1673,6 +1687,7 @@ func (k *Kernel) getDeduplicatedWorkflow(ctx context.Context, workflowName, dedu
 type recordedResult struct {
 	output        *string
 	errStr        *string
+	errEncoded    *string
 	serialization string
 }
 
@@ -1737,6 +1752,7 @@ func (k *Kernel) checkOperationExecution(ctx context.Context, input checkOperati
 	result := &recordedResult{
 		output:        out.Output,
 		errStr:        recordedErrStr,
+		errEncoded:    out.ErrorEncoded,
 		serialization: storedSerialization,
 	}
 	return result, nil
@@ -2585,10 +2601,7 @@ func (k *Kernel) recv(ctx context.Context, input recvInput) (*recvResult, error)
 		return nil, err
 	}
 	if recordedResult != nil {
-		var recvErr error
-		if recordedResult.errStr != nil {
-			recvErr = errors.New(*recordedResult.errStr)
-		}
+		recvErr := deserializeWorkflowError(recordedResult.errStr, recordedResult.errEncoded, recordedResult.serialization)
 		return &recvResult{message: recordedResult.output, serialization: recordedResult.serialization}, recvErr
 	}
 
@@ -2720,6 +2733,7 @@ loop:
 		timeoutErr = newTimeoutError(destinationID, functionName, fmt.Sprintf("no message received within %v", input.Timeout))
 		s := timeoutErr.Error()
 		recordInput.errStr = &s
+		recordInput.errEncoded = encodeWorkflowError(timeoutErr)
 	}
 
 	err = k.recordOperationResult(ctx, recordInput)
@@ -2806,10 +2820,7 @@ func (k *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 			return nil, err
 		}
 		if recordedResult != nil {
-			var evtErr error
-			if recordedResult.errStr != nil {
-				evtErr = errors.New(*recordedResult.errStr)
-			}
+			evtErr := deserializeWorkflowError(recordedResult.errStr, recordedResult.errEncoded, recordedResult.serialization)
 			return &getEventResult{value: recordedResult.output, serialization: recordedResult.serialization}, evtErr
 		}
 	}
@@ -2955,6 +2966,7 @@ func (k *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 			timeoutErr = newTimeoutError(wfState.workflowID, functionName, fmt.Sprintf("no event found for key '%s' within %v", input.Key, input.Timeout))
 			s := timeoutErr.Error()
 			recordInput.errStr = &s
+			recordInput.errEncoded = encodeWorkflowError(timeoutErr)
 		}
 
 		err = k.recordOperationResult(ctx, recordInput)
@@ -4293,6 +4305,7 @@ func (k *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflo
 			AuthenticatedRoles:      impStr(status["authenticated_roles"]),
 			Output:                  impStr(status["output"]),
 			Error:                   impStr(status["error"]),
+			ErrorEncoded:            impStr(status["error_encoded"]),
 			ExecutorID:              impStr(status["executor_id"]),
 			CreatedAt:               impInt64NonNull(status["created_at"]),
 			UpdatedAt:               impInt64NonNull(status["updated_at"]),
@@ -4325,6 +4338,7 @@ func (k *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflo
 				FunctionName:       impStrNonNull(op["function_name"]),
 				Output:             impStr(op["output"]),
 				Error:              impStr(op["error"]),
+				ErrorEncoded:       impStr(op["error_encoded"]),
 				StartedAtEpochMs:   impInt64Ptr(op["started_at_epoch_ms"]),
 				CompletedAtEpochMs: impInt64Ptr(op["completed_at_epoch_ms"]),
 			}); err != nil {

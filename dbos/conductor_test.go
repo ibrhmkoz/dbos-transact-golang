@@ -17,7 +17,6 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
 
 // writeCommand represents a command to write to the WebSocket connection
@@ -327,7 +326,7 @@ func (m *mockWebSocketServer) sendCloseMessage(code int, text string) error {
 // TestConductorReconnection tests various reconnection scenarios for the conductor
 func TestConductorReconnection(t *testing.T) {
 	t.Run("ServerRestart", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		// Create and start mock server
 		mockServer := newMockWebSocketServer()
@@ -417,7 +416,7 @@ func TestConductorReconnection(t *testing.T) {
 	})
 
 	t.Run("TestBinaryMessage", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		// Create and start mock server
 		mockServer := newMockWebSocketServer()
@@ -505,7 +504,7 @@ func TestConductorReconnection(t *testing.T) {
 
 	// TestConductorPingTimeout tests that conductor reconnects when server stops responding to pings
 	t.Run("TestConductorPingTimeout", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		// Create and start mock server
 		mockServer := newMockWebSocketServer()
@@ -598,7 +597,7 @@ func TestConductorReconnection(t *testing.T) {
 	})
 
 	t.Run("CloseMessages", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		// Create and start mock server
 		mockServer := newMockWebSocketServer()
@@ -778,7 +777,7 @@ func TestConductorExecutorInfo(t *testing.T) {
 
 func TestConductorAlertHandler(t *testing.T) {
 	t.Run("WithHandler", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
@@ -852,7 +851,7 @@ func TestConductorAlertHandler(t *testing.T) {
 	})
 
 	t.Run("WithoutHandler", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
@@ -902,7 +901,7 @@ func TestConductorAlertHandler(t *testing.T) {
 	})
 
 	t.Run("HandlerPanic", func(t *testing.T) {
-		defer goleak.VerifyNone(t)
+		defer verifyNoLeaks(t)
 
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
