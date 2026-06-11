@@ -14,6 +14,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/stretchr/testify/require"
+	"github.com/testcontainers/testcontainers-go/modules/postgres"
 	"go.uber.org/goleak"
 )
 
@@ -39,6 +40,7 @@ var (
 	pgTemplateName    string
 	pgTemplateErr     error
 	pgTemplateCloneMu sync.Mutex
+	pgContainer       *postgres.PostgresContainer
 )
 
 var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -55,6 +57,11 @@ func TestMain(m *testing.M) {
 				_ = conn.Close(context.Background())
 			}
 		}
+	}
+	// The shared Postgres testcontainer (if started) must outlive every parallel
+	// test, so it is torn down here rather than via a per-test t.Cleanup.
+	if pgContainer != nil {
+		_ = pgContainer.Terminate(context.Background())
 	}
 	os.Exit(exitCode)
 }
@@ -114,6 +121,32 @@ func createPostgresTestDatabase(t *testing.T) string {
 func ensurePostgresTemplate(t *testing.T) {
 	t.Helper()
 	pgTemplateOnce.Do(func() {
+		// When no database is configured, start a throwaway Postgres testcontainer so
+		// tests don't depend on a locally running server. It is torn down in TestMain.
+		if os.Getenv("DBOS_SYSTEM_DATABASE_URL") == "" {
+			password := os.Getenv("PGPASSWORD")
+			if password == "" {
+				password = "dbos"
+			}
+			container, err := postgres.Run(t.Context(), "postgres:16-alpine",
+				postgres.WithDatabase("dbos"),
+				postgres.WithUsername("postgres"),
+				postgres.WithPassword(password),
+				postgres.BasicWaitStrategies(),
+			)
+			if err != nil {
+				pgTemplateErr = err
+				return
+			}
+			pgContainer = container
+			dbURL, err := container.ConnectionString(t.Context(), "sslmode=disable")
+			if err != nil {
+				pgTemplateErr = err
+				return
+			}
+			os.Setenv("DBOS_SYSTEM_DATABASE_URL", dbURL)
+		}
+
 		config, err := pgx.ParseConfig(getDatabaseURL())
 		if err != nil {
 			pgTemplateErr = err
