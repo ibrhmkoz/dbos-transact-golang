@@ -52,7 +52,7 @@ func TestDebouncer(t *testing.T) {
 	debounceTestWF = NewWorkflow(dbosCtx, debounceTestWorkflow)
 	callsDebounceWF := NewWorkflow(dbosCtx, workflowThatCallsDebounce)
 
-	Launch(dbosCtx)
+	Start(dbosCtx)
 	t.Run("TestSingleDebounceCall", func(t *testing.T) {
 
 		parentInput := debounceCallInput{
@@ -233,15 +233,15 @@ func TestDebouncer(t *testing.T) {
 	})
 }
 
-func TestWorkflowCannotBeRegisteredAfterLaunch(t *testing.T) {
+func TestWorkflowCannotBeRegisteredAfterStart(t *testing.T) {
 
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS context")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS context")
 
-	// Registering a workflow after launch must panic.
+	// Registering a workflow after start must panic.
 	assert.Panics(t, func() {
 		NewWorkflow(dbosCtx, debounceTestWorkflow)
-	}, "registering a workflow after launch should panic")
+	}, "registering a workflow after start should panic")
 }

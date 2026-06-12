@@ -506,7 +506,7 @@ func TestSerializer(t *testing.T) {
 	serializerMyIntGetEventWorkflowD := NewWorkflow(executor, serializerMyIntGetEventWorkflow)
 	serializerStreamWorkflowD := NewWorkflow(executor, serializerStreamWorkflow)
 
-	err := Launch(executor)
+	err := Start(executor)
 	require.NoError(t, err)
 	defer Shutdown(executor, 10*time.Second)
 
@@ -934,7 +934,7 @@ func TestGobSerializer(t *testing.T) {
 	gobGobOnlyStreamWorkflowD := NewWorkflow(executor, gobGobOnlyStreamWorkflow)
 	queuedGobWorkflow := NewWorkflow(executor, gobQueuedWorkflow)
 
-	err := Launch(executor)
+	err := Start(executor)
 	require.NoError(t, err)
 	defer Shutdown(executor, 10*time.Second)
 
@@ -1174,7 +1174,7 @@ func TestPortableInterop(t *testing.T) {
 	}
 	NewWorkflow(executor, portableWf, WithWorkflowName("interop_workflow"))
 
-	require.NoError(t, Launch(executor))
+	require.NoError(t, Start(executor))
 	defer Shutdown(executor, 10*time.Second)
 
 	insertPortableWorkflow := func(t *testing.T, workflowId, status string, queueName *string) {
@@ -1367,7 +1367,7 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		return ser
 	}
 
-	// Workflows must be registered before Launch.
+	// Workflows must be registered before Start.
 	var (
 		portableSendSenderWf   WorkflowFn[string, string]
 		portableSendReceiverWf WorkflowFn[string, Payload]
@@ -1401,7 +1401,7 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	portableGetterWfD := NewWorkflow(executor, portableGetterWf, WithWorkflowName("portable-op-getter"))
 	portableWriterWfD := NewWorkflow(executor, portableWriterWf, WithWorkflowName("portable-op-writer"))
 
-	require.NoError(t, Launch(executor))
+	require.NoError(t, Start(executor))
 	defer Shutdown(executor, 10*time.Second)
 
 	t.Run("WithPortableSend", func(t *testing.T) {
@@ -1531,7 +1531,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	}
 	multiStepWfD := NewWorkflow(executor, multiStepWf, WithWorkflowName("partial_recovery_wf"))
 
-	require.NoError(t, Launch(executor))
+	require.NoError(t, Start(executor))
 	defer Shutdown(executor, 10*time.Second)
 
 	c := executor.(*dbosContext)
@@ -1779,7 +1779,7 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 	plainErrWfD := NewWorkflow(executor, plainErrWf, WithWorkflowName("plain_err_portable_wf"))
 
-	require.NoError(t, Launch(executor))
+	require.NoError(t, Start(executor))
 	defer Shutdown(executor, 10*time.Second)
 
 	c := executor.(*dbosContext)

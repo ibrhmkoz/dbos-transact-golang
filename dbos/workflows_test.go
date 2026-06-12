@@ -192,7 +192,7 @@ func TestCallableWorkflowDefinition(t *testing.T) {
 	require.Equal(t, WorkflowStatusPending, status.Status)
 	require.Empty(t, status.QueueName)
 
-	require.NoError(t, Launch(workerCtx))
+	require.NoError(t, Start(workerCtx))
 	result, err := handle.GetResult()
 	require.NoError(t, err)
 	require.Equal(t, "input", result)
@@ -461,17 +461,17 @@ func TestWorkflowsRegistration(t *testing.T) {
 		NewWorkflow(freshCtx, simpleWorkflowError, WithWorkflowName("same-name"))
 	})
 
-	t.Run("RegisterAfterLaunchPanics", func(t *testing.T) {
+	t.Run("RegisterAfterStartPanics", func(t *testing.T) {
 
 		freshCtx := setupDbos(t, setupDbosOptions{dropDB: false, checkLeaks: true})
 
-		err := Launch(freshCtx)
+		err := Start(freshCtx)
 		require.NoError(t, err)
 		defer Shutdown(freshCtx, 10*time.Second)
 
 		defer func() {
 			if r := recover(); r == nil {
-				t.Fatal("expected panic from registration after launch but got none")
+				t.Fatal("expected panic from registration after start but got none")
 			}
 		}()
 		NewWorkflow(freshCtx, simpleWorkflow)
@@ -650,8 +650,8 @@ func TestSteps(t *testing.T) {
 
 	userObjectWorkflowD := NewWorkflow(dbosCtx, userObjectWorkflow)
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS")
 
 	t.Run("StepsMustRunInsideWorkflows", func(t *testing.T) {
 
@@ -981,7 +981,7 @@ func TestSelect(t *testing.T) {
 	}
 	selectIdempotencyWorkflowD := NewWorkflow(dbosCtx, selectIdempotencyWorkflow)
 
-	dbosCtx.Launch()
+	dbosCtx.Start()
 
 	t.Run("Select must run inside a workflow", func(t *testing.T) {
 		ch1, _ := Go(dbosCtx, func(ctx context.Context) (string, error) {
@@ -1185,8 +1185,8 @@ func TestChildWorkflow(t *testing.T) {
 
 	t.Cleanup(func() { deleteBlockEvent.Set() })
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS")
 
 	t.Run("ChildWorkflowCalledWithinStep", func(t *testing.T) {
 		parentHandle, err := simpleParentWfD(dbosCtx, "")
@@ -1452,7 +1452,7 @@ func TestUuid(t *testing.T) {
 	uuidWorkflow := NewWorkflow(dbosCtx, func(ctx Context, _ string) (string, error) {
 		return Uuid(ctx)
 	}, WithWorkflowName("uuid-workflow"))
-	require.NoError(t, Launch(dbosCtx))
+	require.NoError(t, Start(dbosCtx))
 
 	handle, err := uuidWorkflow(dbosCtx, "")
 	require.NoError(t, err)
@@ -1554,8 +1554,8 @@ func TestWorkflowRecovery(t *testing.T) {
 
 	recoveryWorkflowD := NewWorkflow(dbosCtx, recoveryWorkflow)
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS")
 
 	t.Run("WorkflowRecovery", func(t *testing.T) {
 		const numWorkflows = 5
@@ -1651,7 +1651,7 @@ func TestWorkflowDeadLetterQueue(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	deadLetterQueueWorkflowD := NewWorkflow(dbosCtx, deadLetterQueueWorkflow, WithMaxRetries(maxRecoveryAttempts))
 	infiniteDeadLetterQueueWorkflowD := NewWorkflow(dbosCtx, infiniteDeadLetterQueueWorkflow, WithMaxRetries(-1))
-	dbosCtx.Launch()
+	dbosCtx.Start()
 
 	t.Run("DeadLetterQueueBehavior", func(t *testing.T) {
 		recoveryCount = 0
@@ -1757,8 +1757,8 @@ func TestCancelWorkflows(t *testing.T) {
 	}
 	blockingWorkflowD := NewWorkflow(dbosCtx, blockingWorkflow)
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS instance")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS instance")
 
 	startBlockedWorkflows := func(t *testing.T, n int, prefix string) []string {
 		t.Helper()
@@ -1992,7 +1992,7 @@ func TestSendRecv(t *testing.T) {
 	workflowThatCallsSendInStepD := NewWorkflow(dbosCtx, workflowThatCallsSendInStep)
 	recvContextCancelWorkflowD := NewWorkflow(dbosCtx, recvContextCancelWorkflow)
 
-	Launch(dbosCtx)
+	Start(dbosCtx)
 
 	t.Run("SendRecvSuccess", func(t *testing.T) {
 
@@ -2429,7 +2429,7 @@ func TestSetGetEvent(t *testing.T) {
 	getEventIdempotencyWorkflowD := NewWorkflow(dbosCtx, getEventIdempotencyWorkflow)
 	NewWorkflow(dbosCtx, durableGetEventSleepWorkflow)
 
-	Launch(dbosCtx)
+	Start(dbosCtx)
 
 	t.Run("SetGetEventFromWorkflow", func(t *testing.T) {
 
@@ -3667,7 +3667,7 @@ func TestGarbageCollect(t *testing.T) {
 
 		retention := time.Hour
 		workflow := NewWorkflow(dbosCtx, gcTestWorkflow, WithWorkflowRetention(retention))
-		require.NoError(t, Launch(dbosCtx))
+		require.NoError(t, Start(dbosCtx))
 		handle, err := workflow(dbosCtx, 42)
 		require.NoError(t, err)
 		_, err = handle.GetResult()
@@ -4073,7 +4073,7 @@ func TestDeduplicationCollapsesIntoExistingWorkflow(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	workflow := NewWorkflow(dbosCtx, simpleWorkflow, WithWorkflowName("deduplicated-workflow"))
-	require.NoError(t, Launch(dbosCtx))
+	require.NoError(t, Start(dbosCtx))
 
 	deduplicationId := uuid.NewString()
 	first, err := workflow(dbosCtx, "first", WithDeduplicationId(deduplicationId))
@@ -4252,8 +4252,8 @@ func TestRegisteredWorkflowListing(t *testing.T) {
 	NewWorkflow(dbosCtx, simpleWorkflowWithStep, WithWorkflowName("CustomStepWorkflow"))
 	NewWorkflow(dbosCtx, simpleWorkflowWithSchedule, WithWorkflowName("ScheduledWorkflow"), WithSchedule("0 0 * * * *"))
 
-	err := Launch(dbosCtx)
-	require.NoError(t, err, "failed to launch DBOS")
+	err := Start(dbosCtx)
+	require.NoError(t, err, "failed to start DBOS")
 
 	t.Run("ListRegisteredWorkflows", func(t *testing.T) {
 		workflows, err := ListRegisteredWorkflows(dbosCtx)
@@ -4307,7 +4307,7 @@ func TestWorkflowIdentity(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	simpleWorkflowD := NewWorkflow(dbosCtx, simpleWorkflow)
-	require.NoError(t, Launch(dbosCtx))
+	require.NoError(t, Start(dbosCtx))
 	handle, err := simpleWorkflowD(
 		dbosCtx,
 		"test",
@@ -4391,7 +4391,7 @@ func TestWorkflowAuthIndependence(t *testing.T) {
 	authParentWorkflowD = NewWorkflow(dbosCtx, authParentWorkflow)
 	authGrandparentWorkflowD := NewWorkflow(dbosCtx, authGrandparentWorkflow)
 	authParentWithOverrideWorkflowD := NewWorkflow(dbosCtx, authParentWithOverrideWorkflow)
-	require.NoError(t, Launch(dbosCtx))
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("ParentAuthDoesNotPropagate", func(t *testing.T) {
 		handle, err := authParentWorkflowD(dbosCtx, "",
@@ -4564,7 +4564,7 @@ func TestPatching(t *testing.T) {
 		}
 
 		wfD := NewWorkflow(dbosCtx, wf, WithWorkflowName("wf"))
-		require.NoError(t, Launch(dbosCtx))
+		require.NoError(t, Start(dbosCtx))
 
 		handle, err := wfD(dbosCtx, 1)
 		require.NoError(t, err, "failed to start workflow")
@@ -4606,10 +4606,10 @@ func TestPatching(t *testing.T) {
 			return res, nil
 		}
 
-		dbosCtx.(*dbosContext).launched.Store(false)
+		dbosCtx.(*dbosContext).started.Store(false)
 		ClearRegistries(dbosCtx)
 		wfPatchedD := NewWorkflow(dbosCtx, wfPatched, WithWorkflowName("wf"))
-		dbosCtx.(*dbosContext).launched.Store(true)
+		dbosCtx.(*dbosContext).started.Store(true)
 
 		patchedHandle, err := wfPatchedD(dbosCtx, 1)
 		require.NoError(t, err, "failed to start workflow")
@@ -4661,10 +4661,10 @@ func TestPatching(t *testing.T) {
 			return res, nil
 		}
 
-		dbosCtx.(*dbosContext).launched.Store(false)
+		dbosCtx.(*dbosContext).started.Store(false)
 		ClearRegistries(dbosCtx)
 		wfDeprecatePatchD := NewWorkflow(dbosCtx, wfDeprecatePatch, WithWorkflowName("wf"))
-		dbosCtx.(*dbosContext).launched.Store(true)
+		dbosCtx.(*dbosContext).started.Store(true)
 
 		deprecatedHandle, err := wfDeprecatePatchD(dbosCtx, 1)
 		require.NoError(t, err, "failed to start workflow")
@@ -4736,8 +4736,8 @@ func TestPatching(t *testing.T) {
 		}
 		wfWithDeprecatePatchD := NewWorkflow(dbosCtxNoPatching, wfWithDeprecatePatch)
 
-		err = Launch(dbosCtxNoPatching)
-		require.NoError(t, err, "failed to launch DBOS context")
+		err = Start(dbosCtxNoPatching)
+		require.NoError(t, err, "failed to start DBOS context")
 		defer Shutdown(dbosCtxNoPatching, 10*time.Second)
 
 		handle, err := wfWithPatchD(dbosCtxNoPatching, 1)
@@ -4871,7 +4871,7 @@ func TestStreams(t *testing.T) {
 
 	writeStreamWorkflowD := NewWorkflow(dbosCtx, writeStreamWorkflow)
 
-	Launch(dbosCtx)
+	Start(dbosCtx)
 
 	readFuncs := map[string]readStreamFunc{
 		"Sync":  syncReadStream,
@@ -5363,7 +5363,7 @@ func TestExportImportWorkflow(t *testing.T) {
 
 	parentWfD := NewWorkflow(dbosCtx, parentWf)
 
-	Launch(dbosCtx)
+	Start(dbosCtx)
 
 	input := exportTestPerson{
 		Name: "Alice",
@@ -5572,7 +5572,7 @@ func TestGetWorkflowAggregates(t *testing.T) {
 	aggregatesWorkflowSuccessD := NewWorkflow(dbosCtx, aggregatesWorkflowSuccess)
 	aggregatesWorkflowFailD := NewWorkflow(dbosCtx, aggregatesWorkflowFail)
 
-	require.NoError(t, Launch(dbosCtx), "failed to launch DBOS instance")
+	require.NoError(t, Start(dbosCtx), "failed to start DBOS instance")
 
 	successFQN := runtime.FuncForPC(reflect.ValueOf(aggregatesWorkflowSuccess).Pointer()).Name()
 	failFQN := runtime.FuncForPC(reflect.ValueOf(aggregatesWorkflowFail).Pointer()).Name()
@@ -5789,7 +5789,7 @@ func TestGetStepAggregates(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
 	stepAggregatesWorkflowD := NewWorkflow(dbosCtx, stepAggregatesWorkflow)
-	require.NoError(t, Launch(dbosCtx), "failed to launch DBOS instance")
+	require.NoError(t, Start(dbosCtx), "failed to start DBOS instance")
 
 	for i := 0; i < 3; i++ {
 		handle, err := stepAggregatesWorkflowD(dbosCtx, fmt.Sprintf("in-%d", i))

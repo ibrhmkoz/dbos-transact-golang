@@ -283,7 +283,7 @@ func TestChaosWorkflow(t *testing.T) {
 
 	dbos.NewWorkflow(dbosCtx, scheduledWorkflow, dbos.WithSchedule("* * * * * *"), dbos.WithWorkflowName("ScheduledChaosTest"))
 
-	err := dbos.Launch(dbosCtx)
+	err := dbos.Start(dbosCtx)
 	require.NoError(t, err)
 
 	numWorkflows := 10000
@@ -347,7 +347,7 @@ func TestChaosRecv(t *testing.T) {
 
 	recvWorkflowWF := dbos.NewWorkflow(dbosCtx, recvWorkflow)
 
-	err := dbos.Launch(dbosCtx)
+	err := dbos.Start(dbosCtx)
 	require.NoError(t, err)
 
 	for i := range numWorkflows {
@@ -393,7 +393,7 @@ func TestChaosEvents(t *testing.T) {
 
 	eventWorkflowWF := dbos.NewWorkflow(dbosCtx, eventWorkflow)
 
-	err := dbos.Launch(dbosCtx)
+	err := dbos.Start(dbosCtx)
 	require.NoError(t, err)
 
 	numWorkflows := 5000
@@ -473,7 +473,7 @@ func TestChaosQueues(t *testing.T) {
 
 	mainWorkflow := dbos.NewWorkflow(dbosCtx, workflow)
 
-	err := dbos.Launch(dbosCtx)
+	err := dbos.Start(dbosCtx)
 	require.NoError(t, err)
 
 	numWorkflows := 30

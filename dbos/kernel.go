@@ -43,7 +43,7 @@ type Kernel struct {
 	schema                        string
 
 	// Daemon lifecycle: the kernel owns the context its background loops run
-	// under, so callers control it only through Launch/Shutdown.
+	// under, so callers control it only through Start/Shutdown.
 	lifecycleMu sync.Mutex
 	loopCancel  context.CancelFunc
 	loopWg      sync.WaitGroup
@@ -656,9 +656,9 @@ func (k *Kernel) listenNotifyPool() *pgxpool.Pool {
 	return k.pool
 }
 
-// Launch starts the kernel's background daemons. It is idempotent: calling it
-// on an already-launched kernel is a no-op.
-func (k *Kernel) Launch() {
+// Start starts the kernel's background daemons. It is idempotent: calling it
+// on an already-started kernel is a no-op.
+func (k *Kernel) Start() {
 	k.lifecycleMu.Lock()
 	defer k.lifecycleMu.Unlock()
 	if k.loopCancel != nil {
@@ -672,7 +672,7 @@ func (k *Kernel) Launch() {
 	})
 }
 
-// Shutdown stops the daemons started by Launch and closes the connection pool.
+// Shutdown stops the daemons started by Start and closes the connection pool.
 // ctx only bounds how long Shutdown waits for graceful completion; on deadline
 // it logs, keeps tearing down, and returns ctx.Err().
 func (k *Kernel) Shutdown(ctx context.Context) error {

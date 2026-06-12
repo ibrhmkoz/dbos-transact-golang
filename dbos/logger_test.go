@@ -21,7 +21,7 @@ func TestLogger(t *testing.T) {
 			AppName:     "test-app",
 		})
 		require.NoError(t, err)
-		err = Launch(dbosCtx)
+		err = Start(dbosCtx)
 		require.NoError(t, err)
 		t.Cleanup(func() {
 			if dbosCtx != nil {
@@ -52,7 +52,7 @@ func TestLogger(t *testing.T) {
 			Logger:      slogLogger,
 		})
 		require.NoError(t, err)
-		err = Launch(dbosCtx)
+		err = Start(dbosCtx)
 		require.NoError(t, err)
 		t.Cleanup(func() {
 			if dbosCtx != nil {

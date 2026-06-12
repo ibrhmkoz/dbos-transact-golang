@@ -553,7 +553,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		sendGetEventWF := NewWorkflow(ctx, sendGetEventWorkflow)
 		recvSetEventWF := NewWorkflow(ctx, recvSetEventWorkflow)
 
-		Launch(ctx)
+		Start(ctx)
 
 		// Start workflow B first (receiver); it does not need its partner's ID
 		handleB, err := recvSetEventWF(ctx, testWorkflowInput{
@@ -699,7 +699,7 @@ func TestCustomPool(t *testing.T) {
 		sendGetEventCustomWF := NewWorkflow(customdbosContext, sendGetEventWorkflowCustom)
 		recvSetEventCustomWF := NewWorkflow(customdbosContext, recvSetEventWorkflowCustom)
 
-		err = Launch(customdbosContext)
+		err = Start(customdbosContext)
 		require.NoError(t, err)
 		defer Shutdown(dbosCtx, 1*time.Minute)
 
@@ -768,7 +768,7 @@ func TestCustomPool(t *testing.T) {
 
 		wfDef := NewWorkflow(dbosCtx, wf)
 
-		err = Launch(dbosCtx)
+		err = Start(dbosCtx)
 		require.NoError(t, err)
 		defer Shutdown(dbosCtx, 1*time.Minute)
 
@@ -822,7 +822,7 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err, "failed to create system database with custom pool")
 		require.NotNil(t, kernel)
 
-		kernel.Launch()
+		kernel.Start()
 
 		require.Eventually(t, func() bool {
 			conn, err := kernel.pool.Acquire(ctx)

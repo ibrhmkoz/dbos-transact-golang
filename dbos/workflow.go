@@ -115,7 +115,7 @@ func WithHandlePollingInterval(interval time.Duration) GetResultOption {
 func (h *workflowHandle) GetStatus() (WorkflowStatus, error) {
 	loadInput := false
 	loadOutput := false
-	if h.dbosContext.(*dbosContext).launched.Load() {
+	if h.dbosContext.(*dbosContext).started.Load() {
 		loadInput = false
 		loadOutput = false
 	}
@@ -230,8 +230,8 @@ func storeWorkflowRegistryEntry(ctx Context, workflowFQN string, fn wrappedWorkf
 		return
 	}
 
-	if c.launched.Load() {
-		panic("Cannot register workflow after DBOS has launched")
+	if c.started.Load() {
+		panic("Cannot register workflow after DBOS has started")
 	}
 
 	entry := WorkflowRegistryEntry{
@@ -260,8 +260,8 @@ func registerScheduledWorkflow(ctx Context, workflowFQN, customName string, fn W
 		return
 	}
 
-	if c.launched.Load() {
-		panic("Cannot register scheduled workflow after DBOS has launched")
+	if c.started.Load() {
+		panic("Cannot register scheduled workflow after DBOS has started")
 	}
 
 	workflowName := workflowFQN
@@ -2388,7 +2388,7 @@ func GetStepId(ctx Context) (int, error) {
 func (c *dbosContext) RetrieveWorkflow(workflowId string) (*WorkflowHandle[any], error) {
 	loadInput := false
 	loadOutput := false
-	if c.launched.Load() {
+	if c.started.Load() {
 		loadInput = false
 		loadOutput = false
 	}
@@ -2943,7 +2943,7 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 
 	loadInput := true
 	loadOutput := true
-	if !c.launched.Load() {
+	if !c.started.Load() {
 		loadInput = false
 		loadOutput = false
 	}
@@ -3091,7 +3091,7 @@ type getWorkflowStepsOptions struct {
 
 type GetWorkflowStepsOption func(*getWorkflowStepsOptions)
 
-// When unset, output is loaded only if the DBOS context has been launched.
+// When unset, output is loaded only if the DBOS context has been started.
 func WithStepsLoadOutput(loadOutput bool) GetWorkflowStepsOption {
 	return func(o *getWorkflowStepsOptions) {
 		o.loadOutput = &loadOutput
@@ -3103,7 +3103,7 @@ func (c *dbosContext) GetWorkflowSteps(workflowId string, opts ...GetWorkflowSte
 	for _, opt := range opts {
 		opt(&options)
 	}
-	loadOutput := c.launched.Load()
+	loadOutput := c.started.Load()
 	if options.loadOutput != nil {
 		loadOutput = *options.loadOutput
 	}

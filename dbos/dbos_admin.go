@@ -77,7 +77,7 @@ func NewDbosAdmin(ctx context.Context, config DbosAdminConfig) (DbosAdmin, error
 
 	asDbosCtx := dbosCtx.(*dbosContext)
 	if asDbosCtx.ownsSystemDB {
-		asDbosCtx.kernel.Launch()
+		asDbosCtx.kernel.Start()
 	}
 
 	return &dbosAdmin{dbosCtx: asDbosCtx}, nil

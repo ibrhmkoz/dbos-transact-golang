@@ -10,9 +10,9 @@ import (
 
 func TestApplicationVersions(t *testing.T) {
 	parallelTest(t)
-	t.Run("LaunchRegistersCurrentVersion", func(t *testing.T) {
+	t.Run("StartRegistersCurrentVersion", func(t *testing.T) {
 		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
-		require.NoError(t, dbosCtx.Launch())
+		require.NoError(t, dbosCtx.Start())
 
 		latest, err := GetLatestApplicationVersion(dbosCtx)
 		require.NoError(t, err)
@@ -28,7 +28,7 @@ func TestApplicationVersions(t *testing.T) {
 
 	t.Run("CreateIsIdempotent", func(t *testing.T) {
 		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
-		require.NoError(t, dbosCtx.Launch())
+		require.NoError(t, dbosCtx.Start())
 
 		c := dbosCtx.(*dbosContext)
 		// Re-registering the same version must not create a duplicate row.
@@ -42,7 +42,7 @@ func TestApplicationVersions(t *testing.T) {
 
 	t.Run("SetLatestUpdatesTimestamp", func(t *testing.T) {
 		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
-		require.NoError(t, dbosCtx.Launch())
+		require.NoError(t, dbosCtx.Start())
 
 		c := dbosCtx.(*dbosContext)
 
@@ -68,7 +68,7 @@ func TestApplicationVersions(t *testing.T) {
 	t.Run("GetLatestReturnsErrWhenEmpty", func(t *testing.T) {
 		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 
-		require.NoError(t, dbosCtx.Launch())
+		require.NoError(t, dbosCtx.Start())
 		c := dbosCtx.(*dbosContext)
 		s := c.kernel
 		_, err := s.pool.Exec(c, s.renderSql("DELETE FROM %sapplication_versions", ""))
@@ -83,7 +83,7 @@ func TestApplicationVersions(t *testing.T) {
 
 	t.Run("SetLatestRequiresVersionName", func(t *testing.T) {
 		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
-		require.NoError(t, dbosCtx.Launch())
+		require.NoError(t, dbosCtx.Start())
 
 		err := SetLatestApplicationVersion(dbosCtx, "")
 		require.Error(t, err)

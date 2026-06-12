@@ -107,7 +107,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 type Context interface {
 	context.Context
 
-	Launch() error
+	Start() error
 	Shutdown(timeout time.Duration)
 
 	RunAsStep(fn StepFunc, opts ...StepOption) (any, error)
@@ -144,7 +144,7 @@ type dbosContext struct {
 	ctx           context.Context
 	ctxCancelFunc context.CancelCauseFunc
 
-	launched atomic.Bool
+	started atomic.Bool
 
 	kernel       *Kernel
 	ownsSystemDB bool
@@ -202,7 +202,7 @@ func (c *dbosContext) From(ctx context.Context) Context {
 	if ctx == nil {
 		return nil
 	}
-	launched := c.launched.Load()
+	started := c.started.Load()
 	childCtx := &dbosContext{
 		ctx:                ctx,
 		config:             c.config,
@@ -217,7 +217,7 @@ func (c *dbosContext) From(ctx context.Context) Context {
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx
 }
 
@@ -236,7 +236,7 @@ func WithValue(ctx Context, key, val any) Context {
 }
 
 func (c *dbosContext) WithValue(key, val any) Context {
-	launched := c.launched.Load()
+	started := c.started.Load()
 	childCtx := &dbosContext{
 		ctx:                context.WithValue(c.ctx, key, val),
 		config:             c.config,
@@ -251,12 +251,12 @@ func (c *dbosContext) WithValue(key, val any) Context {
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx
 }
 
 func (c *dbosContext) WithoutCancel() Context {
-	launched := c.launched.Load()
+	started := c.started.Load()
 	childCtx := &dbosContext{
 		ctx:                context.WithoutCancel(c.ctx),
 		config:             c.config,
@@ -271,7 +271,7 @@ func (c *dbosContext) WithoutCancel() Context {
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx
 }
 
@@ -283,7 +283,7 @@ func WithoutCancel(ctx Context) Context {
 }
 
 func (c *dbosContext) WithCancel() (Context, context.CancelFunc) {
-	launched := c.launched.Load()
+	started := c.started.Load()
 	newCtx, cancelFunc := context.WithCancel(c.ctx)
 	childCtx := &dbosContext{
 		ctx:                newCtx,
@@ -298,7 +298,7 @@ func (c *dbosContext) WithCancel() (Context, context.CancelFunc) {
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx, cancelFunc
 }
 
@@ -312,7 +312,7 @@ func WithCancel(ctx Context) (Context, context.CancelFunc) {
 }
 
 func (c *dbosContext) WithCancelCause() (Context, context.CancelCauseFunc) {
-	launched := c.launched.Load()
+	started := c.started.Load()
 	newCtx, cancelCauseFunc := context.WithCancelCause(c.ctx)
 	childCtx := &dbosContext{
 		ctx:                newCtx,
@@ -327,7 +327,7 @@ func (c *dbosContext) WithCancelCause() (Context, context.CancelCauseFunc) {
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx, cancelCauseFunc
 }
 
@@ -339,7 +339,7 @@ func WithCancelCause(ctx Context) (Context, context.CancelCauseFunc) {
 }
 
 func (c *dbosContext) WithTimeout(timeout time.Duration) (Context, context.CancelFunc) {
-	launched := c.launched.Load()
+	started := c.started.Load()
 	newCtx, cancelFunc := context.WithTimeoutCause(c.ctx, timeout, errors.New("DBOS context timeout"))
 	childCtx := &dbosContext{
 		ctx:                newCtx,
@@ -355,7 +355,7 @@ func (c *dbosContext) WithTimeout(timeout time.Duration) (Context, context.Cance
 		worker:             c.worker,
 		serializer:         c.serializer,
 	}
-	childCtx.launched.Store(launched)
+	childCtx.started.Store(started)
 	return childCtx, cancelFunc
 }
 
@@ -398,7 +398,7 @@ func (c *dbosContext) ListRegisteredWorkflows(opts ...ListRegisteredWorkflowsOpt
 	return c.workflowRegistry.List(params.scheduledOnly), nil
 }
 
-// The context must be launched with Launch() for workflow execution and should be shut down with Shutdown().
+// The context must be started with Start() for workflow execution and should be shut down with Shutdown().
 
 func NewDbosContext(ctx context.Context, inputConfig Config) (Context, error) {
 	dbosBaseCtx, cancelFunc := context.WithCancelCause(ctx)
@@ -455,13 +455,13 @@ func NewDbosContext(ctx context.Context, inputConfig Config) (Context, error) {
 	return initExecutor, nil
 }
 
-func (c *dbosContext) Launch() error {
-	if c.launched.Load() {
-		return newInitializationError("DBOS is already launched")
+func (c *dbosContext) Start() error {
+	if c.started.Load() {
+		return newInitializationError("DBOS is already started")
 	}
 
 	if c.ownsSystemDB {
-		c.kernel.Launch()
+		c.kernel.Start()
 	}
 
 	if err := retry(c, func() error {
@@ -504,7 +504,7 @@ func (c *dbosContext) Launch() error {
 
 	recoveryHandles, err := recoverPendingWorkflows(c, []string{c.executorId})
 	if err != nil {
-		return newInitializationError(fmt.Sprintf("failed to recover pending workflows during launch: %v", err))
+		return newInitializationError(fmt.Sprintf("failed to recover pending workflows during start: %v", err))
 	}
 	if len(recoveryHandles) > 0 {
 		c.logger.Info("Recovered pending workflows", "count", len(recoveryHandles))
@@ -512,8 +512,8 @@ func (c *dbosContext) Launch() error {
 		c.logger.Debug("No pending workflows to recover")
 	}
 
-	c.logger.Info("DBOS launched", "app_version", c.applicationVersion, "executor_id", c.executorId)
-	c.launched.Store(true)
+	c.logger.Info("DBOS started", "app_version", c.applicationVersion, "executor_id", c.executorId)
+	c.started.Store(true)
 	return nil
 }
 
@@ -526,7 +526,7 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 
 	// waiting on the WaitGroup before they finish races with those Adds.
 
-	if c.worker != nil && c.launched.Load() {
+	if c.worker != nil && c.started.Load() {
 		c.logger.Debug("Waiting for queue runner to complete")
 		select {
 		case <-c.worker.completionChan:
@@ -536,7 +536,7 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 		}
 	}
 
-	if c.workflowScheduler != nil && c.launched.Load() {
+	if c.workflowScheduler != nil && c.started.Load() {
 		c.logger.Debug("Stopping workflow scheduler")
 		ctx := c.workflowScheduler.Stop()
 
@@ -549,7 +549,7 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 		}
 	}
 
-	if c.adminServer != nil && c.launched.Load() {
+	if c.adminServer != nil && c.started.Load() {
 		c.logger.Debug("Shutting down admin server")
 		err := c.adminServer.Shutdown(timeout)
 		if err != nil {
@@ -583,7 +583,7 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 		cancel()
 	}
 
-	c.launched.Store(false)
+	c.started.Store(false)
 }
 
 // This is used for application versioning to ensure workflow compatibility across deployments.
@@ -645,11 +645,11 @@ func getDbosVersion() string {
 	return "unknown"
 }
 
-func Launch(ctx Context) error {
+func Start(ctx Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ctx cannot be nil")
 	}
-	return ctx.Launch()
+	return ctx.Start()
 }
 
 func Shutdown(ctx Context, timeout time.Duration) {

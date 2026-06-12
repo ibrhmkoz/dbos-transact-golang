@@ -34,7 +34,7 @@ func TestAdminServer(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		defer func() {
@@ -67,7 +67,7 @@ func TestAdminServer(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		defer func() {
@@ -223,7 +223,7 @@ func TestAdminServer(t *testing.T) {
 		}
 		structWF := NewWorkflow(ctx, structWorkflow)
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		defer func() {
@@ -341,7 +341,7 @@ func TestAdminServer(t *testing.T) {
 		}
 		testWF := NewWorkflow(ctx, testWorkflow)
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		defer func() {
@@ -447,7 +447,7 @@ func TestAdminServer(t *testing.T) {
 
 		testWF := NewWorkflow(ctx, testWorkflow)
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		defer func() {
@@ -561,7 +561,7 @@ func TestAdminServer(t *testing.T) {
 			return fmt.Sprintf("executed at %v", scheduledTime), nil
 		}, WithSchedule("* * * * * *"))
 
-		err = Launch(ctx)
+		err = Start(ctx)
 		require.NoError(t, err)
 
 		client := &http.Client{Timeout: 5 * time.Second}

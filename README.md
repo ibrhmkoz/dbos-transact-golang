@@ -81,8 +81,8 @@ func main() {
     // Register a workflow
     durableWorkflow := dbos.NewWorkflow(ctx, workflow)
 
-    // Launch DBOS
-    err = dbos.Launch(ctx)
+    // Start DBOS
+    err = dbos.Start(ctx)
     if err != nil {
         panic(err)
     }
@@ -155,8 +155,8 @@ func main() {
     // Create a callable durable workflow.
     taskWorkflow := dbos.NewWorkflow(ctx, task)
 
-    // Launch DBOS
-    err = dbos.Launch(ctx)
+    // Start DBOS
+    err = dbos.Start(ctx)
     if err != nil {
         panic(err)
     }

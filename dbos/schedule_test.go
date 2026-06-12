@@ -13,7 +13,7 @@ func TestApplySchedulesInvalidSignature(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	badInputType := func(ctx Context, input string) (any, error) { return nil, nil }
 	err := ApplySchedules(dbosCtx, []ApplySchedulesRequest{
@@ -45,7 +45,7 @@ func TestScheduleCronValidation(t *testing.T) {
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 		ScheduleName: "bad-cron-create",
@@ -122,7 +122,7 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 
 	scheduledInputCapture = sync.Map{}
 	NewWorkflow(dbosCtx, testCapturingScheduledWorkflow)
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	// Use a far-future cron so the live scheduler doesn't fire while the test runs.
 	const ctxValue = "backfill-recovery-context"
@@ -192,7 +192,7 @@ func TestTriggerSchedule(t *testing.T) {
 	scheduledInputCapture = sync.Map{}
 	NewWorkflow(dbosCtx, testCapturingScheduledWorkflow)
 
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	const ctxValue = "trigger-context-value"
 	err := CreateSchedule(dbosCtx, testCapturingScheduledWorkflow, CreateScheduleRequest{
@@ -282,7 +282,7 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 
 	NewWorkflow(dbosCtx, testWorkflowForBackfillRestart)
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	const scheduleName = "test-backfill-restart"
 	const wfFQN = "github.com/dbos-inc/dbos-transact-golang/dbos.testWorkflowForBackfillRestart"
@@ -314,7 +314,7 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 	defer dbosCtx2.Shutdown(5 * time.Second)
 
 	NewWorkflow(dbosCtx2, testWorkflowForBackfillRestart)
-	require.NoError(t, dbosCtx2.Launch())
+	require.NoError(t, dbosCtx2.Start())
 
 	backfillRestartFiredEvent.Wait()
 
@@ -361,7 +361,7 @@ func TestScheduleWorkflowInternalRejections(t *testing.T) {
 	applySchedulesWF := NewWorkflow(dbosCtx, testWorkflowExpectingApplySchedulesError)
 	backfillScheduleWF := NewWorkflow(dbosCtx, testWorkflowExpectingBackfillScheduleError)
 	triggerScheduleWF := NewWorkflow(dbosCtx, testWorkflowExpectingTriggerScheduleError)
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	cases := []struct {
 		name string
@@ -388,7 +388,7 @@ func TestScheduleCronTimezone(t *testing.T) {
 	defer dbosCtx.Shutdown(5 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
-	require.NoError(t, dbosCtx.Launch())
+	require.NoError(t, dbosCtx.Start())
 
 	const scheduleName = "tz-schedule"
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{

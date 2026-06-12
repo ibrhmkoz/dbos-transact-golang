@@ -133,7 +133,7 @@ func aRealProgramFunction(dbosCtx dbos.Context) error {
 	childWorkflowWF = dbos.NewWorkflow(dbosCtx, childWorkflow)
 	workflowWF = dbos.NewWorkflow(dbosCtx, workflow)
 
-	err := dbos.Launch(dbosCtx)
+	err := dbos.Start(dbosCtx)
 	if err != nil {
 		return err
 	}

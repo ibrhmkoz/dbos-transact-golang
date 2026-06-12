@@ -47,7 +47,7 @@ func TestGetMetrics(t *testing.T) {
 	wfA := NewWorkflow(dbosCtx, testWorkflowA, WithWorkflowName("testWorkflowA"))
 	wfB := NewWorkflow(dbosCtx, testWorkflowB, WithWorkflowName("testWorkflowB"))
 
-	require.NoError(t, Launch(dbosCtx))
+	require.NoError(t, Start(dbosCtx))
 
 	startTime := time.Now()
 

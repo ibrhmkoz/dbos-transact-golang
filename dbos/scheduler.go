@@ -93,7 +93,7 @@ func (c *dbosContext) addScheduleCronEntry(
 	// an atomic to publish the entryID to that goroutine without a data race.
 	var entryIdAtomic atomic.Int64
 	assigned, err := c.getWorkflowScheduler().AddFunc(cronSchedule, func() {
-		if !c.launched.Load() {
+		if !c.started.Load() {
 			return
 		}
 		entry := c.getWorkflowScheduler().Entry(cron.EntryID(entryIdAtomic.Load()))
