@@ -480,18 +480,10 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...Wor
 				return internalDebouncerWF[P, R](ctx, in.(debouncerInput[P]))
 			})
 
-			internalWorkflowID, err := UUID(ctx)
-			if err != nil {
-				return nil, err
-			}
-
 			for {
-				handle, err := ctx.RunWorkflow(internalWF, dInput, withWorkflowID(internalWorkflowID), WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
+				handle, err := ctx.RunWorkflow(internalWF, dInput, WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
 				if err != nil {
 					return nil, err
-				}
-				if handle.GetWorkflowID() == internalWorkflowID {
-					return newWorkflowHandle[R](ctx, dInput.TargetWorkflowID), nil
 				}
 
 				debouncerWorkflowStatus, err := ListWorkflows(ctx, WithWorkflowIDs([]string{handle.GetWorkflowID()}), WithLoadInput(true))
@@ -510,6 +502,13 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...Wor
 				var decodedInput debouncerInput[P]
 				if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
 					return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
+				}
+
+				// If the recorded input carries our target workflow ID, this call created
+				// the debouncer (rather than joining an existing one via the deduplication
+				// key): the initial input is already registered, nothing to send.
+				if decodedInput.TargetWorkflowID == dInput.TargetWorkflowID {
+					return newWorkflowHandle[R](ctx, dInput.TargetWorkflowID), nil
 				}
 
 				switch debouncerWorkflowStatus[0].Status {

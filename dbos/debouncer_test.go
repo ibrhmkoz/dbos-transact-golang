@@ -84,8 +84,8 @@ func TestDebouncer(t *testing.T) {
 		steps, err := GetWorkflowSteps(dbosCtx, handle.GetWorkflowID())
 		require.NoError(t, err, "failed to get workflow steps")
 
-		// Debounce durably generates the target workflow ID, message ID, and internal
-		// workflow ID as DBOS.uuid steps.
+		// Debounce durably generates the target workflow ID and message ID as
+		// DBOS.uuid steps.
 		uuidSteps := 0
 		for _, step := range steps {
 			if step.StepName == "DBOS.uuid" {
@@ -93,7 +93,7 @@ func TestDebouncer(t *testing.T) {
 				assert.Nil(t, step.Error, "DBOS.uuid step should not have error")
 			}
 		}
-		assert.GreaterOrEqual(t, uuidSteps, 3, "should have DBOS.uuid steps for workflow, message, and internal workflow IDs")
+		assert.GreaterOrEqual(t, uuidSteps, 2, "should have DBOS.uuid steps for the target workflow and message IDs")
 	})
 
 	t.Run("TestMultipleCallsPushBackAndLatestInput", func(t *testing.T) {
