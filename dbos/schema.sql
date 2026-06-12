@@ -134,18 +134,6 @@ CREATE TABLE application_versions (
     created_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now())::numeric * 1000)::bigint
 );
 
-CREATE TABLE queues (
-    queue_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
-    name TEXT NOT NULL UNIQUE,
-    concurrency INTEGER,
-    worker_concurrency INTEGER,
-    rate_limit_max INTEGER,
-    priority_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    partition_queue BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now()) * 1000.0)::bigint,
-    updated_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now()) * 1000.0)::bigint
-);
-
 CREATE TABLE workflow_definitions (
     workflow_name TEXT NOT NULL,
     digest TEXT NOT NULL,

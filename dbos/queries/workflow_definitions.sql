@@ -22,6 +22,22 @@ ON CONFLICT (workflow_name) DO UPDATE SET
     since = (EXTRACT(epoch FROM now())::numeric * 1000)::bigint
 WHERE workflow_current.digest IS DISTINCT FROM EXCLUDED.digest;
 
+-- name: UpsertWorkflowOverrides :exec
+INSERT INTO workflow_overrides (workflow_name, global_concurrency, rate_limit, rate_period_ms)
+VALUES (@workflow_name, @global_concurrency, @rate_limit, @rate_period_ms)
+ON CONFLICT (workflow_name) DO UPDATE SET
+    global_concurrency = EXCLUDED.global_concurrency,
+    rate_limit = EXCLUDED.rate_limit,
+    rate_period_ms = EXCLUDED.rate_period_ms;
+
+-- name: DeleteWorkflowOverrides :exec
+DELETE FROM workflow_overrides WHERE workflow_name = @workflow_name;
+
+-- name: GetWorkflowOverrides :one
+SELECT global_concurrency, rate_limit, rate_period_ms
+FROM workflow_overrides
+WHERE workflow_name = $1;
+
 -- name: GetEffectiveWorkflowDefinition :one
 SELECT
     COALESCE(o.global_concurrency, d.global_concurrency) AS global_concurrency,

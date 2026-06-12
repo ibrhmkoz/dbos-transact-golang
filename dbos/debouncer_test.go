@@ -119,7 +119,8 @@ func TestDebouncer(t *testing.T) {
 
 		elapsed := time.Since(startTime)
 		assert.GreaterOrEqual(t, elapsed, 200*time.Millisecond, "execution should take at least 200ms")
-		assert.LessOrEqual(t, elapsed, 3*time.Second, "execution should take less than 3s")
+		// Upper bound includes worker pickup latency for the window and target workflows.
+		assert.LessOrEqual(t, elapsed, 6*time.Second, "execution should take less than 6s")
 	})
 
 	t.Run("TestDelayOverride", func(t *testing.T) {

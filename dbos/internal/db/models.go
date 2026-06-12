@@ -46,18 +46,6 @@ type OperationOutput struct {
 	Serialization      *string
 }
 
-type Queue struct {
-	QueueID           string
-	Name              string
-	Concurrency       *int32
-	WorkerConcurrency *int32
-	RateLimitMax      *int32
-	PriorityEnabled   bool
-	PartitionQueue    bool
-	CreatedAt         int64
-	UpdatedAt         int64
-}
-
 type Stream struct {
 	WorkflowUuid  string
 	Key           string

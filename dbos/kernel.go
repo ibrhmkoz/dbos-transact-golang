@@ -2691,6 +2691,66 @@ func (k *Kernel) reconcileWorkflowDefinition(ctx context.Context, entry Workflow
 	})
 }
 
+// WorkflowOverrides are operator-owned policy overrides for a workflow. Nil fields fall
+// back to the code-declared definition (effective policy = COALESCE(override, declared)).
+// Overrides survive deploys: definition reconciliation never writes this table.
+type WorkflowOverrides struct {
+	GlobalConcurrency *int
+	RateLimit         *int
+	RatePeriod        *time.Duration
+}
+
+func (k *Kernel) setWorkflowOverrides(ctx context.Context, workflowName string, o WorkflowOverrides) error {
+	var globalConcurrency, rateLimit *int32
+	var ratePeriodMs *int64
+	if o.GlobalConcurrency != nil {
+		v := int32(*o.GlobalConcurrency)
+		globalConcurrency = &v
+	}
+	if o.RateLimit != nil {
+		v := int32(*o.RateLimit)
+		rateLimit = &v
+	}
+	if o.RatePeriod != nil {
+		v := o.RatePeriod.Milliseconds()
+		ratePeriodMs = &v
+	}
+	return k.queries.UpsertWorkflowOverrides(ctx, db.UpsertWorkflowOverridesParams{
+		WorkflowName:      workflowName,
+		GlobalConcurrency: globalConcurrency,
+		RateLimit:         rateLimit,
+		RatePeriodMs:      ratePeriodMs,
+	})
+}
+
+func (k *Kernel) clearWorkflowOverrides(ctx context.Context, workflowName string) error {
+	return k.queries.DeleteWorkflowOverrides(ctx, workflowName)
+}
+
+func (k *Kernel) getWorkflowOverrides(ctx context.Context, workflowName string) (*WorkflowOverrides, error) {
+	row, err := k.queries.GetWorkflowOverrides(ctx, workflowName)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, nil
+		}
+		return nil, fmt.Errorf("failed to load workflow overrides %s: %w", workflowName, err)
+	}
+	o := &WorkflowOverrides{}
+	if row.GlobalConcurrency != nil {
+		v := int(*row.GlobalConcurrency)
+		o.GlobalConcurrency = &v
+	}
+	if row.RateLimit != nil {
+		v := int(*row.RateLimit)
+		o.RateLimit = &v
+	}
+	if row.RatePeriodMs != nil {
+		v := time.Duration(*row.RatePeriodMs) * time.Millisecond
+		o.RatePeriod = &v
+	}
+	return o, nil
+}
+
 type dequeueWorkflowsInput struct {
 	workflowName       string
 	executorId         string

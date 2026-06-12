@@ -9,6 +9,15 @@ import (
 	"context"
 )
 
+const deleteWorkflowOverrides = `-- name: DeleteWorkflowOverrides :exec
+DELETE FROM workflow_overrides WHERE workflow_name = $1
+`
+
+func (q *Queries) DeleteWorkflowOverrides(ctx context.Context, workflowName string) error {
+	_, err := q.db.Exec(ctx, deleteWorkflowOverrides, workflowName)
+	return err
+}
+
 const getEffectiveWorkflowDefinition = `-- name: GetEffectiveWorkflowDefinition :one
 SELECT
     COALESCE(o.global_concurrency, d.global_concurrency) AS global_concurrency,
@@ -29,6 +38,25 @@ type GetEffectiveWorkflowDefinitionRow struct {
 func (q *Queries) GetEffectiveWorkflowDefinition(ctx context.Context, workflowName string) (GetEffectiveWorkflowDefinitionRow, error) {
 	row := q.db.QueryRow(ctx, getEffectiveWorkflowDefinition, workflowName)
 	var i GetEffectiveWorkflowDefinitionRow
+	err := row.Scan(&i.GlobalConcurrency, &i.RateLimit, &i.RatePeriodMs)
+	return i, err
+}
+
+const getWorkflowOverrides = `-- name: GetWorkflowOverrides :one
+SELECT global_concurrency, rate_limit, rate_period_ms
+FROM workflow_overrides
+WHERE workflow_name = $1
+`
+
+type GetWorkflowOverridesRow struct {
+	GlobalConcurrency *int32
+	RateLimit         *int32
+	RatePeriodMs      *int64
+}
+
+func (q *Queries) GetWorkflowOverrides(ctx context.Context, workflowName string) (GetWorkflowOverridesRow, error) {
+	row := q.db.QueryRow(ctx, getWorkflowOverrides, workflowName)
+	var i GetWorkflowOverridesRow
 	err := row.Scan(&i.GlobalConcurrency, &i.RateLimit, &i.RatePeriodMs)
 	return i, err
 }
@@ -99,5 +127,31 @@ type SetCurrentWorkflowDefinitionParams struct {
 
 func (q *Queries) SetCurrentWorkflowDefinition(ctx context.Context, arg SetCurrentWorkflowDefinitionParams) error {
 	_, err := q.db.Exec(ctx, setCurrentWorkflowDefinition, arg.WorkflowName, arg.Digest)
+	return err
+}
+
+const upsertWorkflowOverrides = `-- name: UpsertWorkflowOverrides :exec
+INSERT INTO workflow_overrides (workflow_name, global_concurrency, rate_limit, rate_period_ms)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (workflow_name) DO UPDATE SET
+    global_concurrency = EXCLUDED.global_concurrency,
+    rate_limit = EXCLUDED.rate_limit,
+    rate_period_ms = EXCLUDED.rate_period_ms
+`
+
+type UpsertWorkflowOverridesParams struct {
+	WorkflowName      string
+	GlobalConcurrency *int32
+	RateLimit         *int32
+	RatePeriodMs      *int64
+}
+
+func (q *Queries) UpsertWorkflowOverrides(ctx context.Context, arg UpsertWorkflowOverridesParams) error {
+	_, err := q.db.Exec(ctx, upsertWorkflowOverrides,
+		arg.WorkflowName,
+		arg.GlobalConcurrency,
+		arg.RateLimit,
+		arg.RatePeriodMs,
+	)
 	return err
 }

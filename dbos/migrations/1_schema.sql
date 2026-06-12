@@ -45,7 +45,6 @@ CREATE TABLE {schema}.workflow_status (
 CREATE INDEX workflow_status_created_at_index ON {schema}.workflow_status (created_at);
 CREATE INDEX idx_workflow_status_forked_from ON {schema}.workflow_status (forked_from) WHERE forked_from IS NOT NULL;
 CREATE INDEX idx_workflow_status_parent_workflow_id ON {schema}.workflow_status (parent_workflow_id) WHERE parent_workflow_id IS NOT NULL;
-CREATE UNIQUE INDEX uq_workflow_status_dedup_id ON {schema}.workflow_status (queue_name, deduplication_id) WHERE deduplication_id IS NOT NULL;
 CREATE UNIQUE INDEX uq_workflow_status_name_dedup_id ON {schema}.workflow_status (name, deduplication_id) WHERE deduplication_id IS NOT NULL;
 CREATE INDEX idx_workflow_status_pending ON {schema}.workflow_status (created_at) WHERE status = 'PENDING';
 CREATE INDEX idx_workflow_status_failed ON {schema}.workflow_status (status, created_at) WHERE status IN ('ERROR', 'CANCELLED', 'MAX_RECOVERY_ATTEMPTS_EXCEEDED');
@@ -151,20 +150,6 @@ CREATE TABLE {schema}.application_versions (
     created_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now())::numeric * 1000)::bigint
 );
 
-CREATE TABLE {schema}.queues (
-    queue_id TEXT PRIMARY KEY DEFAULT gen_random_uuid()::TEXT,
-    name TEXT NOT NULL UNIQUE,
-    concurrency INTEGER,
-    worker_concurrency INTEGER,
-    rate_limit_max INTEGER,
-    rate_limit_period_sec DOUBLE PRECISION,
-    priority_enabled BOOLEAN NOT NULL DEFAULT FALSE,
-    partition_queue BOOLEAN NOT NULL DEFAULT FALSE,
-    polling_interval_sec DOUBLE PRECISION NOT NULL DEFAULT 1.0,
-    created_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now()) * 1000.0)::bigint,
-    updated_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now()) * 1000.0)::bigint
-);
-
 -- Workflow definitions are immutable and content-addressed: one row per
 -- (workflow_name, digest), where the digest covers the code-declared configuration.
 -- The mutable workflow_current pointer selects the active definition per workflow
@@ -231,7 +216,6 @@ FOR EACH ROW EXECUTE FUNCTION {schema}.workflow_events_function();
 -- plpgsql stored functions for direct SQL client access.
 CREATE FUNCTION {schema}.enqueue_workflow(
     workflow_name TEXT,
-    queue_name TEXT,
     positional_args JSON[] DEFAULT ARRAY[]::JSON[],
     named_args JSON DEFAULT '{}'::JSON,
     class_name TEXT DEFAULT NULL,
@@ -251,14 +235,12 @@ DECLARE
     v_now BIGINT;
     v_recovery_attempts INTEGER := 0;
     v_priority INTEGER;
+    queue_name TEXT := '_dbos_internal_queue';
 BEGIN
 
     -- Validate required parameters
     IF workflow_name IS NULL OR workflow_name = '' THEN
         RAISE EXCEPTION 'Workflow name cannot be null or empty';
-    END IF;
-    IF queue_name IS NULL OR queue_name = '' THEN
-        RAISE EXCEPTION 'Queue name cannot be null or empty';
     END IF;
     IF named_args IS NOT NULL AND jsonb_typeof(named_args::jsonb) != 'object' THEN
         RAISE EXCEPTION 'Named args must be a JSON object';
@@ -335,7 +317,7 @@ $$ LANGUAGE plpgsql;
 
 -- Pin search_path so function references resolve only against the system catalog.
 ALTER FUNCTION {schema}.enqueue_workflow(
-    TEXT, TEXT, JSON[], JSON, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, TEXT, INTEGER, TEXT
+    TEXT, JSON[], JSON, TEXT, TEXT, TEXT, TEXT, BIGINT, BIGINT, TEXT, INTEGER, TEXT
 ) SET search_path = pg_catalog, pg_temp;
 
 ALTER FUNCTION {schema}.send_message(

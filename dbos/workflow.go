@@ -2613,18 +2613,9 @@ func DeleteWorkflows(ctx Context, workflowIds []string, opts ...DeleteWorkflowOp
 	return ctx.(*dbosContext).DeleteWorkflows(workflowIds, opts...)
 }
 
-type resumeWorkflowOptions struct {
-	queueName string
-}
+type resumeWorkflowOptions struct{}
 
 type ResumeWorkflowOption func(*resumeWorkflowOptions)
-
-// WithResumeQueue re-enqueues the resumed workflow(s) on the specified queue instead of the internal queue.
-func WithResumeQueue(queueName string) ResumeWorkflowOption {
-	return func(o *resumeWorkflowOptions) {
-		o.queueName = queueName
-	}
-}
 
 func (c *dbosContext) ResumeWorkflow(workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error) {
 	handles, err := c.ResumeWorkflows([]string{workflowId}, opts...)
@@ -2651,7 +2642,6 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 		foundIds, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
 			return c.kernel.resumeWorkflows(ctx, resumeWorkflowsDBInput{
 				workflowIds: workflowIds,
-				queueName:   params.queueName,
 				tx:          tx,
 			})
 		}, WithStepName("DBOS.resumeWorkflow"))
@@ -2659,7 +2649,6 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 		foundIds, err = retryWithResult(c, func() ([]string, error) {
 			return c.kernel.resumeWorkflows(c, resumeWorkflowsDBInput{
 				workflowIds: workflowIds,
-				queueName:   params.queueName,
 			})
 		}, withRetrierLogger(c.logger))
 	}
@@ -2675,9 +2664,6 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 }
 
 // Returns an error if the workflow does not exist or if the operation fails.
-
-//   - WithResumeQueue: re-enqueue the workflow on a named queue instead of the internal queue.
-
 func ResumeWorkflow[R any](ctx Context, workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
@@ -2691,9 +2677,6 @@ func ResumeWorkflow[R any](ctx Context, workflowId string, opts ...ResumeWorkflo
 }
 
 // Unlike the singular ResumeWorkflow, this function does not return NonExistentWorkflowError
-
-//   - WithResumeQueue: re-enqueue the workflows on a named queue instead of the internal queue.
-
 func ResumeWorkflows[R any](ctx Context, workflowIds []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
@@ -2715,16 +2698,11 @@ type ForkWorkflowInput struct {
 	ForkedWorkflowId   string
 	StartStep          uint
 	ApplicationVersion string
-	QueueName          string
-	QueuePartitionKey  string
 }
 
 func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error) {
 	if input.OriginalWorkflowId == "" {
 		return nil, errors.New("original workflow ID cannot be empty")
-	}
-	if input.QueuePartitionKey != "" && input.QueueName == "" {
-		return nil, errors.New("queue partition key requires a queue name")
 	}
 
 	if input.StartStep > uint(math.MaxInt) {
@@ -2735,8 +2713,6 @@ func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any
 		forkedWorkflowId:   input.ForkedWorkflowId,
 		startStep:          int(input.StartStep),
 		applicationVersion: input.ApplicationVersion,
-		queueName:          input.QueueName,
-		queuePartitionKey:  input.QueuePartitionKey,
 	}
 
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
@@ -2760,8 +2736,6 @@ func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any
 	return newWorkflowHandle[any](c, forkedWorkflowId), nil
 }
 
-//	// Fork onto a named queue instead of the internal queue.
-
 func ForkWorkflow[R any](ctx Context, input ForkWorkflowInput) (*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
@@ -2772,6 +2746,21 @@ func ForkWorkflow[R any](ctx Context, input ForkWorkflowInput) (*WorkflowHandle[
 		return nil, err
 	}
 	return newWorkflowHandle[R](ctx, handle.GetWorkflowId()), nil
+}
+
+// ResetWorkflow re-runs an existing workflow instance from scratch under the current
+// application version: same recorded input, fresh checkpoints, new instance ID. The
+// original instance is left untouched — the reset is a new immutable record, not an
+// edit. Use it to hand an old or stuck instance to a new implementation.
+func ResetWorkflow[R any](ctx Context, workflowId string) (*WorkflowHandle[R], error) {
+	if ctx == nil {
+		return nil, errors.New("ctx cannot be nil")
+	}
+	return ForkWorkflow[R](ctx, ForkWorkflowInput{
+		OriginalWorkflowId: workflowId,
+		StartStep:          0,
+		ApplicationVersion: ctx.(*dbosContext).GetApplicationVersion(),
+	})
 }
 
 type listWorkflowsOptions struct {

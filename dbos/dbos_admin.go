@@ -24,7 +24,7 @@ type DbosAdminConfig struct {
 }
 
 type DbosAdmin interface {
-	Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error)
+	Enqueue(workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error)
 	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)
 	Send(destinationId string, message any, topic string, opts ...SendOption) error
 	GetEvent(targetWorkflowId, key string, timeout time.Duration) (any, error)
@@ -54,6 +54,10 @@ type DbosAdmin interface {
 	GetLatestApplicationVersion() (*VersionInfo, error)
 	SetLatestApplicationVersion(versionName string) error
 
+	SetWorkflowOverrides(workflowName string, overrides WorkflowOverrides) error
+	GetWorkflowOverrides(workflowName string) (*WorkflowOverrides, error)
+	ClearWorkflowOverrides(workflowName string) error
+
 	Shutdown(timeout time.Duration)
 }
 
@@ -81,6 +85,33 @@ func NewDbosAdmin(ctx context.Context, config DbosAdminConfig) (DbosAdmin, error
 	}
 
 	return &dbosAdmin{dbosCtx: asDbosCtx}, nil
+}
+
+// SetWorkflowOverrides writes operator-owned policy overrides for a workflow. Nil fields
+// fall back to the code-declared definition. Overrides survive deploys and apply at the
+// next dequeue poll.
+func (c *dbosAdmin) SetWorkflowOverrides(workflowName string, overrides WorkflowOverrides) error {
+	if workflowName == "" {
+		return errors.New("workflow name is required")
+	}
+	return c.dbosCtx.kernel.setWorkflowOverrides(c.dbosCtx, workflowName, overrides)
+}
+
+// GetWorkflowOverrides returns the operator overrides for a workflow, or nil when none are set.
+func (c *dbosAdmin) GetWorkflowOverrides(workflowName string) (*WorkflowOverrides, error) {
+	if workflowName == "" {
+		return nil, errors.New("workflow name is required")
+	}
+	return c.dbosCtx.kernel.getWorkflowOverrides(c.dbosCtx, workflowName)
+}
+
+// ClearWorkflowOverrides removes all operator overrides for a workflow, restoring the
+// code-declared policies.
+func (c *dbosAdmin) ClearWorkflowOverrides(workflowName string) error {
+	if workflowName == "" {
+		return errors.New("workflow name is required")
+	}
+	return c.dbosCtx.kernel.clearWorkflowOverrides(c.dbosCtx, workflowName)
 }
 
 type EnqueueOption func(*enqueueOptions)
@@ -179,7 +210,7 @@ type enqueueOptions struct {
 	authenticatedRoles []string
 }
 
-func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error) {
+func (c *dbosAdmin) Enqueue(workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error) {
 
 	dbosCtx := c.dbosCtx
 
@@ -192,9 +223,8 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 		opt(params)
 	}
 
-	if len(queueName) == 0 {
-		return nil, fmt.Errorf("queue name is required")
-	}
+	// Dispatch is keyed by workflow name; queue_name is an internal marker only.
+	queueName := _dbosInternalQueueName
 
 	if len(workflowName) == 0 {
 		return nil, fmt.Errorf("workflow name is required")
@@ -311,12 +341,12 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 	}
 }
 
-func Enqueue[P any, R any](c DbosAdmin, queueName, workflowName string, input P, opts ...EnqueueOption) (*WorkflowHandle[R], error) {
+func Enqueue[P any, R any](c DbosAdmin, workflowName string, input P, opts ...EnqueueOption) (*WorkflowHandle[R], error) {
 	if c == nil {
 		return nil, errors.New("dbosAdmin cannot be nil")
 	}
 
-	handle, err := c.Enqueue(queueName, workflowName, input, opts...)
+	handle, err := c.Enqueue(workflowName, input, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +521,6 @@ type AdminScheduleInput struct {
 	Context           any
 	AutomaticBackfill bool
 	CronTimezone      string
-	QueueName         string
 }
 
 func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
@@ -523,7 +552,7 @@ func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
 		Status:            ScheduleStatusActive,
 		AutomaticBackfill: input.AutomaticBackfill,
 		CronTimezone:      input.CronTimezone,
-		QueueName:         input.QueueName,
+		QueueName:         _dbosInternalQueueName,
 	})
 }
 
@@ -558,11 +587,6 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 			return fmt.Errorf("failed to serialize context: %w", err)
 		}
 
-		queueName := req.QueueName
-		if queueName == "" {
-			queueName = _dbosInternalQueueName
-		}
-
 		if err := dbosCtx.kernel.deleteSchedule(dbosCtx, deleteScheduleDBInput{
 			ScheduleName: req.ScheduleName,
 			tx:           tx,
@@ -580,7 +604,7 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 			Status:            ScheduleStatusActive,
 			AutomaticBackfill: req.AutomaticBackfill,
 			CronTimezone:      req.CronTimezone,
-			QueueName:         queueName,
+			QueueName:         _dbosInternalQueueName,
 			tx:                tx,
 		}); err != nil {
 			return fmt.Errorf("failed to create schedule: %w", err)

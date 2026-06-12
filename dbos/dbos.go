@@ -38,6 +38,9 @@ type Config struct {
 	EnablePatching           bool
 	Serializer               Serializer[any]
 	SchedulerPollingInterval time.Duration
+	// WorkerPollingInterval is the base interval at which workers poll for enqueued
+	// workflows to enact. Defaults to 1s.
+	WorkerPollingInterval time.Duration
 }
 
 func processConfig(inputConfig *Config) (*Config, error) {
@@ -74,6 +77,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 		EnablePatching:           inputConfig.EnablePatching,
 		Serializer:               inputConfig.Serializer,
 		SchedulerPollingInterval: inputConfig.SchedulerPollingInterval,
+		WorkerPollingInterval:    inputConfig.WorkerPollingInterval,
 	}
 
 	if dbosConfig.Logger == nil {

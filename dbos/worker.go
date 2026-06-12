@@ -58,7 +58,11 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 
 	workerLogger := w.logger.With("workflow_name", workflowName)
 
-	currentPollingInterval := _defaultBasePollingInterval
+	basePollingInterval := ctx.config.WorkerPollingInterval
+	if basePollingInterval <= 0 {
+		basePollingInterval = _defaultBasePollingInterval
+	}
+	currentPollingInterval := basePollingInterval
 
 	for {
 		hasBackoffError := false
@@ -89,10 +93,14 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 
 			newInterval := time.Duration(float64(currentPollingInterval) * w.backoffFactor)
 			currentPollingInterval = min(newInterval, _defaultMaxPollingInterval)
+		} else if len(dequeuedWorkflows) > 0 {
+			currentPollingInterval = basePollingInterval
 		} else {
-
-			newInterval := time.Duration(float64(currentPollingInterval) * w.scalebackFactor)
-			currentPollingInterval = max(newInterval, _defaultBasePollingInterval)
+			// Idle: back off to spare the database, capped so a fresh enqueue is still
+			// picked up promptly even when the base interval is very small.
+			idleCap := max(basePollingInterval, time.Second)
+			newInterval := time.Duration(float64(currentPollingInterval) * w.backoffFactor)
+			currentPollingInterval = max(basePollingInterval, min(newInterval, idleCap))
 		}
 
 		jitter := w.jitterMin + rand.Float64()*(w.jitterMax-w.jitterMin)
