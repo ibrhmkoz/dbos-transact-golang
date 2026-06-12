@@ -39,7 +39,8 @@ CREATE TABLE workflow_status (
     delay_until_epoch_ms BIGINT,
     was_forked_from BOOLEAN NOT NULL DEFAULT FALSE,
     rate_limited BOOLEAN NOT NULL DEFAULT FALSE,
-    completed_at BIGINT
+    completed_at BIGINT,
+    definition_digest TEXT
 );
 
 CREATE TABLE operation_outputs (
@@ -146,9 +147,31 @@ CREATE TABLE queues (
 );
 
 CREATE TABLE workflow_definitions (
-    workflow_name TEXT PRIMARY KEY,
+    workflow_name TEXT NOT NULL,
+    digest TEXT NOT NULL,
+    input_schema TEXT,
+    output_schema TEXT,
+    debounce_delay_ms BIGINT,
+    debounce_timeout_ms BIGINT,
+    max_recovery_attempts BIGINT,
     global_concurrency INTEGER,
     rate_limit INTEGER,
     rate_period_ms BIGINT,
-    workflow_retention_ms BIGINT NOT NULL DEFAULT 86400000
+    workflow_retention_ms BIGINT NOT NULL DEFAULT 86400000,
+    cron_schedule TEXT,
+    created_at BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now())::numeric * 1000)::bigint,
+    PRIMARY KEY (workflow_name, digest)
+);
+
+CREATE TABLE workflow_current (
+    workflow_name TEXT PRIMARY KEY,
+    digest TEXT NOT NULL,
+    since BIGINT NOT NULL DEFAULT (EXTRACT(epoch FROM now())::numeric * 1000)::bigint
+);
+
+CREATE TABLE workflow_overrides (
+    workflow_name TEXT PRIMARY KEY,
+    global_concurrency INTEGER,
+    rate_limit INTEGER,
+    rate_period_ms BIGINT
 );

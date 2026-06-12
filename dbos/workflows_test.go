@@ -189,7 +189,8 @@ func TestCallableWorkflowDefinition(t *testing.T) {
 	require.NoError(t, err)
 	status, err := handle.GetStatus()
 	require.NoError(t, err)
-	require.Equal(t, WorkflowStatusPending, status.Status)
+	// Invocations only record the workflow; it stays ENQUEUED until a worker claims it.
+	require.Equal(t, WorkflowStatusEnqueued, status.Status)
 	require.Empty(t, status.QueueName)
 
 	require.NoError(t, Start(workerCtx))

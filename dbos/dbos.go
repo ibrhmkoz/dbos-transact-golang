@@ -449,9 +449,6 @@ func NewDbosContext(ctx context.Context, inputConfig Config) (Context, error) {
 
 	initExecutor.worker = newWorker(initExecutor.logger)
 
-	// This allows a client to debounce workflow and the server side to run them, even without knowing the actual workflow types
-	registerWorkflow(initExecutor, internalDebouncerWF[any, any])
-
 	return initExecutor, nil
 }
 

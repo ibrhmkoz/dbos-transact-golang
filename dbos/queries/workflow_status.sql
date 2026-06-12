@@ -46,7 +46,9 @@ SELECT created_at FROM workflow_status ORDER BY created_at DESC LIMIT 1 OFFSET $
 DELETE FROM workflow_status AS ws
 WHERE ws.completed_at IS NOT NULL
   AND EXISTS (
-    SELECT 1 FROM workflow_definitions AS wd
+    SELECT 1 FROM workflow_current AS wc
+    JOIN workflow_definitions AS wd
+      ON wd.workflow_name = wc.workflow_name AND wd.digest = wc.digest
     WHERE wd.workflow_name = ws.name
       AND ws.completed_at + wd.workflow_retention_ms < @now_ms::bigint
   );
@@ -86,14 +88,14 @@ INSERT INTO workflow_status (
     created_at, recovery_attempts, updated_at, workflow_timeout_ms,
     workflow_deadline_epoch_ms, inputs, deduplication_id, priority,
     queue_partition_key, owner_xid, parent_workflow_id, class_name, config_name,
-    serialization, delay_until_epoch_ms
+    serialization, delay_until_epoch_ms, definition_digest
 ) VALUES (
     @workflow_uuid, @status::text, @name::text, @queue_name::text, @authenticated_user::text, @assumed_role::text,
     @authenticated_roles::text, @executor_id::text, @application_version, @application_id::text,
     @created_at::bigint, @recovery_attempts::bigint, @updated_at::bigint, @workflow_timeout_ms,
     @workflow_deadline_epoch_ms, @inputs, @deduplication_id, @priority::int,
     @queue_partition_key, @owner_xid, @parent_workflow_id, @class_name, @config_name,
-    @serialization::text, @delay_until_epoch_ms
+    @serialization::text, @delay_until_epoch_ms, @definition_digest
 )
 ON CONFLICT (workflow_uuid) DO UPDATE SET
     recovery_attempts = CASE

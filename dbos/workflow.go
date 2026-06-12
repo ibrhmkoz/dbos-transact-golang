@@ -59,6 +59,7 @@ type WorkflowStatus struct {
 	ConfigName         *string            `json:"config_name,omitempty"`
 	Serialization      string             `json:"serialization,omitempty"`
 	DelayUntil         time.Time          `json:"delay_until,omitempty"`
+	DefinitionDigest   string             `json:"definition_digest,omitempty"`
 }
 
 type workflowState struct {
@@ -223,7 +224,7 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 	return *new(R), err
 }
 
-func storeWorkflowRegistryEntry(ctx Context, workflowFQN string, fn wrappedWorkflowFunc, maxRetries int, customName string) {
+func storeWorkflowRegistryEntry(ctx Context, entry WorkflowRegistryEntry, customName string) {
 
 	c, ok := ctx.(*dbosContext)
 	if !ok {
@@ -234,21 +235,16 @@ func storeWorkflowRegistryEntry(ctx Context, workflowFQN string, fn wrappedWorkf
 		panic("Cannot register workflow after DBOS has started")
 	}
 
-	entry := WorkflowRegistryEntry{
-		wrappedFunction: fn,
-		FQN:             workflowFQN,
-		MaxRetries:      maxRetries,
-		Name:            customName,
-		CronSchedule:    "",
-		Retention:       _defaultWorkflowRetention,
-	}
+	entry.Name = customName
+	entry.CronSchedule = ""
+	entry.Retention = _defaultWorkflowRetention
 
-	workflowName := workflowFQN
+	workflowName := entry.FQN
 	if customName != "" {
 		workflowName = customName
 	}
 	if _, exists := c.workflowRegistry.LoadOrStore(workflowName, entry); exists {
-		c.logger.Error("workflow function already registered", "workflow_name", workflowName, "fqn", workflowFQN)
+		c.logger.Error("workflow function already registered", "workflow_name", workflowName, "fqn", entry.FQN)
 		panic(newConflictingRegistrationError(workflowName))
 	}
 }
@@ -343,7 +339,10 @@ func WithWorkflowRetention(retention time.Duration) WorkflowOption {
 
 type Workflow[P any, R any] func(ctx Context, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
 
-func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
+// newWorkflow is the registration primitive: its whole behavior is turning a WorkflowFn
+// into a durable, named workflow and returning a typed invoker for it (plus the resolved
+// name). It knows nothing about debouncing or any other composed behavior.
+func newWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...WorkflowOption) (Workflow[P, R], string) {
 	c, ok := ctx.(*dbosContext)
 	if !ok {
 		panic("ctx must be a DBOS context")
@@ -363,7 +362,10 @@ func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...Workflo
 
 	registerWorkflow(ctx, fn, opts...)
 
-	name := resolveWorkflowFunctionName(fn)
+	name := params.workflowFQN
+	if name == "" {
+		name = resolveWorkflowFunctionName(fn)
+	}
 	if params.WorkflowName != "" {
 		name = params.WorkflowName
 	} else if resolved, exists := c.workflowRegistry.ResolveName(name); exists {
@@ -373,106 +375,9 @@ func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...Workflo
 		panic(fmt.Sprintf("workflow %s must be registered before assigning execution policies", name))
 	}
 
-	internalDebouncerFQN := resolveWorkflowFunctionName(internalDebouncerWF[P, R])
-	if _, exists := c.workflowRegistry.ResolveName(internalDebouncerFQN); !exists {
-		registerWorkflow(ctx, internalDebouncerWF[P, R])
-	}
-
-	return func(ctx Context, input P, workflowOpts ...WorkflowOption) (*WorkflowHandle[R], error) {
+	invoker := func(ctx Context, input P, workflowOpts ...WorkflowOption) (*WorkflowHandle[R], error) {
 		if ctx == nil {
 			return nil, fmt.Errorf("ctx cannot be nil")
-		}
-
-		callParams := workflowOptions{}
-		for _, opt := range workflowOpts {
-			opt(&callParams)
-		}
-
-		if callParams.debounce {
-			timeout := callParams.debounceTimeout
-			delay := callParams.debounceDelay
-			key := callParams.debounceKey
-
-			options := workflowOptions{}
-			for _, opt := range workflowOpts {
-				opt(&options)
-			}
-			targetWorkflowId, err := Uuid(ctx)
-			if err != nil {
-				return nil, err
-			}
-			options.WorkflowId = targetWorkflowId
-
-			messageId, err := Uuid(ctx)
-			if err != nil {
-				return nil, err
-			}
-
-			dInput := debouncerInput[P]{
-				InitialInput:                  input,
-				TargetWorkflowFQNOrCustomName: name,
-				TargetWorkflowId:              options.WorkflowId,
-				Delay:                         delay,
-				Timeout:                       timeout,
-				WorkflowOptions:               options,
-			}
-
-			// Type-erased wrapper so we can start the internal debouncer via the engine without pre-encoding.
-			internalWF := WorkflowFunc(func(ctx Context, in any) (any, error) {
-				return internalDebouncerWF[P, R](ctx, in.(debouncerInput[P]))
-			})
-
-			for {
-				handle, err := ctx.RunWorkflow(internalWF, dInput, WithDeduplicationId(key), withWorkflowName(internalDebouncerFQN))
-				if err != nil {
-					return nil, err
-				}
-
-				debouncerWorkflowStatus, err := ListWorkflows(ctx, WithWorkflowIds([]string{handle.GetWorkflowId()}), WithLoadInput(true))
-				if err != nil {
-					return nil, err
-				}
-				if len(debouncerWorkflowStatus) == 0 {
-					continue
-				}
-				debouncerWorkflowId := handle.GetWorkflowId()
-
-				encodedInput, ok := debouncerWorkflowStatus[0].Input.(string)
-				if !ok {
-					return nil, fmt.Errorf("internal debouncer workflow input is not encoded")
-				}
-				var decodedInput debouncerInput[P]
-				if err := json.Unmarshal([]byte(encodedInput), &decodedInput); err != nil {
-					return nil, fmt.Errorf("failed to unmarshal debouncer workflow input: %w", err)
-				}
-
-				if decodedInput.TargetWorkflowId == dInput.TargetWorkflowId {
-					return newWorkflowHandle[R](ctx, dInput.TargetWorkflowId), nil
-				}
-
-				switch debouncerWorkflowStatus[0].Status {
-				case WorkflowStatusSuccess, WorkflowStatusError, WorkflowStatusCancelled, WorkflowStatusMaxRecoveryAttemptsExceeded:
-					return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowId), nil
-				}
-
-				err = Send(ctx, debouncerWorkflowId, DebounceMessage[P]{
-					Input: input,
-					Delay: delay,
-					Id:    messageId,
-				}, _DEBOUNCER_TOPIC)
-				if err != nil {
-					return nil, err
-				}
-
-				_, err = GetEvent[bool](ctx, debouncerWorkflowId, messageId, 2*time.Second)
-				if errors.Is(err, &DbosError{Code: TimeoutError}) {
-					continue
-				} else if err != nil {
-					return nil, err
-				}
-
-				return newWorkflowHandle[R](ctx, decodedInput.TargetWorkflowId), nil
-			}
 		}
 
 		workflowOpts = append(workflowOpts, withWorkflowName(name))
@@ -487,6 +392,32 @@ func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...Workflo
 		}
 
 		return newWorkflowHandle[R](handle.dbosContext, handle.workflowId), nil
+	}
+	return invoker, name
+}
+
+// NewWorkflow is the user-facing factory. It registers fn via the newWorkflow primitive
+// and composes configured behaviors on top — currently a debounce window workflow, used
+// when a call passes WithDebounce.
+func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
+	target, name := newWorkflow(ctx, fn, opts...)
+	window, _ := newWorkflow(ctx, debounceWindow(target), withWorkflowFQN(name+_DEBOUNCER_NAME_SUFFIX))
+
+	return func(ctx Context, input P, callOpts ...WorkflowOption) (*WorkflowHandle[R], error) {
+		if ctx == nil {
+			return nil, fmt.Errorf("ctx cannot be nil")
+		}
+
+		callParams := workflowOptions{}
+		for _, opt := range callOpts {
+			opt(&callParams)
+		}
+
+		if callParams.debounce {
+			return startDebounced(ctx, window, input, callParams)
+		}
+
+		return target(ctx, input, callOpts...)
 	}
 }
 
@@ -525,7 +456,10 @@ func registerWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...Wo
 		opt(&registrationParams)
 	}
 
-	fqn := resolveWorkflowFunctionName(fn)
+	fqn := registrationParams.workflowFQN
+	if fqn == "" {
+		fqn = resolveWorkflowFunctionName(fn)
+	}
 
 	// Input will always come, encoded, from the database, so we decode it into the target type (captured by this wrapped closure)
 
@@ -568,7 +502,15 @@ func registerWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...Wo
 		}
 		return newWorkflowHandle[any](ctx, handle.GetWorkflowId()), nil
 	})
-	storeWorkflowRegistryEntry(ctx, fqn, typeErasedWrapper, registrationParams.MaxRetries, registrationParams.WorkflowName)
+	storeWorkflowRegistryEntry(ctx, WorkflowRegistryEntry{
+		wrappedFunction: typeErasedWrapper,
+		FQN:             fqn,
+		MaxRetries:      registrationParams.MaxRetries,
+		InputSchema:     reflect.TypeFor[P]().String(),
+		OutputSchema:    reflect.TypeFor[R]().String(),
+		DebounceDelay:   registrationParams.debounceDelay,
+		DebounceTimeout: registrationParams.debounceTimeout,
+	}, registrationParams.WorkflowName)
 
 	if registrationParams.CronSchedule != "" {
 		if reflect.TypeOf(p) != reflect.TypeFor[time.Time]() {
@@ -625,6 +567,7 @@ type workflowOptions struct {
 	debounceKey         string
 	debounceDelay       time.Duration
 	debounceTimeout     time.Duration
+	workflowFQN         string
 	alreadyEncodedInput bool
 	isDequeue           bool
 	isRecovery          bool
@@ -677,6 +620,15 @@ func withWorkflowName(name string) WorkflowOption {
 		if p.WorkflowName == "" {
 			p.WorkflowName = name
 		}
+	}
+}
+
+// An internal option that overrides the FQN derived from the function pointer. Needed for
+// workflows built from closures (e.g. debounce windows), whose runtime function names are
+// not unique per registration.
+func withWorkflowFQN(fqn string) WorkflowOption {
+	return func(p *workflowOptions) {
+		p.workflowFQN = fqn
 	}
 }
 
@@ -737,7 +689,36 @@ func WithDebounceTimeout(timeout time.Duration) WorkflowOption {
 	}
 }
 
+// workflowClaim carries a durably recorded workflow invocation from the recording
+// (scheduling) phase to the enactment (execution) phase. A non-nil pollingHandle means
+// this process must not execute the workflow (enqueued, deduplicated, already finished,
+// owned by another executor, or already running locally) and should hand the handle back.
+type workflowClaim struct {
+	workflowId    string
+	params        workflowOptions
+	insertResult  *insertWorkflowResult
+	pollingHandle *WorkflowHandle[any]
+}
+
+// RunWorkflow durably records a workflow invocation and, when this process is the one
+// responsible for executing it, enacts it locally. Direct calls record and enact;
+// enqueued calls record only (a worker enacts later via the dequeue path); dequeue and
+// recovery calls re-enter here to claim the existing record and enact it.
 func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOption) (*WorkflowHandle[any], error) {
+	claim, err := c.recordWorkflow(input, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if claim.pollingHandle != nil {
+		return claim.pollingHandle, nil
+	}
+	return c.enactWorkflow(claim, fn, input), nil
+}
+
+// recordWorkflow is the scheduling half: resolve the registered name, insert the status
+// row (or claim an existing one when dequeuing or recovering), and resolve deduplication.
+// It performs no execution.
+func (c *dbosContext) recordWorkflow(input any, opts ...WorkflowOption) (*workflowClaim, error) {
 
 	params := workflowOptions{
 		ApplicationVersion: c.GetApplicationVersion(),
@@ -761,7 +742,11 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		params.WorkflowName = registeredWorkflow.Name
 	}
 
-	enqueue := params.QueueName != "" && !params.isDequeue && !params.isRecovery
+	// Invocations only schedule: the workflow is recorded as ENQUEUED and a worker claims
+	// and enacts it via the dequeue path, which is also the enforcement point for execution
+	// policies (rate limits, global concurrency). Only dequeue and recovery re-entries
+	// proceed to local enactment.
+	enqueue := !params.isDequeue && !params.isRecovery
 
 	if params.DelayDuration > 0 && !enqueue {
 		return nil, newWorkflowExecutionError("", fmt.Errorf("delay can only be applied when enqueuing a workflow"))
@@ -864,6 +849,8 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 	if hasParentWorkflow {
 		workflowStatus.ParentWorkflowId = parentWorkflowState.workflowId
 	}
+	// Pin the instance to the definition that admitted it.
+	workflowStatus.DefinitionDigest = registeredWorkflow.Digest
 
 	var earlyReturnPollingHandle *WorkflowHandle[any]
 	var insertStatusResult *insertWorkflowResult
@@ -940,11 +927,27 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 			continue
 		}
 		c.logger.Info("returning handle to existing deduplicated workflow", "workflow_name", params.WorkflowName, "queue_name", params.QueueName, "deduplication_id", params.DeduplicationId, "existing_workflow_id", *existingId)
-		return newWorkflowHandle[any](uncancellableCtx, *existingId), nil
+		return &workflowClaim{pollingHandle: newWorkflowHandle[any](uncancellableCtx, *existingId)}, nil
 	}
 	if earlyReturnPollingHandle != nil {
-		return earlyReturnPollingHandle, nil
+		return &workflowClaim{pollingHandle: earlyReturnPollingHandle}, nil
 	}
+
+	return &workflowClaim{
+		workflowId:   workflowId,
+		params:       params,
+		insertResult: insertStatusResult,
+	}, nil
+}
+
+// enactWorkflow is the execution half: build the workflow context for a claimed record,
+// arm the durable deadline, and run fn in a goroutine that records the outcome. The
+// returned handle can be awaited immediately.
+func (c *dbosContext) enactWorkflow(claim *workflowClaim, fn WorkflowFunc, input any) *WorkflowHandle[any] {
+	workflowId := claim.workflowId
+	params := claim.params
+	insertStatusResult := claim.insertResult
+	uncancellableCtx := WithoutCancel(c)
 
 	wfState := &workflowState{
 		workflowId:         workflowId,
@@ -1047,7 +1050,7 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 		}
 	}()
 
-	return newWorkflowHandle[any](uncancellableCtx, workflowId), nil
+	return newWorkflowHandle[any](uncancellableCtx, workflowId)
 }
 
 type StepFunc func(ctx context.Context) (any, error)

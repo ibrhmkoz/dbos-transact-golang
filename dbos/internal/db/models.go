@@ -67,12 +67,26 @@ type Stream struct {
 	Serialization *string
 }
 
+type WorkflowCurrent struct {
+	WorkflowName string
+	Digest       string
+	Since        int64
+}
+
 type WorkflowDefinition struct {
 	WorkflowName        string
+	Digest              string
+	InputSchema         *string
+	OutputSchema        *string
+	DebounceDelayMs     *int64
+	DebounceTimeoutMs   *int64
+	MaxRecoveryAttempts *int64
 	GlobalConcurrency   *int32
 	RateLimit           *int32
 	RatePeriodMs        *int64
 	WorkflowRetentionMs int64
+	CronSchedule        *string
+	CreatedAt           int64
 }
 
 type WorkflowEvent struct {
@@ -88,6 +102,13 @@ type WorkflowEventsHistory struct {
 	Key           string
 	Value         string
 	Serialization *string
+}
+
+type WorkflowOverride struct {
+	WorkflowName      string
+	GlobalConcurrency *int32
+	RateLimit         *int32
+	RatePeriodMs      *int64
 }
 
 type WorkflowSchedule struct {
@@ -139,4 +160,5 @@ type WorkflowStatus struct {
 	WasForkedFrom           bool
 	RateLimited             bool
 	CompletedAt             *int64
+	DefinitionDigest        *string
 }

@@ -1,6 +1,9 @@
 package dbos
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
@@ -8,10 +11,55 @@ import (
 
 type wrappedWorkflowFunc func(ctx Context, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
 
+// computeDefinitionDigest fingerprints the code-declared configuration of a workflow.
+// It deliberately covers conf only, not the function body: executable compatibility is
+// tracked separately by application_version. A digest change means "declared conf
+// changed" and moves the workflow_current pointer to a new immutable definition row.
+func computeDefinitionDigest(e WorkflowRegistryEntry) string {
+	fp := struct {
+		Name                string
+		InputSchema         string
+		OutputSchema        string
+		DebounceDelayMs     int64
+		DebounceTimeoutMs   int64
+		MaxRecoveryAttempts int
+		GlobalConcurrency   *int
+		RateLimitMax        int
+		RateLimitPeriodMs   int64
+		RetentionMs         int64
+		CronSchedule        string
+	}{
+		Name:                e.Name,
+		InputSchema:         e.InputSchema,
+		OutputSchema:        e.OutputSchema,
+		DebounceDelayMs:     e.DebounceDelay.Milliseconds(),
+		DebounceTimeoutMs:   e.DebounceTimeout.Milliseconds(),
+		MaxRecoveryAttempts: e.MaxRetries,
+		GlobalConcurrency:   e.GlobalConcurrency,
+		RetentionMs:         e.Retention.Milliseconds(),
+		CronSchedule:        e.CronSchedule,
+	}
+	if e.RateLimit != nil {
+		fp.RateLimitMax = e.RateLimit.limit
+		fp.RateLimitPeriodMs = e.RateLimit.period.Milliseconds()
+	}
+	b, err := json.Marshal(fp)
+	if err != nil {
+		panic(fmt.Sprintf("failed to fingerprint workflow definition %s: %v", e.Name, err))
+	}
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// persistWorkflowDefinitions reconciles registered workflows with the definitions
+// table: insert the immutable definition row if its digest is unseen, then move the
+// current pointer. Operator overrides are never touched.
 func (c *dbosContext) persistWorkflowDefinitions() error {
 	for _, entry := range c.workflowRegistry.List(false) {
-		if err := c.kernel.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit, entry.Retention); err != nil {
-			return fmt.Errorf("persist workflow definition %s: %w", entry.Name, err)
+		digest := computeDefinitionDigest(entry)
+		c.workflowRegistry.SetDigest(entry.Name, digest)
+		if err := c.kernel.reconcileWorkflowDefinition(c, entry, digest); err != nil {
+			return fmt.Errorf("reconcile workflow definition %s: %w", entry.Name, err)
 		}
 	}
 	return nil
@@ -28,6 +76,12 @@ type WorkflowRegistryEntry struct {
 	Name            string
 	FQN             string
 	CronSchedule    string
+
+	InputSchema     string
+	OutputSchema    string
+	DebounceDelay   time.Duration
+	DebounceTimeout time.Duration
+	Digest          string
 
 	GlobalConcurrency *int
 	RateLimit         *rateLimiter
@@ -100,6 +154,19 @@ func (wf *WorkflowRegistry) SetExecutionPolicies(workflowName string, globalConc
 	entry.GlobalConcurrency = globalConcurrency
 	entry.RateLimit = rateLimit
 	entry.Retention = retention
+	wf.store[workflowName] = entry
+	return true
+}
+
+func (wf *WorkflowRegistry) SetDigest(workflowName, digest string) bool {
+	wf.mu.Lock()
+	defer wf.mu.Unlock()
+	entry, exists := wf.store[workflowName]
+	if !exists {
+		return false
+	}
+
+	entry.Digest = digest
 	wf.store[workflowName] = entry
 	return true
 }

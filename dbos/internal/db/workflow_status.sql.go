@@ -118,7 +118,9 @@ const garbageCollectByRetention = `-- name: GarbageCollectByRetention :execrows
 DELETE FROM workflow_status AS ws
 WHERE ws.completed_at IS NOT NULL
   AND EXISTS (
-    SELECT 1 FROM workflow_definitions AS wd
+    SELECT 1 FROM workflow_current AS wc
+    JOIN workflow_definitions AS wd
+      ON wd.workflow_name = wc.workflow_name AND wd.digest = wc.digest
     WHERE wd.workflow_name = ws.name
       AND ws.completed_at + wd.workflow_retention_ms < $1::bigint
   )
@@ -208,24 +210,24 @@ INSERT INTO workflow_status (
     created_at, recovery_attempts, updated_at, workflow_timeout_ms,
     workflow_deadline_epoch_ms, inputs, deduplication_id, priority,
     queue_partition_key, owner_xid, parent_workflow_id, class_name, config_name,
-    serialization, delay_until_epoch_ms
+    serialization, delay_until_epoch_ms, definition_digest
 ) VALUES (
     $1, $2::text, $3::text, $4::text, $5::text, $6::text,
     $7::text, $8::text, $9, $10::text,
     $11::bigint, $12::bigint, $13::bigint, $14,
     $15, $16, $17, $18::int,
     $19, $20, $21, $22, $23,
-    $24::text, $25
+    $24::text, $25, $26
 )
 ON CONFLICT (workflow_uuid) DO UPDATE SET
     recovery_attempts = CASE
-        WHEN EXCLUDED.status NOT IN ($26::text, $27::text)
-        THEN workflow_status.recovery_attempts + $28::bigint
+        WHEN EXCLUDED.status NOT IN ($27::text, $28::text)
+        THEN workflow_status.recovery_attempts + $29::bigint
         ELSE workflow_status.recovery_attempts
     END,
     updated_at = EXCLUDED.updated_at,
     executor_id = CASE
-        WHEN EXCLUDED.status IN ($26::text, $27::text)
+        WHEN EXCLUDED.status IN ($27::text, $28::text)
         THEN workflow_status.executor_id
         ELSE EXCLUDED.executor_id
     END
@@ -259,6 +261,7 @@ type InsertWorkflowStatusParams struct {
 	ConfigName              *string
 	Serialization           string
 	DelayUntilEpochMs       *int64
+	DefinitionDigest        *string
 	EnqueuedStatus          string
 	DelayedStatus           string
 	RecoveryIncrement       int64
@@ -302,6 +305,7 @@ func (q *Queries) InsertWorkflowStatus(ctx context.Context, arg InsertWorkflowSt
 		arg.ConfigName,
 		arg.Serialization,
 		arg.DelayUntilEpochMs,
+		arg.DefinitionDigest,
 		arg.EnqueuedStatus,
 		arg.DelayedStatus,
 		arg.RecoveryIncrement,

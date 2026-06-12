@@ -9,51 +9,95 @@ import (
 	"context"
 )
 
-const getWorkflowDefinition = `-- name: GetWorkflowDefinition :one
-SELECT global_concurrency, rate_limit, rate_period_ms
-FROM workflow_definitions
-WHERE workflow_name = $1
+const getEffectiveWorkflowDefinition = `-- name: GetEffectiveWorkflowDefinition :one
+SELECT
+    COALESCE(o.global_concurrency, d.global_concurrency) AS global_concurrency,
+    COALESCE(o.rate_limit, d.rate_limit) AS rate_limit,
+    COALESCE(o.rate_period_ms, d.rate_period_ms) AS rate_period_ms
+FROM workflow_current c
+JOIN workflow_definitions d ON d.workflow_name = c.workflow_name AND d.digest = c.digest
+LEFT JOIN workflow_overrides o ON o.workflow_name = c.workflow_name
+WHERE c.workflow_name = $1
 `
 
-type GetWorkflowDefinitionRow struct {
+type GetEffectiveWorkflowDefinitionRow struct {
 	GlobalConcurrency *int32
 	RateLimit         *int32
 	RatePeriodMs      *int64
 }
 
-func (q *Queries) GetWorkflowDefinition(ctx context.Context, workflowName string) (GetWorkflowDefinitionRow, error) {
-	row := q.db.QueryRow(ctx, getWorkflowDefinition, workflowName)
-	var i GetWorkflowDefinitionRow
+func (q *Queries) GetEffectiveWorkflowDefinition(ctx context.Context, workflowName string) (GetEffectiveWorkflowDefinitionRow, error) {
+	row := q.db.QueryRow(ctx, getEffectiveWorkflowDefinition, workflowName)
+	var i GetEffectiveWorkflowDefinitionRow
 	err := row.Scan(&i.GlobalConcurrency, &i.RateLimit, &i.RatePeriodMs)
 	return i, err
 }
 
-const upsertWorkflowDefinition = `-- name: UpsertWorkflowDefinition :exec
+const insertWorkflowDefinition = `-- name: InsertWorkflowDefinition :exec
+
 INSERT INTO workflow_definitions (
-    workflow_name, global_concurrency, rate_limit, rate_period_ms, workflow_retention_ms
-) VALUES ($1, $2, $3, $4, $5::bigint)
-ON CONFLICT (workflow_name) DO UPDATE SET
-    global_concurrency = EXCLUDED.global_concurrency,
-    rate_limit = EXCLUDED.rate_limit,
-    rate_period_ms = EXCLUDED.rate_period_ms,
-    workflow_retention_ms = EXCLUDED.workflow_retention_ms
+    workflow_name, digest, input_schema, output_schema,
+    debounce_delay_ms, debounce_timeout_ms, max_recovery_attempts,
+    global_concurrency, rate_limit, rate_period_ms, workflow_retention_ms, cron_schedule
+) VALUES (
+    $1, $2, $3, $4,
+    $5, $6, $7,
+    $8, $9, $10, $11::bigint, $12
+)
+ON CONFLICT (workflow_name, digest) DO NOTHING
 `
 
-type UpsertWorkflowDefinitionParams struct {
+type InsertWorkflowDefinitionParams struct {
 	WorkflowName        string
+	Digest              string
+	InputSchema         *string
+	OutputSchema        *string
+	DebounceDelayMs     *int64
+	DebounceTimeoutMs   *int64
+	MaxRecoveryAttempts *int64
 	GlobalConcurrency   *int32
 	RateLimit           *int32
 	RatePeriodMs        *int64
 	WorkflowRetentionMs int64
+	CronSchedule        *string
 }
 
-func (q *Queries) UpsertWorkflowDefinition(ctx context.Context, arg UpsertWorkflowDefinitionParams) error {
-	_, err := q.db.Exec(ctx, upsertWorkflowDefinition,
+// Definitions are immutable and content-addressed: one row per (workflow_name, digest),
+// written once. Deploys move the workflow_current pointer; operators write only
+// workflow_overrides. Effective policy = COALESCE(override, declared).
+func (q *Queries) InsertWorkflowDefinition(ctx context.Context, arg InsertWorkflowDefinitionParams) error {
+	_, err := q.db.Exec(ctx, insertWorkflowDefinition,
 		arg.WorkflowName,
+		arg.Digest,
+		arg.InputSchema,
+		arg.OutputSchema,
+		arg.DebounceDelayMs,
+		arg.DebounceTimeoutMs,
+		arg.MaxRecoveryAttempts,
 		arg.GlobalConcurrency,
 		arg.RateLimit,
 		arg.RatePeriodMs,
 		arg.WorkflowRetentionMs,
+		arg.CronSchedule,
 	)
+	return err
+}
+
+const setCurrentWorkflowDefinition = `-- name: SetCurrentWorkflowDefinition :exec
+INSERT INTO workflow_current (workflow_name, digest)
+VALUES ($1, $2)
+ON CONFLICT (workflow_name) DO UPDATE SET
+    digest = EXCLUDED.digest,
+    since = (EXTRACT(epoch FROM now())::numeric * 1000)::bigint
+WHERE workflow_current.digest IS DISTINCT FROM EXCLUDED.digest
+`
+
+type SetCurrentWorkflowDefinitionParams struct {
+	WorkflowName string
+	Digest       string
+}
+
+func (q *Queries) SetCurrentWorkflowDefinition(ctx context.Context, arg SetCurrentWorkflowDefinitionParams) error {
+	_, err := q.db.Exec(ctx, setCurrentWorkflowDefinition, arg.WorkflowName, arg.Digest)
 	return err
 }

@@ -138,7 +138,8 @@ func TestDebouncer(t *testing.T) {
 		assert.Equal(t, "second-input", result, "result should match latest input")
 
 		elapsed := time.Since(startTime)
-		assert.LessOrEqual(t, elapsed, 2*time.Second, "execution should happen immediately with delay=0")
+		// "Immediately" = within worker pickup latency for the window and target workflows.
+		assert.LessOrEqual(t, elapsed, 5*time.Second, "execution should happen within pickup latency with delay=0")
 	})
 
 	t.Run("TestDifferentKeys", func(t *testing.T) {

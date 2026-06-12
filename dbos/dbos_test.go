@@ -237,7 +237,7 @@ func TestConfig(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT version FROM dbos.dbos_migrations").Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
+		assert.Equal(t, int64(1), version, "migration version should be 1 (consolidated schema)")
 
 		Shutdown(ctx, 1*time.Minute)
 
@@ -502,7 +502,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT version FROM %s.dbos_migrations", customSchema)).Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
+		assert.Equal(t, int64(1), version, "migration version should be 1 (consolidated schema)")
 	})
 
 	type testWorkflowInput struct {

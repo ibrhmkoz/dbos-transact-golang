@@ -94,131 +94,8 @@ func createDatabaseIfNotExists(ctx context.Context, pool *pgxpool.Pool, logger *
 	return nil
 }
 
-//go:embed migrations/1_initial_dbos_schema.sql
+//go:embed migrations/1_schema.sql
 var migration1Sql string
-
-//go:embed migrations/1_initial_dbos_schema_listen_notify.sql
-var migration1ListenNotifySql string
-
-//go:embed migrations/2_add_queue_partition_key.sql
-var migration2Sql string
-
-//go:embed migrations/3_add_workflow_status_index.sql
-var migration3Sql string
-
-//go:embed migrations/4_add_forked_from.sql
-var migration4Sql string
-
-//go:embed migrations/5_add_step_timestamps.sql
-var migration5Sql string
-
-//go:embed migrations/6_add_workflow_events_history.sql
-var migration6Sql string
-
-//go:embed migrations/7_add_owner_xid.sql
-var migration7Sql string
-
-//go:embed migrations/8_add_parent_workflow_id.sql
-var migration8Sql string
-
-//go:embed migrations/9_add_workflow_schedules.sql
-var migration9Sql string
-
-//go:embed migrations/10_add_notifications_pkey.sql
-var migration10Sql string
-
-//go:embed migrations/11_add_serialization_columns.sql
-var migration11Sql string
-
-//go:embed migrations/12_add_notifications_consumed.sql
-var migration12Sql string
-
-//go:embed migrations/13_add_application_versions.sql
-var migration13Sql string
-
-//go:embed migrations/14_add_pgsql_client_functions.sql
-var migration14Sql string
-
-//go:embed migrations/15_add_workflow_schedule_columns.sql
-var migration15Sql string
-
-//go:embed migrations/16_add_delay_until.sql
-var migration16Sql string
-
-//go:embed migrations/17_add_workflow_schedule_queue_name.sql
-var migration17Sql string
-
-//go:embed migrations/18_add_was_forked_from.sql
-var migration18Sql string
-
-//go:embed migrations/19_add_operation_outputs_completed_at_index.sql
-var migration19Sql string
-
-//go:embed migrations/20_set_function_search_path.sql
-var migration20Sql string
-
-//go:embed migrations/21_create_queues_table.sql
-var migration21Sql string
-
-//go:embed migrations/22_drop_forked_from_index.sql
-var migration22Sql string
-
-//go:embed migrations/23_create_partial_forked_from_index.sql
-var migration23Sql string
-
-//go:embed migrations/24_drop_parent_workflow_id_index.sql
-var migration24Sql string
-
-//go:embed migrations/25_create_partial_parent_workflow_id_index.sql
-var migration25Sql string
-
-//go:embed migrations/26_drop_executor_id_index.sql
-var migration26Sql string
-
-//go:embed migrations/27_create_partial_dedup_id_index.sql
-var migration27Sql string
-
-//go:embed migrations/28_drop_dedup_id_constraint.sql
-var migration28Sql string
-
-//go:embed migrations/29_create_pending_index.sql
-var migration29Sql string
-
-//go:embed migrations/30_create_failed_index.sql
-var migration30Sql string
-
-//go:embed migrations/31_drop_status_index.sql
-var migration31Sql string
-
-//go:embed migrations/32_create_in_flight_index.sql
-var migration32Sql string
-
-//go:embed migrations/33_add_rate_limited.sql
-var migration33Sql string
-
-//go:embed migrations/34_create_rate_limited_index.sql
-var migration34Sql string
-
-//go:embed migrations/35_drop_queue_status_started_index.sql
-var migration35Sql string
-
-//go:embed migrations/36_add_completed_at.sql
-var migration36Sql string
-
-//go:embed migrations/37_create_started_at_index.sql
-var migration37Sql string
-
-//go:embed migrations/38_create_workflow_definitions.sql
-var migration38Sql string
-
-//go:embed migrations/39_add_workflow_retention.sql
-var migration39Sql string
-
-//go:embed migrations/40_drop_child_workflow_id.sql
-var migration40Sql string
-
-//go:embed migrations/41_add_error_encoded.sql
-var migration41Sql string
 
 type migrationFile struct {
 	version int64
@@ -243,60 +120,8 @@ const (
 
 func buildMigrations(schema string) []migrationFile {
 	sanitizedSchema := pgx.Identifier{schema}.Sanitize()
-
-	migration1SqlProcessed := fmt.Sprintf(migration1Sql,
-		sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema,
-		sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema,
-		sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema)
-	migration1ListenNotifySqlProcessed := fmt.Sprintf(migration1ListenNotifySql,
-		sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema)
-	migration1SqlProcessed = migration1SqlProcessed + "\n" + migration1ListenNotifySqlProcessed
-	c := "CONCURRENTLY"
-	migration20SqlProcessed := fmt.Sprintf(migration20Sql, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema)
-	migration28SqlProcessed := fmt.Sprintf(migration28Sql, sanitizedSchema)
-
 	return []migrationFile{
-		{version: 1, sql: migration1SqlProcessed},
-		{version: 2, sql: fmt.Sprintf(migration2Sql, sanitizedSchema)},
-		{version: 3, sql: fmt.Sprintf(migration3Sql, sanitizedSchema)},
-		{version: 4, sql: fmt.Sprintf(migration4Sql, sanitizedSchema, sanitizedSchema)},
-		{version: 5, sql: fmt.Sprintf(migration5Sql, sanitizedSchema)},
-		{version: 6, sql: fmt.Sprintf(migration6Sql, sanitizedSchema, sanitizedSchema, sanitizedSchema)},
-		{version: 7, sql: fmt.Sprintf(migration7Sql, sanitizedSchema)},
-		{version: 8, sql: fmt.Sprintf(migration8Sql, sanitizedSchema, sanitizedSchema)},
-		{version: 9, sql: fmt.Sprintf(migration9Sql, sanitizedSchema)},
-		{version: 10, sql: fmt.Sprintf(migration10Sql, schema, sanitizedSchema)},
-		{version: 11, sql: fmt.Sprintf(migration11Sql, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema)},
-		{version: 12, sql: fmt.Sprintf(migration12Sql, sanitizedSchema, sanitizedSchema)},
-		{version: 13, sql: fmt.Sprintf(migration13Sql, sanitizedSchema)},
-		{version: 14, sql: fmt.Sprintf(migration14Sql, sanitizedSchema, sanitizedSchema, sanitizedSchema, sanitizedSchema)},
-		{version: 15, sql: fmt.Sprintf(migration15Sql, sanitizedSchema, sanitizedSchema, sanitizedSchema)},
-		{version: 16, sql: fmt.Sprintf(migration16Sql, sanitizedSchema, sanitizedSchema)},
-		{version: 17, sql: fmt.Sprintf(migration17Sql, sanitizedSchema)},
-		{version: 18, sql: fmt.Sprintf(migration18Sql, sanitizedSchema)},
-		{version: 19, sql: fmt.Sprintf(migration19Sql, sanitizedSchema)},
-		{version: 20, sql: migration20SqlProcessed},
-		{version: 21, sql: fmt.Sprintf(migration21Sql, sanitizedSchema)},
-		{version: 22, sql: fmt.Sprintf(migration22Sql, c, sanitizedSchema), online: true},
-		{version: 23, sql: fmt.Sprintf(migration23Sql, c, sanitizedSchema), online: true},
-		{version: 24, sql: fmt.Sprintf(migration24Sql, c, sanitizedSchema), online: true},
-		{version: 25, sql: fmt.Sprintf(migration25Sql, c, sanitizedSchema), online: true},
-		{version: 26, sql: fmt.Sprintf(migration26Sql, c, sanitizedSchema), online: true},
-		{version: 27, sql: fmt.Sprintf(migration27Sql, c, sanitizedSchema), online: true},
-		{version: 28, sql: migration28SqlProcessed},
-		{version: 29, sql: fmt.Sprintf(migration29Sql, c, sanitizedSchema), online: true},
-		{version: 30, sql: fmt.Sprintf(migration30Sql, c, sanitizedSchema), online: true},
-		{version: 31, sql: fmt.Sprintf(migration31Sql, c, sanitizedSchema), online: true},
-		{version: 32, sql: fmt.Sprintf(migration32Sql, c, sanitizedSchema), online: true},
-		{version: 33, sql: fmt.Sprintf(migration33Sql, sanitizedSchema)},
-		{version: 34, sql: fmt.Sprintf(migration34Sql, c, sanitizedSchema), online: true},
-		{version: 35, sql: fmt.Sprintf(migration35Sql, c, sanitizedSchema), online: true},
-		{version: 36, sql: fmt.Sprintf(migration36Sql, sanitizedSchema, sanitizedSchema)},
-		{version: 37, sql: fmt.Sprintf(migration37Sql, c, sanitizedSchema), online: true},
-		{version: 38, sql: fmt.Sprintf(migration38Sql, sanitizedSchema, c, sanitizedSchema, c, sanitizedSchema), online: true},
-		{version: 39, sql: fmt.Sprintf(migration39Sql, sanitizedSchema)},
-		{version: 40, sql: fmt.Sprintf(migration40Sql, sanitizedSchema)},
-		{version: 41, sql: fmt.Sprintf(migration41Sql, sanitizedSchema, sanitizedSchema)},
+		{version: 1, sql: strings.ReplaceAll(migration1Sql, "{schema}", sanitizedSchema)},
 	}
 }
 
@@ -809,6 +634,11 @@ func (k *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 		inputs = &v
 	}
 
+	var definitionDigest *string
+	if input.status.DefinitionDigest != "" {
+		definitionDigest = &input.status.DefinitionDigest
+	}
+
 	row, err := k.queries.WithTx(input.tx).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
 		WorkflowUuid:            input.status.Id,
 		Status:                  string(input.status.Status),
@@ -835,6 +665,7 @@ func (k *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 		ConfigName:              input.status.ConfigName,
 		Serialization:           input.status.Serialization,
 		DelayUntilEpochMs:       delayUntilEpochMs,
+		DefinitionDigest:        definitionDigest,
 		EnqueuedStatus:          string(WorkflowStatusEnqueued),
 		DelayedStatus:           string(WorkflowStatusDelayed),
 		RecoveryIncrement:       recoveryIncrement,
@@ -2807,25 +2638,56 @@ type dequeuedWorkflow struct {
 	serialization string
 }
 
-func (k *Kernel) upsertWorkflowDefinition(ctx context.Context, workflowName string, concurrency *int, rl *rateLimiter, retention time.Duration) error {
+// reconcileWorkflowDefinition writes the immutable, content-addressed definition row
+// (no-op when the digest already exists) and moves the workflow_current pointer to it.
+// Operator-owned workflow_overrides are never written here.
+func (k *Kernel) reconcileWorkflowDefinition(ctx context.Context, entry WorkflowRegistryEntry, digest string) error {
 	var globalConcurrency, rateLimit *int32
 	var ratePeriodMs *int64
-	if concurrency != nil {
-		v := int32(*concurrency)
+	if entry.GlobalConcurrency != nil {
+		v := int32(*entry.GlobalConcurrency)
 		globalConcurrency = &v
 	}
-	if rl != nil {
-		lim := int32(rl.limit)
+	if entry.RateLimit != nil {
+		lim := int32(entry.RateLimit.limit)
 		rateLimit = &lim
-		per := rl.period.Milliseconds()
+		per := entry.RateLimit.period.Milliseconds()
 		ratePeriodMs = &per
 	}
-	return k.queries.UpsertWorkflowDefinition(ctx, db.UpsertWorkflowDefinitionParams{
-		WorkflowName:        workflowName,
+	var debounceDelayMs, debounceTimeoutMs *int64
+	if entry.DebounceDelay > 0 {
+		v := entry.DebounceDelay.Milliseconds()
+		debounceDelayMs = &v
+	}
+	if entry.DebounceTimeout > 0 {
+		v := entry.DebounceTimeout.Milliseconds()
+		debounceTimeoutMs = &v
+	}
+	maxRecoveryAttempts := int64(entry.MaxRetries)
+	var cronSchedule *string
+	if entry.CronSchedule != "" {
+		cronSchedule = &entry.CronSchedule
+	}
+
+	if err := k.queries.InsertWorkflowDefinition(ctx, db.InsertWorkflowDefinitionParams{
+		WorkflowName:        entry.Name,
+		Digest:              digest,
+		InputSchema:         &entry.InputSchema,
+		OutputSchema:        &entry.OutputSchema,
+		DebounceDelayMs:     debounceDelayMs,
+		DebounceTimeoutMs:   debounceTimeoutMs,
+		MaxRecoveryAttempts: &maxRecoveryAttempts,
 		GlobalConcurrency:   globalConcurrency,
 		RateLimit:           rateLimit,
 		RatePeriodMs:        ratePeriodMs,
-		WorkflowRetentionMs: retention.Milliseconds(),
+		WorkflowRetentionMs: entry.Retention.Milliseconds(),
+		CronSchedule:        cronSchedule,
+	}); err != nil {
+		return err
+	}
+	return k.queries.SetCurrentWorkflowDefinition(ctx, db.SetCurrentWorkflowDefinitionParams{
+		WorkflowName: entry.Name,
+		Digest:       digest,
 	})
 }
 
@@ -2839,7 +2701,7 @@ func (k *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 	var policyConcurrency *int
 	var policyRateLimit *rateLimiter
 
-	def, err := k.queries.GetWorkflowDefinition(ctx, input.workflowName)
+	def, err := k.queries.GetEffectiveWorkflowDefinition(ctx, input.workflowName)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil
