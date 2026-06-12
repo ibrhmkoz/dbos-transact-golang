@@ -255,8 +255,9 @@ func setupDbos(t *testing.T, opts setupDbosOptions) Context {
 		AppName:                  "test-app",
 		Serializer:               opts.serializer,
 		SchedulerPollingInterval: opts.schedulerPollingInterval,
-		// Fast worker polling keeps schedule-only invocation latency negligible in tests.
+		// Fast polling keeps schedule-only invocation and result-await latency negligible in tests.
 		WorkerPollingInterval: 25 * time.Millisecond,
+		AwaitPollingInterval:  25 * time.Millisecond,
 	}
 
 	dbosCtx, err := NewDbosContext(context.Background(), config)

@@ -184,8 +184,12 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 		defer cancel()
 	}
 
+	pollInterval := options.pollInterval
+	if pollInterval <= 0 {
+		pollInterval = h.dbosContext.(*dbosContext).config.AwaitPollingInterval
+	}
 	awaitResult, awaitErr := retryWithResult(ctx, func() (*awaitWorkflowResultOutput, error) {
-		return h.dbosContext.(*dbosContext).kernel.awaitWorkflowResult(ctx, h.workflowId, options.pollInterval)
+		return h.dbosContext.(*dbosContext).kernel.awaitWorkflowResult(ctx, h.workflowId, pollInterval)
 	}, withRetrierLogger(h.dbosContext.(*dbosContext).logger))
 
 	if awaitErr != nil && options.timeout > 0 && errors.Is(ctx.Err(), context.DeadlineExceeded) {

@@ -41,6 +41,9 @@ type Config struct {
 	// WorkerPollingInterval is the base interval at which workers poll for enqueued
 	// workflows to enact. Defaults to 1s.
 	WorkerPollingInterval time.Duration
+	// AwaitPollingInterval is the default interval at which workflow handles poll for
+	// results. Defaults to 1s.
+	AwaitPollingInterval time.Duration
 }
 
 func processConfig(inputConfig *Config) (*Config, error) {
@@ -78,6 +81,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 		Serializer:               inputConfig.Serializer,
 		SchedulerPollingInterval: inputConfig.SchedulerPollingInterval,
 		WorkerPollingInterval:    inputConfig.WorkerPollingInterval,
+		AwaitPollingInterval:     inputConfig.AwaitPollingInterval,
 	}
 
 	if dbosConfig.Logger == nil {
