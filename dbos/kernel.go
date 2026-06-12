@@ -652,10 +652,6 @@ func NewKernel(ctx context.Context, config KernelConfig) (*Kernel, error) {
 	}, nil
 }
 
-func (k *Kernel) listenNotifyPool() *pgxpool.Pool {
-	return k.pool
-}
-
 // Start starts the kernel's background daemons. It is idempotent: calling it
 // on an already-started kernel is a no-op.
 func (k *Kernel) Start() {
@@ -2152,15 +2148,9 @@ func (k *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
 func (k *Kernel) notificationListenerLoop(ctx context.Context) {
 	defer k.logger.Debug("Notification listener loop exiting")
 
-	pgxPool := k.listenNotifyPool()
-	if pgxPool == nil {
-		k.logger.Error("Notification listener loop started without a pgx-backed pool; aborting")
-		return
-	}
-
 	acquire := func(ctx context.Context) (*pgxpool.Conn, error) {
 
-		pc, err := pgxPool.Acquire(ctx)
+		pc, err := k.pool.Acquire(ctx)
 		if err != nil {
 			return nil, err
 		}
@@ -2275,102 +2265,6 @@ func (k *Kernel) notificationListenerLoop(ctx context.Context) {
 			}
 		}
 	}
-}
-
-func (k *Kernel) notificationPollerLoop(ctx context.Context) {
-	defer k.logger.Debug("Notification poller loop exiting")
-
-	k.logger.Debug("DBOS: Starting notification poller loop")
-
-	ticker := time.NewTicker(1 * time.Second)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			k.logger.Debug("Notification poller exiting (context canceled)", "cause", context.Cause(ctx))
-			return
-		case <-ticker.C:
-			k.pollNotifications(ctx)
-			k.pollEvents(ctx)
-		}
-	}
-}
-
-func (k *Kernel) pollNotifications(ctx context.Context) {
-
-	k.workflowNotificationsMap.Range(func(key, value any) bool {
-		payload, ok := key.(string)
-		if !ok {
-			return true
-		}
-
-		parts := strings.SplitN(payload, "::", 2)
-		if len(parts) != 2 {
-			k.logger.Warn("Invalid notification payload format", "payload", payload)
-			return true
-		}
-
-		destinationId := parts[0]
-		topic := parts[1]
-
-		exists, err := k.queries.HasUnconsumedMessage(ctx, db.HasUnconsumedMessageParams{
-			DestinationUuid: destinationId,
-			Topic:           topic,
-		})
-		if err != nil {
-			k.logger.Warn("Failed to poll notification", "payload", payload, "error", err)
-			return true
-		}
-
-		if exists {
-			if cond, ok := value.(*sync.Cond); ok {
-				cond.L.Lock()
-				cond.Broadcast()
-				cond.L.Unlock()
-			}
-		}
-
-		return true
-	})
-}
-
-func (k *Kernel) pollEvents(ctx context.Context) {
-
-	k.workflowEventsMap.Range(func(key, value any) bool {
-		payload, ok := key.(string)
-		if !ok {
-			return true
-		}
-
-		parts := strings.SplitN(payload, "::", 2)
-		if len(parts) != 2 {
-			k.logger.Warn("Invalid event payload format", "payload", payload)
-			return true
-		}
-
-		targetWorkflowId := parts[0]
-		eventKey := parts[1]
-
-		exists, err := k.queries.HasWorkflowEvent(ctx, db.HasWorkflowEventParams{
-			WorkflowUuid: targetWorkflowId,
-			Key:          eventKey,
-		})
-		if err != nil {
-			k.logger.Warn("Failed to poll event", "payload", payload, "error", err)
-			return true
-		}
-
-		if exists {
-			if cond, ok := value.(*sync.Cond); ok {
-				cond.L.Lock()
-				cond.Broadcast()
-				cond.L.Unlock()
-			}
-		}
-
-		return true
-	})
 }
 
 const _Dbos_NULL_TOPIC = "__null__topic__"
