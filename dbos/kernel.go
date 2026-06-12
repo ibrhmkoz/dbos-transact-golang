@@ -35,14 +35,18 @@ type ExportedWorkflow struct {
 type Kernel struct {
 	pool                          *pgxpool.Pool
 	queries                       *db.Queries
-	notificationLoopDone          chan struct{}
 	workflowNotificationsMap      *sync.Map
 	workflowNotificationRepollMap *sync.Map
 	workflowEventsMap             *sync.Map
 	workflowEventsRepollMap       *sync.Map
 	logger                        *slog.Logger
 	schema                        string
-	launched                      bool
+
+	// Daemon lifecycle: the kernel owns the context its background loops run
+	// under, so callers control it only through Launch/Shutdown.
+	lifecycleMu sync.Mutex
+	loopCancel  context.CancelFunc
+	loopWg      sync.WaitGroup
 }
 
 type KernelConfig struct {
@@ -524,23 +528,18 @@ func applyCatalogMigration(
 	return nil
 }
 
-type newKernelInput struct {
-	databaseUrl     string
-	databaseSchema  string
-	customPool      *pgxpool.Pool
-	logger          *slog.Logger
-	applicationName string
-}
+func NewKernel(ctx context.Context, config KernelConfig) (*Kernel, error) {
 
-func newKernel(ctx context.Context, inputs newKernelInput) (*Kernel, error) {
-
-	databaseUrl := inputs.databaseUrl
-	databaseSchema := inputs.databaseSchema
-	customPool := inputs.customPool
-	logger := inputs.logger
+	databaseUrl := config.DatabaseUrl
+	databaseSchema := config.DatabaseSchema
+	customPool := config.SystemDBPool
+	logger := config.Logger
 
 	if databaseSchema == "" {
-		return nil, fmt.Errorf("database schema cannot be empty")
+		databaseSchema = "dbos"
+	}
+	if logger == nil {
+		logger = slog.Default()
 	}
 	if customPool == nil {
 		if err := validateDatabaseUrl(databaseUrl); err != nil {
@@ -564,30 +563,30 @@ func newKernel(ctx context.Context, inputs newKernelInput) (*Kernel, error) {
 		pool = customPool
 	} else {
 
-		config, err := pgxpool.ParseConfig(databaseUrl)
+		poolConfig, err := pgxpool.ParseConfig(databaseUrl)
 		if err != nil {
 			return nil, fmt.Errorf("failed to parse database URL: %v", err)
 		}
 
-		config.MaxConns = 20
-		config.MinConns = 0
-		config.MaxConnLifetime = time.Hour
-		config.MaxConnIdleTime = time.Minute * 5
+		poolConfig.MaxConns = 20
+		poolConfig.MinConns = 0
+		poolConfig.MaxConnLifetime = time.Hour
+		poolConfig.MaxConnIdleTime = time.Minute * 5
 
 		// Add acquire timeout to prevent indefinite blocking
-		config.ConnConfig.ConnectTimeout = 10 * time.Second
+		poolConfig.ConnConfig.ConnectTimeout = 10 * time.Second
 
-		if config.ConnConfig.RuntimeParams == nil {
-			config.ConnConfig.RuntimeParams = make(map[string]string)
+		if poolConfig.ConnConfig.RuntimeParams == nil {
+			poolConfig.ConnConfig.RuntimeParams = make(map[string]string)
 		}
 
-		config.ConnConfig.RuntimeParams["search_path"] = databaseSchema
+		poolConfig.ConnConfig.RuntimeParams["search_path"] = databaseSchema
 
-		if inputs.applicationName != "" {
-			config.ConnConfig.RuntimeParams["application_name"] = inputs.applicationName
+		if config.ApplicationName != "" {
+			poolConfig.ConnConfig.RuntimeParams["application_name"] = config.ApplicationName
 		}
 
-		newPool, err := pgxpool.NewWithConfig(ctx, config)
+		newPool, err := pgxpool.NewWithConfig(ctx, poolConfig)
 		if err != nil {
 			return nil, fmt.Errorf("failed to create connection pool: %v", err)
 		}
@@ -648,55 +647,55 @@ func newKernel(ctx context.Context, inputs newKernelInput) (*Kernel, error) {
 		workflowNotificationRepollMap: workflowNotificationRepollMap,
 		workflowEventsMap:             workflowEventsMap,
 		workflowEventsRepollMap:       workflowEventsRepollMap,
-		notificationLoopDone:          make(chan struct{}),
 		logger:                        logger.With("service", "system_database"),
 		schema:                        databaseSchema,
 	}, nil
-}
-
-func NewKernel(ctx context.Context, config KernelConfig) (*Kernel, error) {
-	if config.DatabaseSchema == "" {
-		config.DatabaseSchema = "dbos"
-	}
-	if config.Logger == nil {
-		config.Logger = slog.Default()
-	}
-	return newKernel(ctx, newKernelInput{
-		databaseUrl:     config.DatabaseUrl,
-		databaseSchema:  config.DatabaseSchema,
-		customPool:      config.SystemDBPool,
-		logger:          config.Logger,
-		applicationName: config.ApplicationName,
-	})
-}
-
-func (k *Kernel) Launch(ctx context.Context) {
-	k.launch(ctx)
-}
-
-func (k *Kernel) Shutdown(ctx context.Context, timeout time.Duration) {
-	k.shutdown(ctx, timeout)
 }
 
 func (k *Kernel) listenNotifyPool() *pgxpool.Pool {
 	return k.pool
 }
 
-func (k *Kernel) launch(ctx context.Context) {
-	go k.notificationListenerLoop(ctx)
-	k.launched = true
+// Launch starts the kernel's background daemons. It is idempotent: calling it
+// on an already-launched kernel is a no-op.
+func (k *Kernel) Launch() {
+	k.lifecycleMu.Lock()
+	defer k.lifecycleMu.Unlock()
+	if k.loopCancel != nil {
+		return
+	}
+
+	loopCtx, cancel := context.WithCancel(context.Background())
+	k.loopCancel = cancel
+	k.loopWg.Go(func() {
+		k.notificationListenerLoop(loopCtx)
+	})
 }
 
-func (k *Kernel) shutdown(ctx context.Context, timeout time.Duration) {
+// Shutdown stops the daemons started by Launch and closes the connection pool.
+// ctx only bounds how long Shutdown waits for graceful completion; on deadline
+// it logs, keeps tearing down, and returns ctx.Err().
+func (k *Kernel) Shutdown(ctx context.Context) error {
+	k.lifecycleMu.Lock()
+	defer k.lifecycleMu.Unlock()
+
 	k.logger.Debug("Closing system database connection pool")
 
-	if k.launched {
-
+	var err error
+	if k.loopCancel != nil {
+		k.loopCancel()
+		loopsDone := make(chan struct{})
+		go func() {
+			k.loopWg.Wait()
+			close(loopsDone)
+		}()
 		select {
-		case <-k.notificationLoopDone:
-		case <-time.After(timeout):
-			k.logger.Warn("Notification listener loop did not finish in time", "timeout", timeout)
+		case <-loopsDone:
+		case <-ctx.Done():
+			k.logger.Warn("Notification listener loop did not finish in time", "cause", context.Cause(ctx))
+			err = ctx.Err()
 		}
+		k.loopCancel = nil
 	}
 
 	if k.pool != nil {
@@ -708,15 +707,16 @@ func (k *Kernel) shutdown(ctx context.Context, timeout time.Duration) {
 		}()
 		select {
 		case <-poolClose:
-		case <-time.After(timeout):
-			k.logger.Warn("System database connection pool did not close in time", "timeout", timeout)
+		case <-ctx.Done():
+			k.logger.Warn("System database connection pool did not close in time", "cause", context.Cause(ctx))
+			err = ctx.Err()
 		}
 	}
 
 	k.workflowNotificationsMap.Clear()
 	k.workflowEventsMap.Clear()
 
-	k.launched = false
+	return err
 }
 
 type insertWorkflowResult struct {
@@ -2150,10 +2150,7 @@ func (k *Kernel) patch(ctx context.Context, input patchDBInput) (bool, error) {
 }
 
 func (k *Kernel) notificationListenerLoop(ctx context.Context) {
-	defer func() {
-		k.logger.Debug("Notification listener loop exiting")
-		k.notificationLoopDone <- struct{}{}
-	}()
+	defer k.logger.Debug("Notification listener loop exiting")
 
 	pgxPool := k.listenNotifyPool()
 	if pgxPool == nil {
@@ -2281,10 +2278,7 @@ func (k *Kernel) notificationListenerLoop(ctx context.Context) {
 }
 
 func (k *Kernel) notificationPollerLoop(ctx context.Context) {
-	defer func() {
-		k.logger.Debug("Notification poller loop exiting")
-		k.notificationLoopDone <- struct{}{}
-	}()
+	defer k.logger.Debug("Notification poller loop exiting")
 
 	k.logger.Debug("DBOS: Starting notification poller loop")
 

@@ -15,7 +15,7 @@ func TestApplySchedulesInvalidSignature(t *testing.T) {
 
 	require.NoError(t, dbosCtx.Launch())
 
-	badInputType := func(ctx DbosContext, input string) (any, error) { return nil, nil }
+	badInputType := func(ctx Context, input string) (any, error) { return nil, nil }
 	err := ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "bad-input", WorkflowFn: badInputType, Schedule: "0 0 * * * *"},
 	})
@@ -27,7 +27,7 @@ func TestApplySchedulesInvalidSignature(t *testing.T) {
 	})
 	require.Error(t, err)
 
-	tooFewParams := func(ctx DbosContext) (any, error) { return nil, nil }
+	tooFewParams := func(ctx Context) (any, error) { return nil, nil }
 	err = ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "too-few", WorkflowFn: tooFewParams, Schedule: "0 0 * * * *"},
 	})
@@ -244,17 +244,17 @@ func TestScheduleWithOptions(t *testing.T) {
 	require.Equal(t, "America/New_York", schedule.CronTimezone)
 }
 
-func testWorkflowForSchedule(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForSchedule(ctx Context, input ScheduledWorkflowInput) (any, error) {
 	return "completed", nil
 }
 
-func testWorkflowForScheduleCustomName(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForScheduleCustomName(ctx Context, input ScheduledWorkflowInput) (any, error) {
 	return "completed", nil
 }
 
 var scheduledInputCapture sync.Map
 
-func testCapturingScheduledWorkflow(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+func testCapturingScheduledWorkflow(ctx Context, input ScheduledWorkflowInput) (any, error) {
 	wfId, _ := GetWorkflowId(ctx)
 	scheduledInputCapture.Store(wfId, input)
 
@@ -269,7 +269,7 @@ func testCapturingScheduledWorkflow(ctx DbosContext, input ScheduledWorkflowInpu
 
 var backfillRestartFiredEvent *Event
 
-func testWorkflowForBackfillRestart(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForBackfillRestart(ctx Context, input ScheduledWorkflowInput) (any, error) {
 	if backfillRestartFiredEvent != nil {
 		backfillRestartFiredEvent.Set()
 	}
@@ -327,7 +327,7 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "expected backfill to produce more than one additional successful workflow")
 }
 
-func testWorkflowExpectingApplySchedulesError(ctx DbosContext, _ string) (string, error) {
+func testWorkflowExpectingApplySchedulesError(ctx Context, _ string) (string, error) {
 	err := ApplySchedules(ctx, []ApplySchedulesRequest{
 		{ScheduleName: "x", WorkflowFn: testWorkflowForSchedule, Schedule: "0 0 * * * *"},
 	})
@@ -337,7 +337,7 @@ func testWorkflowExpectingApplySchedulesError(ctx DbosContext, _ string) (string
 	return err.Error(), nil
 }
 
-func testWorkflowExpectingBackfillScheduleError(ctx DbosContext, _ string) (string, error) {
+func testWorkflowExpectingBackfillScheduleError(ctx Context, _ string) (string, error) {
 	_, err := BackfillSchedule(ctx, "any", time.Now().Add(-time.Minute), time.Now())
 	if err == nil {
 		return "", nil
@@ -345,7 +345,7 @@ func testWorkflowExpectingBackfillScheduleError(ctx DbosContext, _ string) (stri
 	return err.Error(), nil
 }
 
-func testWorkflowExpectingTriggerScheduleError(ctx DbosContext, _ string) (string, error) {
+func testWorkflowExpectingTriggerScheduleError(ctx Context, _ string) (string, error) {
 	_, err := TriggerSchedule(ctx, "any")
 	if err == nil {
 		return "", nil

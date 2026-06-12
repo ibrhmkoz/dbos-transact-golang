@@ -11,7 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func poolFromContext(t *testing.T, ctx DbosContext) *pgxpool.Pool {
+func poolFromContext(t *testing.T, ctx Context) *pgxpool.Pool {
 	t.Helper()
 	c, ok := ctx.(*dbosContext)
 	require.True(t, ok)

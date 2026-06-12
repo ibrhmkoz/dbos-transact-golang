@@ -208,17 +208,17 @@ func TestAdminServer(t *testing.T) {
 			Value int    `json:"value"`
 		}
 
-		intWorkflow := func(dbosCtx DbosContext, input int) (int, error) {
+		intWorkflow := func(dbosCtx Context, input int) (int, error) {
 			return input * 2, nil
 		}
 		intWF := NewWorkflow(ctx, intWorkflow)
 
-		emptyStringWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		emptyStringWorkflow := func(dbosCtx Context, input string) (string, error) {
 			return "", nil
 		}
 		emptyStringWF := NewWorkflow(ctx, emptyStringWorkflow)
 
-		structWorkflow := func(dbosCtx DbosContext, input TestStruct) (TestStruct, error) {
+		structWorkflow := func(dbosCtx Context, input TestStruct) (TestStruct, error) {
 			return TestStruct{Name: "output-" + input.Name, Value: input.Value * 2}, nil
 		}
 		structWF := NewWorkflow(ctx, structWorkflow)
@@ -336,7 +336,7 @@ func TestAdminServer(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		testWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		testWorkflow := func(dbosCtx Context, input string) (string, error) {
 			return "result-" + input, nil
 		}
 		testWF := NewWorkflow(ctx, testWorkflow)
@@ -411,7 +411,7 @@ func TestAdminServer(t *testing.T) {
 		})
 		require.NoError(t, err)
 
-		testWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		testWorkflow := func(dbosCtx Context, input string) (string, error) {
 
 			stepResult1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "step1-output", nil
@@ -556,7 +556,7 @@ func TestAdminServer(t *testing.T) {
 
 		var executionCount atomic.Int32
 
-		NewWorkflow(ctx, func(dbosCtx DbosContext, scheduledTime time.Time) (string, error) {
+		NewWorkflow(ctx, func(dbosCtx Context, scheduledTime time.Time) (string, error) {
 			executionCount.Add(1)
 			return fmt.Sprintf("executed at %v", scheduledTime), nil
 		}, WithSchedule("* * * * * *"))

@@ -6,7 +6,7 @@ import (
 	"time"
 )
 
-type wrappedWorkflowFunc func(ctx DbosContext, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
+type wrappedWorkflowFunc func(ctx Context, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
 
 func (c *dbosContext) persistWorkflowDefinitions() error {
 	for _, entry := range c.workflowRegistry.List(false) {

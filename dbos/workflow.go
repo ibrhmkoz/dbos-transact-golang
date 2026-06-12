@@ -84,7 +84,7 @@ type stepCheckpointedOutcome struct {
 
 type workflowHandle struct {
 	workflowId  string
-	dbosContext DbosContext
+	dbosContext Context
 }
 
 type GetResultOption func(*getResultOptions)
@@ -156,7 +156,7 @@ func (h *workflowHandle) GetWorkflowId() string {
 	return h.workflowId
 }
 
-func newWorkflowHandle[R any](ctx DbosContext, workflowId string) *WorkflowHandle[R] {
+func newWorkflowHandle[R any](ctx Context, workflowId string) *WorkflowHandle[R] {
 	return &WorkflowHandle[R]{
 		workflowHandle: workflowHandle{
 			workflowId:  workflowId,
@@ -223,7 +223,7 @@ func (h *WorkflowHandle[R]) GetResult(opts ...GetResultOption) (R, error) {
 	return *new(R), err
 }
 
-func storeWorkflowRegistryEntry(ctx DbosContext, workflowFQN string, fn wrappedWorkflowFunc, maxRetries int, customName string) {
+func storeWorkflowRegistryEntry(ctx Context, workflowFQN string, fn wrappedWorkflowFunc, maxRetries int, customName string) {
 
 	c, ok := ctx.(*dbosContext)
 	if !ok {
@@ -253,7 +253,7 @@ func storeWorkflowRegistryEntry(ctx DbosContext, workflowFQN string, fn wrappedW
 	}
 }
 
-func registerScheduledWorkflow(ctx DbosContext, workflowFQN, customName string, fn WorkflowFunc, cronSchedule string) {
+func registerScheduledWorkflow(ctx Context, workflowFQN, customName string, fn WorkflowFunc, cronSchedule string) {
 
 	c, ok := ctx.(*dbosContext)
 	if !ok {
@@ -273,7 +273,7 @@ func registerScheduledWorkflow(ctx DbosContext, workflowFQN, customName string, 
 	}
 
 	name := workflowName
-	scheduled := ScheduledWorkflowFunc(func(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+	scheduled := ScheduledWorkflowFunc(func(ctx Context, input ScheduledWorkflowInput) (any, error) {
 		scheduledTime := input.ScheduledTime
 		wfId := fmt.Sprintf("sched-%s-%s", name, scheduledTime)
 
@@ -341,9 +341,9 @@ func WithWorkflowRetention(retention time.Duration) WorkflowOption {
 	}
 }
 
-type Workflow[P any, R any] func(ctx DbosContext, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
+type Workflow[P any, R any] func(ctx Context, input P, opts ...WorkflowOption) (*WorkflowHandle[R], error)
 
-func NewWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
+func NewWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...WorkflowOption) Workflow[P, R] {
 	c, ok := ctx.(*dbosContext)
 	if !ok {
 		panic("ctx must be a DBOS context")
@@ -378,7 +378,7 @@ func NewWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts ...Wor
 		registerWorkflow(ctx, internalDebouncerWF[P, R])
 	}
 
-	return func(ctx DbosContext, input P, workflowOpts ...WorkflowOption) (*WorkflowHandle[R], error) {
+	return func(ctx Context, input P, workflowOpts ...WorkflowOption) (*WorkflowHandle[R], error) {
 		if ctx == nil {
 			return nil, fmt.Errorf("ctx cannot be nil")
 		}
@@ -418,7 +418,7 @@ func NewWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts ...Wor
 			}
 
 			// Type-erased wrapper so we can start the internal debouncer via the engine without pre-encoding.
-			internalWF := WorkflowFunc(func(ctx DbosContext, in any) (any, error) {
+			internalWF := WorkflowFunc(func(ctx Context, in any) (any, error) {
 				return internalDebouncerWF[P, R](ctx, in.(debouncerInput[P]))
 			})
 
@@ -477,7 +477,7 @@ func NewWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts ...Wor
 
 		workflowOpts = append(workflowOpts, withWorkflowName(name))
 
-		typedErasedWorkflow := WorkflowFunc(func(ctx DbosContext, input any) (any, error) {
+		typedErasedWorkflow := WorkflowFunc(func(ctx Context, input any) (any, error) {
 			return fn(ctx, input.(P))
 		})
 
@@ -506,7 +506,7 @@ func resolveWorkflowFunctionName[P any, R any](fn WorkflowFn[P, R]) string {
 	return fqn
 }
 
-func registerWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts ...WorkflowOption) {
+func registerWorkflow[P any, R any](ctx Context, fn WorkflowFn[P, R], opts ...WorkflowOption) {
 	if ctx == nil {
 		panic("ctx cannot be nil")
 	}
@@ -529,7 +529,7 @@ func registerWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts .
 
 	// Input will always come, encoded, from the database, so we decode it into the target type (captured by this wrapped closure)
 
-	typedErasedWorkflow := func(ctx DbosContext, input any, inputSerialization string) (any, error) {
+	typedErasedWorkflow := func(ctx Context, input any, inputSerialization string) (any, error) {
 		workflowId, err := GetWorkflowId(ctx)
 		if err != nil {
 			return *new(R), newWorkflowExecutionError("", fmt.Errorf("getting workflow ID: %w", err))
@@ -554,8 +554,8 @@ func registerWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts .
 		return fn(ctx, typedInput)
 	}
 
-	typeErasedWrapper := wrappedWorkflowFunc(func(ctx DbosContext, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error) {
-		wfFunc := WorkflowFunc(func(ctx DbosContext, input any) (any, error) {
+	typeErasedWrapper := wrappedWorkflowFunc(func(ctx Context, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error) {
+		wfFunc := WorkflowFunc(func(ctx Context, input any) (any, error) {
 			return typedErasedWorkflow(ctx, input, inputSerialization)
 		})
 		opts = append(opts, withWorkflowName(fqn), withAlreadyEncodedInput())
@@ -574,7 +574,7 @@ func registerWorkflow[P any, R any](ctx DbosContext, fn WorkflowFn[P, R], opts .
 		if reflect.TypeOf(p) != reflect.TypeFor[time.Time]() {
 			panic(fmt.Sprintf("scheduled workflow function must accept a time.Time as input, got %T", p))
 		}
-		scheduledWfFunc := WorkflowFunc(func(ctx DbosContext, input any) (any, error) {
+		scheduledWfFunc := WorkflowFunc(func(ctx Context, input any) (any, error) {
 			return typedErasedWorkflow(ctx, input, resolveEncoder(ctx).Name())
 		})
 		registerScheduledWorkflow(ctx, fqn, registrationParams.WorkflowName, scheduledWfFunc, registrationParams.CronSchedule)
@@ -597,10 +597,10 @@ type dbosContextKey string
 
 const workflowStateKey dbosContextKey = "workflowState"
 
-// All workflow functions must accept a DbosContext as their first parameter.
-type WorkflowFn[P any, R any] func(ctx DbosContext, input P) (R, error)
+// All workflow functions must accept a Context as their first parameter.
+type WorkflowFn[P any, R any] func(ctx Context, input P) (R, error)
 
-type WorkflowFunc func(ctx DbosContext, input any) (any, error)
+type WorkflowFunc func(ctx Context, input any) (any, error)
 
 type activeWorkflowEntry struct{}
 
@@ -1131,7 +1131,7 @@ type StreamValue[R any] struct {
 	Closed bool
 }
 
-func convertStepResult[R any](ctx DbosContext, result any) (R, error) {
+func convertStepResult[R any](ctx Context, result any) (R, error) {
 	var typedResult R
 
 	if _, ok := ctx.(*dbosContext); ok {
@@ -1249,7 +1249,7 @@ func executeStepWithRetry(c *dbosContext, workflowId string, stepOpts *stepOptio
 
 // Note that the function passed to Run must accept a context.Context as its first parameter
 
-func Run[R any](ctx DbosContext, fn Step[R], opts ...StepOption) (R, error) {
+func Run[R any](ctx Context, fn Step[R], opts ...StepOption) (R, error) {
 	if ctx == nil {
 		return *new(R), newStepExecutionError("", "", fmt.Errorf("ctx cannot be nil"))
 	}
@@ -1276,7 +1276,7 @@ func Run[R any](ctx DbosContext, fn Step[R], opts ...StepOption) (R, error) {
 	return typedResult, err
 }
 
-func Uuid(ctx DbosContext) (string, error) {
+func Uuid(ctx Context) (string, error) {
 	newUuid := func(context.Context) (string, error) {
 		id, err := uuid.NewV7()
 		if err != nil {
@@ -1360,7 +1360,7 @@ func (c *dbosContext) RunAsStep(fn StepFunc, opts ...StepOption) (any, error) {
 	return stepOutput, stepError
 }
 
-func runAsTxn[R any](ctx DbosContext, fn txn[R], opts ...StepOption) (R, error) {
+func runAsTxn[R any](ctx Context, fn txn[R], opts ...StepOption) (R, error) {
 	if ctx == nil {
 		return *new(R), newStepExecutionError("", "", fmt.Errorf("ctx cannot be nil"))
 	}
@@ -1474,7 +1474,7 @@ func (c *dbosContext) runAsTxn(fn txnFunc, opts ...StepOption) (any, error) {
 	}, withRetrierLogger(c.logger))
 }
 
-func Go[R any](ctx DbosContext, fn Step[R], opts ...StepOption) (chan StepOutcome[R], error) {
+func Go[R any](ctx Context, fn Step[R], opts ...StepOption) (chan StepOutcome[R], error) {
 	if ctx == nil {
 		return nil, newStepExecutionError("", "", errors.New("ctx cannot be nil"))
 	}
@@ -1550,7 +1550,7 @@ func (c *dbosContext) Go(fn StepFunc, opts ...StepOption) (chan StepOutcome[any]
 
 // It checkpoints the selected channel index and value so that workflow replay produces deterministic results.
 
-func Select[R any](ctx DbosContext, channels []<-chan StepOutcome[R]) (R, error) {
+func Select[R any](ctx Context, channels []<-chan StepOutcome[R]) (R, error) {
 	if ctx == nil {
 		var zero R
 		return zero, errors.New("ctx cannot be nil")
@@ -1725,7 +1725,7 @@ func (c *dbosContext) Send(destinationId string, message any, topic string, opts
 	return err
 }
 
-func Send[P any](ctx DbosContext, destinationId string, message P, topic string, opts ...SendOption) error {
+func Send[P any](ctx Context, destinationId string, message P, topic string, opts ...SendOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -1761,7 +1761,7 @@ func (c *dbosContext) Recv(topic string, timeout time.Duration) (any, error) {
 	}, withRetrierLogger(c.logger))
 }
 
-func Recv[R any](ctx DbosContext, topic string, timeout time.Duration) (R, error) {
+func Recv[R any](ctx Context, topic string, timeout time.Duration) (R, error) {
 	if ctx == nil {
 		return *new(R), errors.New("ctx cannot be nil")
 	}
@@ -1834,7 +1834,7 @@ func (c *dbosContext) SetEvent(key string, message any, opts ...SetEventOption) 
 	return err
 }
 
-func SetEvent[P any](ctx DbosContext, key string, message P, opts ...SetEventOption) error {
+func SetEvent[P any](ctx Context, key string, message P, opts ...SetEventOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -1865,7 +1865,7 @@ func (c *dbosContext) GetEvent(targetWorkflowId, key string, timeout time.Durati
 	}, withRetrierLogger(c.logger))
 }
 
-func GetEvent[R any](ctx DbosContext, targetWorkflowId, key string, timeout time.Duration) (R, error) {
+func GetEvent[R any](ctx Context, targetWorkflowId, key string, timeout time.Duration) (R, error) {
 	if ctx == nil {
 		return *new(R), errors.New("ctx cannot be nil")
 	}
@@ -1950,7 +1950,7 @@ func (c *dbosContext) WriteStream(key string, value any, opts ...WriteStreamOpti
 	return err
 }
 
-func WriteStream[P any](ctx DbosContext, key string, value P, opts ...WriteStreamOption) error {
+func WriteStream[P any](ctx Context, key string, value P, opts ...WriteStreamOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2100,7 +2100,7 @@ func (c *dbosContext) ReadStream(workflowId string, key string, opts ...ReadStre
 	return allValues, closed, nil
 }
 
-func ReadStream[R any](ctx DbosContext, workflowId string, key string, opts ...ReadStreamOption) ([]R, bool, error) {
+func ReadStream[R any](ctx Context, workflowId string, key string, opts ...ReadStreamOption) ([]R, bool, error) {
 	if ctx == nil {
 		return nil, false, errors.New("ctx cannot be nil")
 	}
@@ -2145,7 +2145,7 @@ func (c *dbosContext) ReadStreamAsync(workflowId string, key string) (<-chan Str
 	return c.readStream(workflowId, key, false, 0), nil
 }
 
-func ReadStreamAsync[R any](ctx DbosContext, workflowId string, key string) (<-chan StreamValue[R], error) {
+func ReadStreamAsync[R any](ctx Context, workflowId string, key string) (<-chan StreamValue[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -2235,7 +2235,7 @@ func (c *dbosContext) CloseStream(key string) error {
 	return err
 }
 
-func CloseStream(ctx DbosContext, key string) error {
+func CloseStream(ctx Context, key string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2255,7 +2255,7 @@ func (c *dbosContext) Sleep(duration time.Duration) (time.Duration, error) {
 	}, withRetrierLogger(c.logger))
 }
 
-func Sleep(ctx DbosContext, duration time.Duration) (time.Duration, error) {
+func Sleep(ctx Context, duration time.Duration) (time.Duration, error) {
 	if ctx == nil {
 		return 0, errors.New("ctx cannot be nil")
 	}
@@ -2300,7 +2300,7 @@ func (c *dbosContext) Patch(patchName string) (bool, error) {
 	return patched, err
 }
 
-func Patch(ctx DbosContext, patchName string) (bool, error) {
+func Patch(ctx Context, patchName string) (bool, error) {
 	if ctx == nil {
 		return false, errors.New("ctx cannot be nil")
 	}
@@ -2348,7 +2348,7 @@ func (c *dbosContext) DeprecatePatch(patchName string) error {
 	return nil
 }
 
-func DeprecatePatch(ctx DbosContext, patchName string) error {
+func DeprecatePatch(ctx Context, patchName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2371,14 +2371,14 @@ func (c *dbosContext) GetStepId() (int, error) {
 	return wfState.stepId, nil
 }
 
-func GetWorkflowId(ctx DbosContext) (string, error) {
+func GetWorkflowId(ctx Context) (string, error) {
 	if ctx == nil {
 		return "", errors.New("ctx cannot be nil")
 	}
 	return ctx.GetWorkflowId()
 }
 
-func GetStepId(ctx DbosContext) (int, error) {
+func GetStepId(ctx Context) (int, error) {
 	if ctx == nil {
 		return -1, errors.New("ctx cannot be nil")
 	}
@@ -2427,7 +2427,7 @@ func (c *dbosContext) RetrieveWorkflow(workflowId string) (*WorkflowHandle[any],
 
 // The type parameter R must match the workflow's actual return type.
 
-func RetrieveWorkflow[R any](ctx DbosContext, workflowId string) (*WorkflowHandle[R], error) {
+func RetrieveWorkflow[R any](ctx Context, workflowId string) (*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("dbosCtx cannot be nil")
 	}
@@ -2465,7 +2465,7 @@ func (c *dbosContext) CancelWorkflow(workflowId string) error {
 
 // Returns an error if the workflow does not exist or if the cancellation operation fails.
 
-func CancelWorkflow(ctx DbosContext, workflowId string) error {
+func CancelWorkflow(ctx Context, workflowId string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2489,7 +2489,7 @@ func (c *dbosContext) CancelWorkflows(workflowIds []string) error {
 
 // skipped. Unlike the singular CancelWorkflow, this function does not return
 
-func CancelWorkflows(ctx DbosContext, workflowIds []string) error {
+func CancelWorkflows(ctx Context, workflowIds []string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2555,7 +2555,7 @@ func (c *dbosContext) SetWorkflowDelay(workflowId string, opts ...SetWorkflowDel
 	}, withRetrierLogger(c.logger))
 }
 
-func SetWorkflowDelay(ctx DbosContext, workflowId string, opts ...SetWorkflowDelayOption) error {
+func SetWorkflowDelay(ctx Context, workflowId string, opts ...SetWorkflowDelayOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2603,7 +2603,7 @@ func WithDeleteChildren() DeleteWorkflowOption {
 	}
 }
 
-func DeleteWorkflows(ctx DbosContext, workflowIds []string, opts ...DeleteWorkflowOption) error {
+func DeleteWorkflows(ctx Context, workflowIds []string, opts ...DeleteWorkflowOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -2675,7 +2675,7 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 
 //   - WithResumeQueue: re-enqueue the workflow on a named queue instead of the internal queue.
 
-func ResumeWorkflow[R any](ctx DbosContext, workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[R], error) {
+func ResumeWorkflow[R any](ctx Context, workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -2691,7 +2691,7 @@ func ResumeWorkflow[R any](ctx DbosContext, workflowId string, opts ...ResumeWor
 
 //   - WithResumeQueue: re-enqueue the workflows on a named queue instead of the internal queue.
 
-func ResumeWorkflows[R any](ctx DbosContext, workflowIds []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[R], error) {
+func ResumeWorkflows[R any](ctx Context, workflowIds []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -2759,7 +2759,7 @@ func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any
 
 //	// Fork onto a named queue instead of the internal queue.
 
-func ForkWorkflow[R any](ctx DbosContext, input ForkWorkflowInput) (*WorkflowHandle[R], error) {
+func ForkWorkflow[R any](ctx Context, input ForkWorkflowInput) (*WorkflowHandle[R], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3069,7 +3069,7 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 
 //	// List workflows by specific IDs without loading input/output data
 
-func ListWorkflows(ctx DbosContext, opts ...ListWorkflowsOption) ([]WorkflowStatus, error) {
+func ListWorkflows(ctx Context, opts ...ListWorkflowsOption) ([]WorkflowStatus, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3177,7 +3177,7 @@ func (c *dbosContext) GetWorkflowSteps(workflowId string, opts ...GetWorkflowSte
 	return stepInfos, nil
 }
 
-func GetWorkflowSteps(ctx DbosContext, workflowId string, opts ...GetWorkflowStepsOption) ([]StepInfo, error) {
+func GetWorkflowSteps(ctx Context, workflowId string, opts ...GetWorkflowStepsOption) ([]StepInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3243,7 +3243,7 @@ func (c *dbosContext) GetWorkflowAggregates(input GetWorkflowAggregatesInput) ([
 
 // NULL grouping values (e.g. workflows without a queue_name).
 
-func GetWorkflowAggregates(ctx DbosContext, input GetWorkflowAggregatesInput) ([]WorkflowAggregateRow, error) {
+func GetWorkflowAggregates(ctx Context, input GetWorkflowAggregatesInput) ([]WorkflowAggregateRow, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3303,7 +3303,7 @@ func (c *dbosContext) GetStepAggregates(input GetStepAggregatesInput) ([]StepAgg
 // Select* flag must be true. Step status is derived from operation_outputs: steps with no
 // recorded error are "SUCCESS", otherwise "ERROR".
 
-func GetStepAggregates(ctx DbosContext, input GetStepAggregatesInput) ([]StepAggregateRow, error) {
+func GetStepAggregates(ctx Context, input GetStepAggregatesInput) ([]StepAggregateRow, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3324,7 +3324,7 @@ func WithScheduledOnly() ListRegisteredWorkflowsOption {
 
 // - Name: Custom name if provided during registration, otherwise empty
 
-func ListRegisteredWorkflows(ctx DbosContext, opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error) {
+func ListRegisteredWorkflows(ctx Context, opts ...ListRegisteredWorkflowsOption) ([]WorkflowRegistryEntry, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3433,7 +3433,7 @@ type listSchedulesOptions struct {
 
 // scheduler. The fn must already be registered via NewWorkflow.
 
-func CreateSchedule(ctx DbosContext, fn ScheduledWorkflowFunc, input CreateScheduleRequest, opts ...CreateScheduleOption) error {
+func CreateSchedule(ctx Context, fn ScheduledWorkflowFunc, input CreateScheduleRequest, opts ...CreateScheduleOption) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -3512,7 +3512,7 @@ func (c *dbosContext) ApplySchedules(schedules []ApplySchedulesRequest) error {
 	}, withRetrierLogger(c.logger))
 }
 
-func ApplySchedules(ctx DbosContext, schedules []ApplySchedulesRequest) error {
+func ApplySchedules(ctx Context, schedules []ApplySchedulesRequest) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -3551,7 +3551,7 @@ func (c *dbosContext) PauseSchedule(scheduleName string) error {
 	}, withRetrierLogger(c.logger))
 }
 
-func PauseSchedule(ctx DbosContext, scheduleName string) error {
+func PauseSchedule(ctx Context, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -3590,7 +3590,7 @@ func (c *dbosContext) ResumeSchedule(scheduleName string) error {
 	}, withRetrierLogger(c.logger))
 }
 
-func ResumeSchedule(ctx DbosContext, scheduleName string) error {
+func ResumeSchedule(ctx Context, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -3614,7 +3614,7 @@ func (c *dbosContext) DeleteSchedule(scheduleName string) error {
 	}, withRetrierLogger(c.logger))
 }
 
-func DeleteSchedule(ctx DbosContext, scheduleName string) error {
+func DeleteSchedule(ctx Context, scheduleName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}
@@ -3652,7 +3652,7 @@ func (c *dbosContext) GetSchedule(scheduleName string) (*WorkflowSchedule, error
 	return nil, nil
 }
 
-func GetSchedule(ctx DbosContext, scheduleName string) (*WorkflowSchedule, error) {
+func GetSchedule(ctx Context, scheduleName string) (*WorkflowSchedule, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3695,7 +3695,7 @@ func WithScheduleNamePrefixes(prefixes ...string) ListSchedulesOption {
 	return func(o *listSchedulesOptions) { o.scheduleNamePrefixes = prefixes }
 }
 
-func ListSchedules(ctx DbosContext, opts ...ListSchedulesOption) ([]WorkflowSchedule, error) {
+func ListSchedules(ctx Context, opts ...ListSchedulesOption) ([]WorkflowSchedule, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3735,7 +3735,7 @@ func (c *dbosContext) BackfillSchedule(scheduleName string, start time.Time, end
 	return ids, nil
 }
 
-func BackfillSchedule(ctx DbosContext, scheduleName string, start, end time.Time) ([]string, error) {
+func BackfillSchedule(ctx Context, scheduleName string, start, end time.Time) ([]string, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3759,7 +3759,7 @@ func (c *dbosContext) TriggerSchedule(scheduleName string) (*WorkflowHandle[any]
 	return newWorkflowHandle[any](c, workflowId), nil
 }
 
-func TriggerSchedule(ctx DbosContext, scheduleName string) (*WorkflowHandle[any], error) {
+func TriggerSchedule(ctx Context, scheduleName string) (*WorkflowHandle[any], error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3772,7 +3772,7 @@ func (c *dbosContext) ListApplicationVersions() ([]VersionInfo, error) {
 	}, withRetrierLogger(c.logger))
 }
 
-func ListApplicationVersions(ctx DbosContext) ([]VersionInfo, error) {
+func ListApplicationVersions(ctx Context) ([]VersionInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3785,7 +3785,7 @@ func (c *dbosContext) GetLatestApplicationVersion() (*VersionInfo, error) {
 	}, withRetrierLogger(c.logger))
 }
 
-func GetLatestApplicationVersion(ctx DbosContext) (*VersionInfo, error) {
+func GetLatestApplicationVersion(ctx Context) (*VersionInfo, error) {
 	if ctx == nil {
 		return nil, errors.New("ctx cannot be nil")
 	}
@@ -3801,7 +3801,7 @@ func (c *dbosContext) SetLatestApplicationVersion(versionName string) error {
 	}, withRetrierLogger(c.logger))
 }
 
-func SetLatestApplicationVersion(ctx DbosContext, versionName string) error {
+func SetLatestApplicationVersion(ctx Context, versionName string) error {
 	if ctx == nil {
 		return errors.New("ctx cannot be nil")
 	}

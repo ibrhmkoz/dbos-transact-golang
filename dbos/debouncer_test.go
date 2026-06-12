@@ -12,7 +12,7 @@ import (
 
 var debounceTestWF Workflow[string, string]
 
-func debounceTestWorkflow(ctx DbosContext, input string) (string, error) {
+func debounceTestWorkflow(ctx Context, input string) (string, error) {
 	return input, nil
 }
 
@@ -22,7 +22,7 @@ type debounceCallInput struct {
 	Inputs []string
 }
 
-func workflowThatCallsDebounce(ctx DbosContext, input debounceCallInput) (string, error) {
+func workflowThatCallsDebounce(ctx Context, input debounceCallInput) (string, error) {
 	var lastHandle *WorkflowHandle[string]
 	var err error
 

@@ -23,7 +23,7 @@ var idempotencyCounter int64
 // without re-invoking. The deduplication key (a durable UUID) makes the start
 
 // runtime-assigned workflow ID without waiting for the result.
-func startChildWorkflow[P any, R any](ctx DbosContext, wf Workflow[P, R], input P, opts ...WorkflowOption) (string, error) {
+func startChildWorkflow[P any, R any](ctx Context, wf Workflow[P, R], input P, opts ...WorkflowOption) (string, error) {
 	dedupKey, err := Uuid(ctx)
 	if err != nil {
 		return "", err
@@ -42,7 +42,7 @@ type childWorkflowOutcome[R any] struct {
 	Result R
 }
 
-func callChildWorkflow[P any, R any](ctx DbosContext, wf Workflow[P, R], input P, opts ...WorkflowOption) (string, R, error) {
+func callChildWorkflow[P any, R any](ctx Context, wf Workflow[P, R], input P, opts ...WorkflowOption) (string, R, error) {
 	var zero R
 	dedupKey, err := Uuid(ctx)
 	if err != nil {
@@ -65,21 +65,21 @@ func callChildWorkflow[P any, R any](ctx DbosContext, wf Workflow[P, R], input P
 	return outcome.Id, outcome.Result, nil
 }
 
-func simpleWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func simpleWorkflow(dbosCtx Context, input string) (string, error) {
 	return input, nil
 }
 
-func simpleWorkflowError(dbosCtx DbosContext, input string) (int, error) {
+func simpleWorkflowError(dbosCtx Context, input string) (int, error) {
 	return 0, fmt.Errorf("failure")
 }
 
-func simpleWorkflowWithStep(dbosCtx DbosContext, input string) (string, error) {
+func simpleWorkflowWithStep(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return simpleStep(ctx)
 	})
 }
 
-func slowWorkflow(dbosCtx DbosContext, sleepTime time.Duration) (string, error) {
+func slowWorkflow(dbosCtx Context, sleepTime time.Duration) (string, error) {
 	Sleep(dbosCtx, sleepTime)
 	return "done", nil
 }
@@ -97,13 +97,13 @@ func stepWithSleep(_ context.Context, duration time.Duration) (string, error) {
 	return fmt.Sprintf("from step that slept for %s", duration), nil
 }
 
-func simpleWorkflowWithStepError(dbosCtx DbosContext, input string) (string, error) {
+func simpleWorkflowWithStepError(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return simpleStepError(ctx)
 	})
 }
 
-func simpleWorkflowWithSchedule(dbosCtx DbosContext, scheduledTime time.Time) (time.Time, error) {
+func simpleWorkflowWithSchedule(dbosCtx Context, scheduledTime time.Time) (time.Time, error) {
 	return scheduledTime, nil
 }
 
@@ -114,27 +114,27 @@ func incrementCounter(_ context.Context, value int64) (int64, error) {
 
 type workflowStruct struct{}
 
-func (w *workflowStruct) simpleWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func (w *workflowStruct) simpleWorkflow(dbosCtx Context, input string) (string, error) {
 	return simpleWorkflow(dbosCtx, input)
 }
 
-func (w workflowStruct) simpleWorkflowValue(dbosCtx DbosContext, input string) (string, error) {
+func (w workflowStruct) simpleWorkflowValue(dbosCtx Context, input string) (string, error) {
 	return input + "-value", nil
 }
 
 type TestWorkflowInterface interface {
-	Execute(dbosCtx DbosContext, input string) (string, error)
+	Execute(dbosCtx Context, input string) (string, error)
 }
 
 type workflowImplementation struct {
 	field string
 }
 
-func (w *workflowImplementation) Execute(dbosCtx DbosContext, input string) (string, error) {
+func (w *workflowImplementation) Execute(dbosCtx Context, input string) (string, error) {
 	return input + "-" + w.field + "-interface", nil
 }
 
-func Identity[T any](dbosCtx DbosContext, in T) (T, error) {
+func Identity[T any](dbosCtx Context, in T) (T, error) {
 	return in, nil
 }
 
@@ -220,19 +220,19 @@ func TestWorkflowsRegistration(t *testing.T) {
 	identityStringD := NewWorkflow(dbosCtx, Identity[string])
 
 	prefix := "hello-"
-	closureWorkflow := func(dbosCtx DbosContext, in string) (string, error) {
+	closureWorkflow := func(dbosCtx Context, in string) (string, error) {
 		return prefix + in, nil
 	}
 	closureWorkflowD := NewWorkflow(dbosCtx, closureWorkflow)
 
-	anonymousWorkflow := func(dbosCtx DbosContext, in string) (string, error) {
+	anonymousWorkflow := func(dbosCtx Context, in string) (string, error) {
 		return "anonymous-" + in, nil
 	}
 	anonymousWorkflowD := NewWorkflow(dbosCtx, anonymousWorkflow)
 
 	type testCase struct {
 		name           string
-		workflowFunc   func(DbosContext, string, ...WorkflowOption) (any, error)
+		workflowFunc   func(Context, string, ...WorkflowOption) (any, error)
 		input          string
 		expectedResult any
 		expectError    bool
@@ -242,7 +242,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 	tests := []testCase{
 		{
 			name: "SimpleWorkflow",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := simpleWorkflowD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -267,7 +267,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "SimpleWorkflowError",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := simpleWorkflowErrorD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -280,7 +280,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "SimpleWorkflowWithStep",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := simpleWorkflowWithStepD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -293,7 +293,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "SimpleWorkflowStruct",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := sSimpleWorkflowD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -306,7 +306,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "ValueReceiverWorkflow",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := sSimpleWorkflowValueD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -319,7 +319,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "interfaceMethodWorkflow",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := workflowIfaceExecuteD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -332,7 +332,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "GenericWorkflow",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := identityIntD(dbosCtx, 42, opts...)
 				if err != nil {
 					return nil, err
@@ -345,7 +345,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "GenericWorkflowWithString",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := identityStringD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -358,7 +358,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "ClosureWithCapturedState",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := closureWorkflowD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -371,7 +371,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "AnonymousClosure",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := anonymousWorkflowD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -384,7 +384,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 		},
 		{
 			name: "SimpleWorkflowWithStepError",
-			workflowFunc: func(dbosCtx DbosContext, input string, opts ...WorkflowOption) (any, error) {
+			workflowFunc: func(dbosCtx Context, input string, opts ...WorkflowOption) (any, error) {
 				handle, err := simpleWorkflowWithStepErrorD(dbosCtx, input, opts...)
 				if err != nil {
 					return nil, err
@@ -482,7 +482,7 @@ func stepWithinAStep(ctx context.Context) (string, error) {
 	return simpleStep(ctx)
 }
 
-func stepWithinAStepWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func stepWithinAStepWorkflow(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return stepWithinAStep(ctx)
 	})
@@ -502,7 +502,7 @@ func stepIdempotencyTest(_ context.Context) (string, error) {
 	return "", nil
 }
 
-func stepRetryWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func stepRetryWorkflow(dbosCtx Context, input string) (string, error) {
 	Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return stepIdempotencyTest(ctx)
 	})
@@ -516,7 +516,7 @@ func step1(_ context.Context) (string, error) {
 	return "", nil
 }
 
-func testStepWf1(dbosCtx DbosContext, input string) (string, error) {
+func testStepWf1(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, step1)
 }
 
@@ -524,7 +524,7 @@ func step2(_ context.Context) (string, error) {
 	return "", nil
 }
 
-func testStepWf2(dbosCtx DbosContext, input string) (string, error) {
+func testStepWf2(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, step2)
 }
 
@@ -532,7 +532,7 @@ func genericStep[T any](_ context.Context, value T) (T, error) {
 	return value, nil
 }
 
-func genericStepWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func genericStepWorkflow(dbosCtx Context, input string) (string, error) {
 
 	result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return genericStep(ctx, input+"-processed")
@@ -561,7 +561,7 @@ func TestSteps(t *testing.T) {
 	testStepWf2D := NewWorkflow(dbosCtx, testStepWf2)
 	genericStepWorkflowD := NewWorkflow(dbosCtx, genericStepWorkflow)
 
-	customNameWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	customNameWorkflow := func(dbosCtx Context, input string) (string, error) {
 
 		result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return "custom-step-1-result", nil
@@ -615,7 +615,7 @@ func TestSteps(t *testing.T) {
 		return output, nil
 	}
 
-	userObjectWorkflow := func(dbosCtx DbosContext, workflowInput string) (string, error) {
+	userObjectWorkflow := func(dbosCtx Context, workflowInput string) (string, error) {
 
 		stepInput := StepInput{
 			Name:   workflowInput,
@@ -813,7 +813,7 @@ func TestSteps(t *testing.T) {
 }
 
 func stepReturningStepId(ctx context.Context) (int, error) {
-	stepId, err := GetStepId(ctx.(DbosContext))
+	stepId, err := GetStepId(ctx.(Context))
 	if err != nil {
 		return -1, err
 	}
@@ -838,7 +838,7 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 	})
 
 	t.Run("Go must return step error correctly", func(t *testing.T) {
-		goWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		goWorkflow := func(dbosCtx Context, input string) (string, error) {
 			result, _ := Go(dbosCtx, func(ctx context.Context) (string, error) {
 				return "", fmt.Errorf("step error")
 			})
@@ -861,7 +861,7 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 		defer close(results)
 		resultChans := make([]<-chan StepOutcome[int], 0)
 
-		goWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		goWorkflow := func(dbosCtx Context, input string) (string, error) {
 			for range numSteps {
 				resultChan, err := Go(dbosCtx, func(ctx context.Context) (int, error) {
 					return stepReturningStepId(ctx)
@@ -894,7 +894,7 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 	})
 
 	t.Run("Go idempotency", func(t *testing.T) {
-		goWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+		goWorkflow := func(dbosCtx Context, input string) (string, error) {
 			channels := make([]chan StepOutcome[string], 0, 10)
 			for range 10 {
 				ch, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
@@ -938,14 +938,14 @@ func TestSelect(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	selectWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	selectWorkflow := func(dbosCtx Context, input string) (string, error) {
 		return Select(dbosCtx, []<-chan StepOutcome[string]{})
 	}
 	selectWorkflowD := NewWorkflow(dbosCtx, selectWorkflow)
 
 	selectBlockStartEvent := NewEvent()
 	selectBlockEvent := NewEvent()
-	selectCancelWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	selectCancelWorkflow := func(dbosCtx Context, input string) (string, error) {
 		ch1, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
 			selectBlockEvent.Wait()
 			return "result", nil
@@ -960,7 +960,7 @@ func TestSelect(t *testing.T) {
 	}
 	selectCancelWorkflowD := NewWorkflow(dbosCtx, selectCancelWorkflow)
 
-	selectIdempotencyWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	selectIdempotencyWorkflow := func(dbosCtx Context, input string) (string, error) {
 		ch1, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
 			return "result1", nil
 		})
@@ -1094,24 +1094,24 @@ func TestChildWorkflow(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	simpleChildWf := func(dbosCtx DbosContext, input string) (string, error) {
+	simpleChildWf := func(dbosCtx Context, input string) (string, error) {
 		return Run(dbosCtx, func(ctx context.Context) (string, error) {
 			return simpleStep(ctx)
 		})
 	}
 	simpleChildWfD := NewWorkflow(dbosCtx, simpleChildWf)
 
-	childWfForStepTest := func(dbosCtx DbosContext, input string) (string, error) {
+	childWfForStepTest := func(dbosCtx Context, input string) (string, error) {
 		return "child-result", nil
 	}
 	childWfForStepTestD := NewWorkflow(dbosCtx, childWfForStepTest)
 
-	parentWfForStepTest := func(ctx DbosContext, input string) (string, error) {
+	parentWfForStepTest := func(ctx Context, input string) (string, error) {
 		return startChildWorkflow(ctx, childWfForStepTestD, input)
 	}
 	parentWfForStepTestD := NewWorkflow(dbosCtx, parentWfForStepTest)
 
-	simpleParentWf := func(ctx DbosContext, _ string) (string, error) {
+	simpleParentWf := func(ctx Context, _ string) (string, error) {
 		childId, result, err := callChildWorkflow(ctx, simpleChildWfD, "test-child-input")
 		if err != nil {
 			return "", fmt.Errorf("failed to call child workflow: %w", err)
@@ -1126,18 +1126,18 @@ func TestChildWorkflow(t *testing.T) {
 	simpleParentWfD := NewWorkflow(dbosCtx, simpleParentWf)
 
 	deleteBlockEvent := NewEvent()
-	deleteBlockingWf := func(ctx DbosContext, _ string) (string, error) {
+	deleteBlockingWf := func(ctx Context, _ string) (string, error) {
 		deleteBlockEvent.Wait()
 		return "done", nil
 	}
 	deleteBlockingWfD := NewWorkflow(dbosCtx, deleteBlockingWf)
 
-	deleteLeafWf := func(ctx DbosContext, input string) (string, error) {
+	deleteLeafWf := func(ctx Context, input string) (string, error) {
 		return "leaf:" + input, nil
 	}
 	deleteLeafWfD := NewWorkflow(dbosCtx, deleteLeafWf)
 
-	deleteMidWf := func(ctx DbosContext, input string) ([]string, error) {
+	deleteMidWf := func(ctx Context, input string) ([]string, error) {
 		var ids []string
 		for range 2 {
 			id, _, err := callChildWorkflow(ctx, deleteLeafWfD, input)
@@ -1150,7 +1150,7 @@ func TestChildWorkflow(t *testing.T) {
 	}
 	deleteMidWfD := NewWorkflow(dbosCtx, deleteMidWf)
 
-	deleteRootWf := func(ctx DbosContext, input string) ([]string, error) {
+	deleteRootWf := func(ctx Context, input string) ([]string, error) {
 		var ids []string
 		for range 2 {
 			id, leafIds, err := callChildWorkflow(ctx, deleteMidWfD, input)
@@ -1164,7 +1164,7 @@ func TestChildWorkflow(t *testing.T) {
 	}
 	deleteRootWfD := NewWorkflow(dbosCtx, deleteRootWf)
 
-	deleteCascadeWf := func(ctx DbosContext, _ string) (string, error) {
+	deleteCascadeWf := func(ctx Context, _ string) (string, error) {
 		if err := SetEvent(ctx, "cascade-key", "cascade-value"); err != nil {
 			return "", err
 		}
@@ -1409,7 +1409,7 @@ func TestChildWorkflow(t *testing.T) {
 	})
 }
 
-func idempotencyWorkflow(dbosCtx DbosContext, input string) (string, error) {
+func idempotencyWorkflow(dbosCtx Context, input string) (string, error) {
 	Run(dbosCtx, func(ctx context.Context) (int64, error) {
 		return incrementCounter(ctx, int64(1))
 	})
@@ -1449,7 +1449,7 @@ func TestUuid(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	uuidWorkflow := NewWorkflow(dbosCtx, func(ctx DbosContext, _ string) (string, error) {
+	uuidWorkflow := NewWorkflow(dbosCtx, func(ctx Context, _ string) (string, error) {
 		return Uuid(ctx)
 	}, WithWorkflowName("uuid-workflow"))
 	require.NoError(t, Launch(dbosCtx))
@@ -1485,7 +1485,7 @@ func TestNoConcurrentWorkflowSameId(t *testing.T) {
 	unblockEvent := NewEvent()
 	var runCount int64
 
-	blockingWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	blockingWorkflow := func(dbosCtx Context, input string) (string, error) {
 		_, err := Run(dbosCtx, func(ctx context.Context) (int64, error) {
 			n := atomic.AddInt64(&runCount, 1)
 			startedEvent.Set()
@@ -1532,7 +1532,7 @@ func TestWorkflowRecovery(t *testing.T) {
 
 	var recoveryCounters []int64
 
-	recoveryWorkflow := func(dbosCtx DbosContext, index int) (int64, error) {
+	recoveryWorkflow := func(dbosCtx Context, index int) (int64, error) {
 
 		_, err := Run(dbosCtx, func(ctx context.Context) (int64, error) {
 			recoveryCounters[index]++
@@ -1633,7 +1633,7 @@ var (
 	recoveryCount       int64
 )
 
-func deadLetterQueueWorkflow(ctx DbosContext, input string) (int, error) {
+func deadLetterQueueWorkflow(ctx Context, input string) (int, error) {
 	recoveryCount++
 	wfid, err := GetWorkflowId(ctx)
 	if err != nil {
@@ -1643,7 +1643,7 @@ func deadLetterQueueWorkflow(ctx DbosContext, input string) (int, error) {
 	return 0, nil
 }
 
-func infiniteDeadLetterQueueWorkflow(ctx DbosContext, input string) (int, error) {
+func infiniteDeadLetterQueueWorkflow(ctx Context, input string) (int, error) {
 	return 0, nil
 }
 func TestWorkflowDeadLetterQueue(t *testing.T) {
@@ -1751,7 +1751,7 @@ func TestCancelWorkflows(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
 	blockEvent := NewEvent()
-	blockingWorkflow := func(ctx DbosContext, input string) (string, error) {
+	blockingWorkflow := func(ctx Context, input string) (string, error) {
 		blockEvent.Wait()
 		return input, nil
 	}
@@ -1845,7 +1845,7 @@ type sendWorkflowInput struct {
 	Topic         string
 }
 
-func sendWorkflow(ctx DbosContext, input sendWorkflowInput) (string, error) {
+func sendWorkflow(ctx Context, input sendWorkflowInput) (string, error) {
 	err := Send(ctx, input.DestinationId, "message1", input.Topic)
 	if err != nil {
 		return "", err
@@ -1861,7 +1861,7 @@ func sendWorkflow(ctx DbosContext, input sendWorkflowInput) (string, error) {
 	return "", nil
 }
 
-func receiveWorkflow(ctx DbosContext, input struct {
+func receiveWorkflow(ctx Context, input struct {
 	Topic   string
 	Timeout time.Duration
 }) (string, error) {
@@ -1887,7 +1887,7 @@ func receiveWorkflow(ctx DbosContext, input struct {
 	return msg1 + "-" + msg2 + "-" + msg3, nil
 }
 
-func receiveWorkflowCoordinated(ctx DbosContext, input struct {
+func receiveWorkflowCoordinated(ctx Context, input struct {
 	Topic string
 	i     int
 }) (string, error) {
@@ -1903,19 +1903,19 @@ func receiveWorkflowCoordinated(ctx DbosContext, input struct {
 	return msg, nil
 }
 
-func sendStructWorkflow(ctx DbosContext, input sendWorkflowInput) (string, error) {
+func sendStructWorkflow(ctx Context, input sendWorkflowInput) (string, error) {
 	testStruct := sendRecvType{Value: "test-struct-value"}
 	err := Send(ctx, input.DestinationId, testStruct, input.Topic)
 	return "", err
 }
 
-func receiveStructWorkflow(ctx DbosContext, topic string) (sendRecvType, error) {
+func receiveStructWorkflow(ctx Context, topic string) (sendRecvType, error) {
 
 	sendRecvSyncEvent.Wait()
 	return Recv[sendRecvType](ctx, topic, 3*time.Second)
 }
 
-func sendIdempotencyWorkflow(ctx DbosContext, input sendWorkflowInput) (string, error) {
+func sendIdempotencyWorkflow(ctx Context, input sendWorkflowInput) (string, error) {
 	err := Send(ctx, input.DestinationId, "m1", input.Topic)
 	if err != nil {
 		return "", err
@@ -1923,7 +1923,7 @@ func sendIdempotencyWorkflow(ctx DbosContext, input sendWorkflowInput) (string, 
 	return "idempotent-send-completed", nil
 }
 
-func receiveIdempotencyWorkflow(ctx DbosContext, topic string) (string, error) {
+func receiveIdempotencyWorkflow(ctx Context, topic string) (string, error) {
 
 	sendRecvSyncEvent.Wait()
 	msg, err := Recv[string](ctx, topic, 60*time.Minute)
@@ -1935,7 +1935,7 @@ func receiveIdempotencyWorkflow(ctx DbosContext, topic string) (string, error) {
 	return msg, nil
 }
 
-func durableRecvSleepWorkflow(ctx DbosContext, topic string) (string, error) {
+func durableRecvSleepWorkflow(ctx Context, topic string) (string, error) {
 
 	msg1, err := Recv[string](ctx, topic, 2*time.Second)
 	if err != nil && !strings.Contains(err.Error(), fmt.Sprintf("DBOS Error %d", TimeoutError)) {
@@ -1951,14 +1951,14 @@ func durableRecvSleepWorkflow(ctx DbosContext, topic string) (string, error) {
 }
 
 func stepThatCallsSend(ctx context.Context, input sendWorkflowInput) (string, error) {
-	err := Send(ctx.(DbosContext), input.DestinationId, "message-from-step", input.Topic)
+	err := Send(ctx.(Context), input.DestinationId, "message-from-step", input.Topic)
 	if err != nil {
 		return "", err
 	}
 	return "send-completed", nil
 }
 
-func workflowThatCallsSendInStep(ctx DbosContext, input sendWorkflowInput) (string, error) {
+func workflowThatCallsSendInStep(ctx Context, input sendWorkflowInput) (string, error) {
 	return Run(ctx, func(context context.Context) (string, error) {
 		return stepThatCallsSend(context, input)
 	})
@@ -1968,7 +1968,7 @@ type sendRecvType struct {
 	Value string
 }
 
-func recvContextCancelWorkflow(ctx DbosContext, topic string) (string, error) {
+func recvContextCancelWorkflow(ctx Context, topic string) (string, error) {
 
 	msg, err := Recv[string](ctx, topic, 5*time.Second)
 	if err != nil {
@@ -2337,7 +2337,7 @@ type setEventWorkflowInput struct {
 	Message string
 }
 
-func setEventWorkflow(ctx DbosContext, input setEventWorkflowInput) (string, error) {
+func setEventWorkflow(ctx Context, input setEventWorkflowInput) (string, error) {
 	err := SetEvent(ctx, input.Key, input.Message)
 	if err != nil {
 		return "", err
@@ -2351,7 +2351,7 @@ type getEventWorkflowInput struct {
 	Key              string
 }
 
-func getEventWorkflow(ctx DbosContext, input getEventWorkflowInput) (string, error) {
+func getEventWorkflow(ctx Context, input getEventWorkflowInput) (string, error) {
 	getEventWorkflowStartedSignal.Set()
 	result, err := GetEvent[string](ctx, input.TargetWorkflowId, input.Key, 3*time.Second)
 	if err != nil {
@@ -2360,7 +2360,7 @@ func getEventWorkflow(ctx DbosContext, input getEventWorkflowInput) (string, err
 	return result, nil
 }
 
-func setTwoEventsWorkflow(ctx DbosContext, input setEventWorkflowInput) (string, error) {
+func setTwoEventsWorkflow(ctx Context, input setEventWorkflowInput) (string, error) {
 
 	err := SetEvent(ctx, "event", "first-event-message")
 	if err != nil {
@@ -2387,7 +2387,7 @@ func setTwoEventsWorkflow(ctx DbosContext, input setEventWorkflowInput) (string,
 	return "two-events-set", nil
 }
 
-func setEventIdempotencyWorkflow(ctx DbosContext, input setEventWorkflowInput) (string, error) {
+func setEventIdempotencyWorkflow(ctx Context, input setEventWorkflowInput) (string, error) {
 	err := SetEvent(ctx, input.Key, input.Message)
 	if err != nil {
 		return "", err
@@ -2395,7 +2395,7 @@ func setEventIdempotencyWorkflow(ctx DbosContext, input setEventWorkflowInput) (
 	return "idempotent-set-completed", nil
 }
 
-func getEventIdempotencyWorkflow(ctx DbosContext, input setEventWorkflowInput) (string, error) {
+func getEventIdempotencyWorkflow(ctx Context, input setEventWorkflowInput) (string, error) {
 	result, err := GetEvent[string](ctx, input.Key, input.Message, 3*time.Second)
 	if err != nil {
 		return "", err
@@ -2403,7 +2403,7 @@ func getEventIdempotencyWorkflow(ctx DbosContext, input setEventWorkflowInput) (
 	return result, nil
 }
 
-func durableGetEventSleepWorkflow(ctx DbosContext, targetWorkflowId string) (string, error) {
+func durableGetEventSleepWorkflow(ctx Context, targetWorkflowId string) (string, error) {
 
 	val1, err := GetEvent[string](ctx, targetWorkflowId, "key1", 2*time.Second)
 	if err != nil && !strings.Contains(err.Error(), "timed out") {
@@ -2717,13 +2717,13 @@ func TestSetGetEvent(t *testing.T) {
 	})
 }
 
-func conflictWorkflowA(dbosCtx DbosContext, input string) (string, error) {
+func conflictWorkflowA(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepA(ctx)
 	})
 }
 
-func conflictWorkflowB(dbosCtx DbosContext, input string) (string, error) {
+func conflictWorkflowB(dbosCtx Context, input string) (string, error) {
 	return Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepB(ctx)
 	})
@@ -2737,7 +2737,7 @@ func conflictStepB(_ context.Context) (string, error) {
 	return "step-b-result", nil
 }
 
-func workflowWithMultipleSteps(dbosCtx DbosContext, input string) (string, error) {
+func workflowWithMultipleSteps(dbosCtx Context, input string) (string, error) {
 
 	result1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 		return conflictStepA(ctx)
@@ -2794,7 +2794,7 @@ func TestWorkflowExecutionMismatch(t *testing.T) {
 	})
 }
 
-func sleepRecoveryWorkflow(dbosCtx DbosContext, duration time.Duration) (time.Duration, error) {
+func sleepRecoveryWorkflow(dbosCtx Context, duration time.Duration) (time.Duration, error) {
 	return Sleep(dbosCtx, duration)
 }
 
@@ -2855,7 +2855,7 @@ func TestWorkflowTimeout(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	waitForCancelWorkflow := func(ctx DbosContext, _ string) (string, error) {
+	waitForCancelWorkflow := func(ctx Context, _ string) (string, error) {
 
 		<-ctx.Done()
 		assert.True(t, errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded),
@@ -2884,7 +2884,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 	wfcStart := NewEvent()
 	wfcStop := NewEvent()
-	waitForCancelWorkflowManual := func(ctx DbosContext, _ string) (string, error) {
+	waitForCancelWorkflowManual := func(ctx Context, _ string) (string, error) {
 
 		<-ctx.Done()
 		assert.True(t, errors.Is(ctx.Err(), context.Canceled) || errors.Is(ctx.Err(), context.DeadlineExceeded),
@@ -2930,7 +2930,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		return "", ctx.Err()
 	}
 
-	waitForCancelWorkflowWithStep := func(ctx DbosContext, _ string) (string, error) {
+	waitForCancelWorkflowWithStep := func(ctx Context, _ string) (string, error) {
 		return Run(ctx, func(context context.Context) (string, error) {
 			return waitForCancelStep(context)
 		})
@@ -2953,7 +2953,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
 	})
 
-	waitForCancelWorkflowWithStepAfterCancel := func(ctx DbosContext, _ string) (string, error) {
+	waitForCancelWorkflowWithStepAfterCancel := func(ctx Context, _ string) (string, error) {
 		uncancellableCtx := WithoutCancel(ctx)
 
 		<-ctx.Done()
@@ -3005,7 +3005,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
 	})
 
-	shorterStepTimeoutWorkflow := func(ctx DbosContext, _ string) (string, error) {
+	shorterStepTimeoutWorkflow := func(ctx Context, _ string) (string, error) {
 
 		stepCtx, stepCancelFunc := WithTimeout(ctx, 1*time.Millisecond)
 		defer stepCancelFunc()
@@ -3042,7 +3042,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		return "detached-step-completed", nil
 	}
 
-	detachedStepWorkflow := func(ctx DbosContext, timeout time.Duration) (string, error) {
+	detachedStepWorkflow := func(ctx Context, timeout time.Duration) (string, error) {
 
 		stepCtx := WithoutCancel(ctx)
 		res, err := Run(stepCtx, func(context context.Context) (string, error) {
@@ -3078,7 +3078,7 @@ func TestWorkflowTimeout(t *testing.T) {
 
 	var childIdRegistry sync.Map
 
-	waitForCancelParent := func(ctx DbosContext, registryKey string) (string, error) {
+	waitForCancelParent := func(ctx Context, registryKey string) (string, error) {
 
 		childId, err := startChildWorkflow(ctx, waitForCancelWorkflowD, "child-wait-for-cancel")
 		if err != nil {
@@ -3132,7 +3132,7 @@ func TestWorkflowTimeout(t *testing.T) {
 		}, 5*time.Second, 50*time.Millisecond, "expected child workflow status to be WorkflowStatusCancelled")
 	})
 
-	detachedChild := func(ctx DbosContext, timeout time.Duration) (string, error) {
+	detachedChild := func(ctx Context, timeout time.Duration) (string, error) {
 		select {
 		case <-ctx.Done():
 			return "", ctx.Err()
@@ -3142,7 +3142,7 @@ func TestWorkflowTimeout(t *testing.T) {
 	}
 	detachedChildD := NewWorkflow(dbosCtx, detachedChild)
 
-	detachedChildWorkflowParent := func(ctx DbosContext, timeout time.Duration) (string, error) {
+	detachedChildWorkflowParent := func(ctx Context, timeout time.Duration) (string, error) {
 
 		childCtx := WithoutCancel(ctx)
 		myId, err := GetWorkflowId(ctx)
@@ -3239,7 +3239,7 @@ func lookupPairTarget(role string, pairId int) string {
 	}
 }
 
-func notificationWaiterWorkflow(ctx DbosContext, pairId int) (string, error) {
+func notificationWaiterWorkflow(ctx Context, pairId int) (string, error) {
 	setterId := lookupPairTarget("notification-setter", pairId)
 	result, err := GetEvent[string](ctx, setterId, "event-key", 10*time.Second)
 	if err != nil {
@@ -3248,7 +3248,7 @@ func notificationWaiterWorkflow(ctx DbosContext, pairId int) (string, error) {
 	return result, nil
 }
 
-func notificationSetterWorkflow(ctx DbosContext, pairId int) (string, error) {
+func notificationSetterWorkflow(ctx Context, pairId int) (string, error) {
 	err := SetEvent(ctx, "event-key", fmt.Sprintf("notification-message-%d", pairId))
 	if err != nil {
 		return "", err
@@ -3256,7 +3256,7 @@ func notificationSetterWorkflow(ctx DbosContext, pairId int) (string, error) {
 	return "event-set", nil
 }
 
-func sendRecvReceiverWorkflow(ctx DbosContext, pairId int) (string, error) {
+func sendRecvReceiverWorkflow(ctx Context, pairId int) (string, error) {
 	result, err := Recv[string](ctx, "send-recv-topic", 10*time.Second)
 	if err != nil {
 		return "", err
@@ -3264,7 +3264,7 @@ func sendRecvReceiverWorkflow(ctx DbosContext, pairId int) (string, error) {
 	return result, nil
 }
 
-func sendRecvSenderWorkflow(ctx DbosContext, pairId int) (string, error) {
+func sendRecvSenderWorkflow(ctx Context, pairId int) (string, error) {
 	receiverId := lookupPairTarget("send-recv-receiver", pairId)
 	err := Send(ctx, receiverId, fmt.Sprintf("send-recv-message-%d", pairId), "send-recv-topic")
 	if err != nil {
@@ -3273,7 +3273,7 @@ func sendRecvSenderWorkflow(ctx DbosContext, pairId int) (string, error) {
 	return "message-sent", nil
 }
 
-func concurrentSimpleWorkflow(dbosCtx DbosContext, input int) (int, error) {
+func concurrentSimpleWorkflow(dbosCtx Context, input int) (int, error) {
 	return Run(dbosCtx, func(ctx context.Context) (int, error) {
 		return input * 2, nil
 	})
@@ -3547,7 +3547,7 @@ func TestWorkflowCancel(t *testing.T) {
 
 	blockingEvent := NewEvent()
 
-	blockingWorkflow := func(ctx DbosContext, topic string) (string, error) {
+	blockingWorkflow := func(ctx Context, topic string) (string, error) {
 
 		blockingEvent.Wait()
 
@@ -3587,7 +3587,7 @@ func TestWorkflowCancel(t *testing.T) {
 		blockingEventNoError := NewEvent()
 
 		// Workflow that waits for an event, then calls Recv(). Does NOT return error when Recv times out
-		blockingWorkflowNoError := func(ctx DbosContext, topic string) (string, error) {
+		blockingWorkflowNoError := func(ctx Context, topic string) (string, error) {
 
 			blockingEventNoError.Wait()
 			Recv[string](ctx, topic, 5*time.Second)
@@ -3630,7 +3630,7 @@ func TestWorkflowCancel(t *testing.T) {
 
 var cancelAllBeforeBlockEvent = NewEvent()
 
-func cancelAllBeforeBlockingWorkflow(ctx DbosContext, input string) (string, error) {
+func cancelAllBeforeBlockingWorkflow(ctx Context, input string) (string, error) {
 	cancelAllBeforeBlockEvent.Wait()
 	return input, nil
 }
@@ -3639,7 +3639,7 @@ func gcTestStep(_ context.Context, x int) (int, error) {
 	return x, nil
 }
 
-func gcTestWorkflow(dbosCtx DbosContext, x int) (int, error) {
+func gcTestWorkflow(dbosCtx Context, x int) (int, error) {
 	result, err := Run(dbosCtx, func(ctx context.Context) (int, error) {
 		return gcTestStep(ctx, x)
 	})
@@ -3649,7 +3649,7 @@ func gcTestWorkflow(dbosCtx DbosContext, x int) (int, error) {
 	return result, nil
 }
 
-func gcBlockedWorkflow(dbosCtx DbosContext, event *Event) (string, error) {
+func gcBlockedWorkflow(dbosCtx Context, event *Event) (string, error) {
 	event.Wait()
 	workflowId, err := GetWorkflowId(dbosCtx)
 	if err != nil {
@@ -4096,14 +4096,14 @@ func TestSpecialSteps(t *testing.T) {
 
 	childEvent := NewEvent()
 
-	childWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	childWorkflow := func(dbosCtx Context, input string) (string, error) {
 
 		childEvent.Wait()
 		return fmt.Sprintf("auxiliary-result-%s", input), nil
 	}
 	childWorkflowD := NewWorkflow(dbosCtx, childWorkflow, WithWorkflowName("child-workflow"))
 
-	specialStepsWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+	specialStepsWorkflow := func(dbosCtx Context, input string) (string, error) {
 		currentWorkflowId, err := GetWorkflowId(dbosCtx)
 		if err != nil {
 			return "", fmt.Errorf("failed to get current workflow ID: %w", err)
@@ -4338,7 +4338,7 @@ type authSnapshot struct {
 	Roles []string
 }
 
-func captureAuthFromDB(ctx DbosContext) (authSnapshot, error) {
+func captureAuthFromDB(ctx Context) (authSnapshot, error) {
 	wfId, err := GetWorkflowId(ctx)
 	if err != nil {
 		return authSnapshot{}, err
@@ -4361,22 +4361,22 @@ var (
 	authParentWorkflowD Workflow[string, authSnapshot]
 )
 
-func authChildWorkflow(ctx DbosContext, _ string) (authSnapshot, error) {
+func authChildWorkflow(ctx Context, _ string) (authSnapshot, error) {
 	return captureAuthFromDB(ctx)
 }
 
 // authParentWorkflow calls authChildWorkflow within a step without passing any auth options.
-func authParentWorkflow(ctx DbosContext, _ string) (authSnapshot, error) {
+func authParentWorkflow(ctx Context, _ string) (authSnapshot, error) {
 	_, result, err := callChildWorkflow(ctx, authChildWorkflowD, "")
 	return result, err
 }
 
-func authGrandparentWorkflow(ctx DbosContext, _ string) (authSnapshot, error) {
+func authGrandparentWorkflow(ctx Context, _ string) (authSnapshot, error) {
 	_, result, err := callChildWorkflow(ctx, authParentWorkflowD, "")
 	return result, err
 }
 
-func authParentWithOverrideWorkflow(ctx DbosContext, _ string) (authSnapshot, error) {
+func authParentWithOverrideWorkflow(ctx Context, _ string) (authSnapshot, error) {
 	_, result, err := callChildWorkflow(ctx, authChildWorkflowD, "",
 		WithAuthenticatedUser("service-account"),
 		WithAssumedRole("service"),
@@ -4544,7 +4544,7 @@ func TestPatching(t *testing.T) {
 			return input + 2, nil
 		}
 
-		wf := func(ctx DbosContext, input int) (int, error) {
+		wf := func(ctx Context, input int) (int, error) {
 
 			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
@@ -4572,7 +4572,7 @@ func TestPatching(t *testing.T) {
 		require.NoError(t, err, "failed to get result")
 		require.Equal(t, 2, result, "expected result to be 2")
 
-		wfPatched := func(ctx DbosContext, input int) (int, error) {
+		wfPatched := func(ctx Context, input int) (int, error) {
 
 			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
@@ -4644,7 +4644,7 @@ func TestPatching(t *testing.T) {
 			}
 		}
 
-		wfDeprecatePatch := func(ctx DbosContext, input int) (int, error) {
+		wfDeprecatePatch := func(ctx Context, input int) (int, error) {
 			Run(ctx, func(ctx context.Context) (int, error) {
 				return step(input)
 			}, WithStepName("firstStep"))
@@ -4715,7 +4715,7 @@ func TestPatching(t *testing.T) {
 		require.NoError(t, err, "failed to create DBOS context without patching")
 		require.False(t, dbosCtxNoPatching.GetApplicationVersion() == "PATCHING_ENABLED", "expected application version to not be PATCHING_ENABLED")
 
-		wfWithPatch := func(ctx DbosContext, input int) (int, error) {
+		wfWithPatch := func(ctx Context, input int) (int, error) {
 			patched, err := Patch(ctx, "test-patch")
 			if err != nil {
 				return 0, err
@@ -4727,7 +4727,7 @@ func TestPatching(t *testing.T) {
 		}
 		wfWithPatchD := NewWorkflow(dbosCtxNoPatching, wfWithPatch)
 
-		wfWithDeprecatePatch := func(ctx DbosContext, input int) (int, error) {
+		wfWithDeprecatePatch := func(ctx Context, input int) (int, error) {
 			err := DeprecatePatch(ctx, "test-patch")
 			if err != nil {
 				return 0, err
@@ -4814,7 +4814,7 @@ var (
 	streamStartedEvent *Event
 )
 
-func writeStreamWorkflow(ctx DbosContext, input struct {
+func writeStreamWorkflow(ctx Context, input struct {
 	StreamKey string
 	Values    []string
 	Close     bool
@@ -4835,7 +4835,7 @@ func writeStreamWorkflow(ctx DbosContext, input struct {
 	}
 
 	_, err := Run(ctx, func(stepCtx context.Context) (string, error) {
-		return "", WriteStream(stepCtx.(DbosContext), input.StreamKey, "step-value")
+		return "", WriteStream(stepCtx.(Context), input.StreamKey, "step-value")
 	}, WithStepName("not-just-write"))
 	if err != nil {
 		return "", err
@@ -4851,13 +4851,13 @@ func writeStreamWorkflow(ctx DbosContext, input struct {
 	return "done", nil
 }
 
-type readStreamFunc func(ctx DbosContext, workflowId string, key string) ([]string, bool, error)
+type readStreamFunc func(ctx Context, workflowId string, key string) ([]string, bool, error)
 
-func syncReadStream(ctx DbosContext, workflowId string, key string) ([]string, bool, error) {
+func syncReadStream(ctx Context, workflowId string, key string) ([]string, bool, error) {
 	return ReadStream[string](ctx, workflowId, key)
 }
 
-func asyncReadStream(ctx DbosContext, workflowId string, key string) ([]string, bool, error) {
+func asyncReadStream(ctx Context, workflowId string, key string) ([]string, bool, error) {
 	ch, err := ReadStreamAsync[string](ctx, workflowId, key)
 	if err != nil {
 		return nil, false, err
@@ -5307,12 +5307,12 @@ func TestExportImportWorkflow(t *testing.T) {
 		return fmt.Sprintf("step-result-%d", stepCounter), nil
 	}
 
-	grandchildWf := func(ctx DbosContext, input string) (string, error) {
+	grandchildWf := func(ctx Context, input string) (string, error) {
 		return input + "-grandchild", nil
 	}
 	grandchildWfD := NewWorkflow(dbosCtx, grandchildWf)
 
-	childWf := func(ctx DbosContext, input exportTestPerson) (exportTestPerson, error) {
+	childWf := func(ctx Context, input exportTestPerson) (exportTestPerson, error) {
 
 		gcId, gcResult, err := callChildWorkflow(ctx, grandchildWfD, input.Name)
 		if err != nil {
@@ -5324,7 +5324,7 @@ func TestExportImportWorkflow(t *testing.T) {
 	}
 	childWfD := NewWorkflow(dbosCtx, childWf)
 
-	parentWf := func(ctx DbosContext, input exportTestPerson) (exportTestPerson, error) {
+	parentWf := func(ctx Context, input exportTestPerson) (exportTestPerson, error) {
 
 		childId, childResult, err := callChildWorkflow(ctx, childWfD, input)
 		if err != nil {
@@ -5557,11 +5557,11 @@ func TestExportImportWorkflow(t *testing.T) {
 	})
 }
 
-func aggregatesWorkflowSuccess(_ DbosContext, _ string) (string, error) {
+func aggregatesWorkflowSuccess(_ Context, _ string) (string, error) {
 	return "ok", nil
 }
 
-func aggregatesWorkflowFail(_ DbosContext, _ string) (string, error) {
+func aggregatesWorkflowFail(_ Context, _ string) (string, error) {
 	return "", fmt.Errorf("aggregate-fail")
 }
 
@@ -5774,7 +5774,7 @@ func stepAggOK(_ context.Context) (string, error) { return "ok", nil }
 
 func stepAggBad(_ context.Context) (string, error) { return "", errors.New("boom") }
 
-func stepAggregatesWorkflow(ctx DbosContext, _ string) (string, error) {
+func stepAggregatesWorkflow(ctx Context, _ string) (string, error) {
 	if _, err := Run(ctx, stepAggOK, WithStepName("aggStepOK")); err != nil {
 		return "", err
 	}

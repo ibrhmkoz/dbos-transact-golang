@@ -246,7 +246,7 @@ func resolveDecoder[T any](storedSerialization string, customSer Serializer[any]
 	return nil, fmt.Errorf("unknown serialization format %q", storedSerialization)
 }
 
-func getCustomSerializerFromCtx(ctx DbosContext) Serializer[any] {
+func getCustomSerializerFromCtx(ctx Context) Serializer[any] {
 	if dc, ok := ctx.(*dbosContext); ok {
 		return dc.serializer
 	}

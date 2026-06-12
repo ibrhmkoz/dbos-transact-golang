@@ -82,7 +82,7 @@ func jitterCap(sched cron.Schedule, scheduledTime time.Time) time.Duration {
 
 // functions must conform to. Each tick the scheduler invokes the function
 
-type ScheduledWorkflowFunc func(ctx DbosContext, input ScheduledWorkflowInput) (any, error)
+type ScheduledWorkflowFunc func(ctx Context, input ScheduledWorkflowInput) (any, error)
 
 func (c *dbosContext) addScheduleCronEntry(
 	scheduleName, cronSchedule string,
@@ -129,7 +129,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 	}
 	wrappedFn := entry.wrappedFunction
 	scheduleName := schedule.ScheduleName
-	return func(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+	return func(ctx Context, input ScheduledWorkflowInput) (any, error) {
 		wfId := fmt.Sprintf("sched-%s-%s", scheduleName, input.ScheduledTime.Format(time.RFC3339))
 
 		existing, err := retryWithResult(c, func() ([]WorkflowStatus, error) {

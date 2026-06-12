@@ -18,7 +18,7 @@ func TestGetMetrics(t *testing.T) {
 	require.True(t, ok, "expected dbosContext")
 	require.NotNil(t, Kernel.kernel)
 
-	testWorkflowA := func(ctx DbosContext, input string) (string, error) {
+	testWorkflowA := func(ctx Context, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "x", nil
 		}, WithStepName("testStepX"))
@@ -34,7 +34,7 @@ func TestGetMetrics(t *testing.T) {
 		return "a", nil
 	}
 
-	testWorkflowB := func(ctx DbosContext, input string) (string, error) {
+	testWorkflowB := func(ctx Context, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "y", nil
 		}, WithStepName("testStepY"))

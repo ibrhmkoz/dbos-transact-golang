@@ -82,7 +82,7 @@ func getDBUrl() (string, error) {
 	return resolvedUrl, nil
 }
 
-func createDbosContext(ctx context.Context, dbUrl string) (dbos.DbosContext, error) {
+func createDbosContext(ctx context.Context, dbUrl string) (dbos.Context, error) {
 	appName := "dbos-cli"
 
 	config := dbos.Config{

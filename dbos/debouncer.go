@@ -23,7 +23,7 @@ type DebounceMessage[P any] struct {
 	Id    string
 }
 
-func internalDebouncerWF[P any, R any](ctx DbosContext, input debouncerInput[P]) (R, error) {
+func internalDebouncerWF[P any, R any](ctx Context, input debouncerInput[P]) (R, error) {
 	var zero R
 
 	dbosCtx, ok := ctx.(*dbosContext)

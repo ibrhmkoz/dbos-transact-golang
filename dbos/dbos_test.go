@@ -34,7 +34,7 @@ func TestConfig(t *testing.T) {
 
 		require.NotNil(t, ctx)
 
-		var _ DbosContext = ctx
+		var _ Context = ctx
 
 		appVersion := ctx.GetApplicationVersion()
 		assert.Equal(t, "v1.0.0", appVersion)
@@ -512,7 +512,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 
 	var workflowBReadyEvent *Event
 
-	sendGetEventWorkflow := func(ctx DbosContext, input testWorkflowInput) (string, error) {
+	sendGetEventWorkflow := func(ctx Context, input testWorkflowInput) (string, error) {
 
 		err := Send(ctx, input.PartnerWorkflowId, input.Message, "test-topic")
 		if err != nil {
@@ -527,7 +527,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		return result, nil
 	}
 
-	recvSetEventWorkflow := func(ctx DbosContext, input testWorkflowInput) (string, error) {
+	recvSetEventWorkflow := func(ctx Context, input testWorkflowInput) (string, error) {
 
 		if workflowBReadyEvent != nil {
 			workflowBReadyEvent.Set()
@@ -619,7 +619,7 @@ func TestCustomPool(t *testing.T) {
 		Message           string
 	}
 
-	sendGetEventWorkflowCustom := func(ctx DbosContext, input customPoolWorkflowInput) (string, error) {
+	sendGetEventWorkflowCustom := func(ctx Context, input customPoolWorkflowInput) (string, error) {
 
 		err := Send(ctx, input.PartnerWorkflowId, input.Message, "custom-pool-topic")
 		if err != nil {
@@ -634,7 +634,7 @@ func TestCustomPool(t *testing.T) {
 		return result, nil
 	}
 
-	recvSetEventWorkflowCustom := func(ctx DbosContext, input customPoolWorkflowInput) (string, error) {
+	recvSetEventWorkflowCustom := func(ctx Context, input customPoolWorkflowInput) (string, error) {
 
 		receivedMsg, err := Recv[string](ctx, "custom-pool-topic", 5*time.Hour)
 		if err != nil {
@@ -743,7 +743,7 @@ func TestCustomPool(t *testing.T) {
 		assert.Equal(t, "DBOS.setEvent", stepsB[2].StepName, "third step should be SetEvent")
 	})
 
-	wf := func(ctx DbosContext, input string) (string, error) {
+	wf := func(ctx Context, input string) (string, error) {
 		return input, nil
 	}
 
@@ -811,18 +811,18 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err)
 		defer customPool.Close()
 
-		sysDBInput := newKernelInput{
-			databaseUrl:    databaseUrl,
-			databaseSchema: "dbos_test_custom_direct",
-			customPool:     customPool,
-			logger:         logger,
+		kernelConfig := KernelConfig{
+			DatabaseUrl:    databaseUrl,
+			DatabaseSchema: "dbos_test_custom_direct",
+			SystemDBPool:   customPool,
+			Logger:         logger,
 		}
 
-		kernel, err := newKernel(ctx, sysDBInput)
+		kernel, err := NewKernel(ctx, kernelConfig)
 		require.NoError(t, err, "failed to create system database with custom pool")
 		require.NotNil(t, kernel)
 
-		kernel.launch(ctx)
+		kernel.Launch()
 
 		require.Eventually(t, func() bool {
 			conn, err := kernel.pool.Acquire(ctx)
@@ -834,8 +834,9 @@ func TestCustomPool(t *testing.T) {
 		}, 5*time.Second, 100*time.Millisecond, "system database should be reachable")
 
 		cancel()
-		shutdownTimeout := 2 * time.Second
-		kernel.shutdown(ctx, shutdownTimeout)
-		assert.False(t, kernel.launched)
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer shutdownCancel()
+		require.NoError(t, kernel.Shutdown(shutdownCtx))
+		assert.Nil(t, kernel.loopCancel)
 	})
 }

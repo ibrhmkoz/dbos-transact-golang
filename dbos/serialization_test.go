@@ -17,7 +17,7 @@ import (
 
 func testAllSerializationPaths[T any](
 	t *testing.T,
-	executor DbosContext,
+	executor Context,
 	recoveryWorkflow Workflow[T, T],
 	input T,
 ) {
@@ -199,7 +199,7 @@ func testAllSerializationPaths[T any](
 
 func testSendRecv[T any](
 	t *testing.T,
-	executor DbosContext,
+	executor Context,
 	senderWorkflow Workflow[T, T],
 	receiverWorkflow Workflow[T, T],
 	input T,
@@ -226,7 +226,7 @@ func testSendRecv[T any](
 
 func testSetGetEvent[T any](
 	t *testing.T,
-	executor DbosContext,
+	executor Context,
 	setEventWorkflow Workflow[T, T],
 	getEventWorkflow Workflow[string, T],
 	input T,
@@ -326,7 +326,7 @@ var (
 var serializerStreamWorkflow = makeStreamWorkflow[TestWorkflowData]()
 
 func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, input T) (T, error) {
+	return func(ctx Context, input T) (T, error) {
 		if err := WriteStream(ctx, "test-stream", input); err != nil {
 			return *new(T), fmt.Errorf("write stream failed: %w", err)
 		}
@@ -340,7 +340,7 @@ func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
 var senderDestRegistry sync.Map
 
 func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, input T) (T, error) {
+	return func(ctx Context, input T) (T, error) {
 		myId, err := GetWorkflowId(ctx)
 		if err != nil {
 			return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
@@ -362,7 +362,7 @@ func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
 }
 
 func makeReceiverWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, _ T) (T, error) {
+	return func(ctx Context, _ T) (T, error) {
 		received, err := Recv[T](ctx, "test-topic", 10*time.Second)
 		if err != nil {
 			return *new(T), fmt.Errorf("recv failed: %w", err)
@@ -372,7 +372,7 @@ func makeReceiverWorkflow[T any]() WorkflowFn[T, T] {
 }
 
 func makeSetEventWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, input T) (T, error) {
+	return func(ctx Context, input T) (T, error) {
 		err := SetEvent(ctx, "test-key", input)
 		if err != nil {
 			return *new(T), fmt.Errorf("set event failed: %w", err)
@@ -382,7 +382,7 @@ func makeSetEventWorkflow[T any]() WorkflowFn[T, T] {
 }
 
 func makeGetEventWorkflow[T any]() WorkflowFn[string, T] {
-	return func(ctx DbosContext, targetWorkflowId string) (T, error) {
+	return func(ctx Context, targetWorkflowId string) (T, error) {
 		event, err := GetEvent[T](ctx, targetWorkflowId, "test-key", 10*time.Second)
 		if err != nil {
 			return *new(T), fmt.Errorf("get event failed: %w", err)
@@ -392,7 +392,7 @@ func makeGetEventWorkflow[T any]() WorkflowFn[string, T] {
 }
 
 func makeTestWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, input T) (T, error) {
+	return func(ctx Context, input T) (T, error) {
 		return Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
 		})
@@ -403,7 +403,7 @@ func serializerErrorStep(_ context.Context, _ TestWorkflowData) (TestWorkflowDat
 	return TestWorkflowData{}, fmt.Errorf("step error")
 }
 
-func serializerErrorWorkflow(ctx DbosContext, input TestWorkflowData) (TestWorkflowData, error) {
+func serializerErrorWorkflow(ctx Context, input TestWorkflowData) (TestWorkflowData, error) {
 	return Run(ctx, func(context context.Context) (TestWorkflowData, error) {
 		return serializerErrorStep(context, input)
 	})
@@ -417,7 +417,7 @@ type recoveryEvents struct {
 var recoveryEventRegistry sync.Map
 
 func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DbosContext, input T) (T, error) {
+	return func(ctx Context, input T) (T, error) {
 
 		firstStepOutput, err := Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
@@ -1118,7 +1118,7 @@ func TestPortableInterop(t *testing.T) {
 		StreamOutput InteropArgs `json:"streamOutput"`
 	}
 
-	portableWf := func(ctx DbosContext, input InteropArgs) (InteropResult, error) {
+	portableWf := func(ctx Context, input InteropArgs) (InteropResult, error) {
 
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropArgs, error) {
 			return input, nil
@@ -1376,19 +1376,19 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		portableWriterWf       WorkflowFn[string, string]
 	)
 
-	portableSendSenderWf = func(ctx DbosContext, receiverId string) (string, error) {
+	portableSendSenderWf = func(ctx Context, receiverId string) (string, error) {
 		return "", Send(ctx, receiverId, payload, "topic", WithPortableSend())
 	}
-	portableSendReceiverWf = func(ctx DbosContext, _ string) (Payload, error) {
+	portableSendReceiverWf = func(ctx Context, _ string) (Payload, error) {
 		return Recv[Payload](ctx, "topic", 10*time.Second)
 	}
-	portableSetterWf = func(ctx DbosContext, _ string) (string, error) {
+	portableSetterWf = func(ctx Context, _ string) (string, error) {
 		return "", SetEvent(ctx, "evt-key", payload, WithPortableSetEvent())
 	}
-	portableGetterWf = func(ctx DbosContext, targetId string) (Payload, error) {
+	portableGetterWf = func(ctx Context, targetId string) (Payload, error) {
 		return GetEvent[Payload](ctx, targetId, "evt-key", 10*time.Second)
 	}
-	portableWriterWf = func(ctx DbosContext, _ string) (string, error) {
+	portableWriterWf = func(ctx Context, _ string) (string, error) {
 		if err := WriteStream(ctx, "stream-key", payload, WithPortableWriteStream()); err != nil {
 			return "", err
 		}
@@ -1462,7 +1462,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	expectedInput := InteropInput{Name: "direct-portable", Value: 99}
 
-	portableEchoWf := func(ctx DbosContext, input InteropInput) (InteropInput, error) {
+	portableEchoWf := func(ctx Context, input InteropInput) (InteropInput, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
@@ -1473,7 +1473,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	}
 	portableEchoWfD := NewWorkflow(executor, portableEchoWf, WithWorkflowName("portable_echo"))
 
-	portableEnvelopeWf := func(ctx DbosContext, input PortableWorkflowArgs) (PortableWorkflowArgs, error) {
+	portableEnvelopeWf := func(ctx Context, input PortableWorkflowArgs) (PortableWorkflowArgs, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (PortableWorkflowArgs, error) {
 			return input, nil
 		})
@@ -1484,12 +1484,12 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	}
 	portableEnvelopeWfD := NewWorkflow(executor, portableEnvelopeWf, WithWorkflowName("portable_envelope"))
 
-	portableIntEchoWf := func(ctx DbosContext, input int) (int, error) {
+	portableIntEchoWf := func(ctx Context, input int) (int, error) {
 		return Run(ctx, func(_ context.Context) (int, error) { return input, nil })
 	}
 	portableIntEchoWfD := NewWorkflow(executor, portableIntEchoWf, WithWorkflowName("portable_int_echo"))
 
-	portableStringEchoWf := func(ctx DbosContext, input string) (string, error) {
+	portableStringEchoWf := func(ctx Context, input string) (string, error) {
 		return Run(ctx, func(_ context.Context) (string, error) { return input, nil })
 	}
 	portableStringEchoWfD := NewWorkflow(executor, portableStringEchoWf, WithWorkflowName("portable_string_echo"))
@@ -1499,7 +1499,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		RecvOut  InteropInput `json:"recvOut"`
 		EventOut InteropInput `json:"eventOut"`
 	}
-	multiStepWf := func(ctx DbosContext, input InteropInput) (PartialRecoveryResult, error) {
+	multiStepWf := func(ctx Context, input InteropInput) (PartialRecoveryResult, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
@@ -1741,7 +1741,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 func TestPortableWorkflowError(t *testing.T) {
 	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	portableErrWf := func(ctx DbosContext, input string) (string, error) {
+	portableErrWf := func(ctx Context, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})
@@ -1757,7 +1757,7 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 	portableErrWfD := NewWorkflow(executor, portableErrWf, WithWorkflowName("portable_err_wf"))
 
-	portableStepErrWf := func(ctx DbosContext, input string) (string, error) {
+	portableStepErrWf := func(ctx Context, input string) (string, error) {
 		return Run(ctx, func(_ context.Context) (string, error) {
 			return "", &PortableWorkflowError{
 				Name:    "StepError",
@@ -1768,7 +1768,7 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 	portableStepErrWfD := NewWorkflow(executor, portableStepErrWf, WithWorkflowName("portable_step_err_wf"))
 
-	plainErrWf := func(ctx DbosContext, input string) (string, error) {
+	plainErrWf := func(ctx Context, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})

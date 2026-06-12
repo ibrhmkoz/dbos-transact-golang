@@ -12,7 +12,7 @@ func step(ctx context.Context) (int, error) {
 	return 1, nil
 }
 
-func childWorkflow(ctx dbos.DbosContext, i int) (int, error) {
+func childWorkflow(ctx dbos.Context, i int) (int, error) {
 	return i + 1, nil
 }
 
@@ -21,7 +21,7 @@ var (
 	childWorkflowWF dbos.Workflow[int, int]
 )
 
-func workflow(ctx dbos.DbosContext, i int) (int, error) {
+func workflow(ctx dbos.Context, i int) (int, error) {
 
 	a, err := dbos.Run(ctx, step)
 	if err != nil {
@@ -128,7 +128,7 @@ func workflow(ctx dbos.DbosContext, i int) (int, error) {
 	return a + b + c + d + e.(int), nil
 }
 
-func aRealProgramFunction(dbosCtx dbos.DbosContext) error {
+func aRealProgramFunction(dbosCtx dbos.Context) error {
 
 	childWorkflowWF = dbos.NewWorkflow(dbosCtx, childWorkflow)
 	workflowWF = dbos.NewWorkflow(dbosCtx, workflow)

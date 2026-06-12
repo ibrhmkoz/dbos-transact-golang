@@ -241,7 +241,7 @@ type setupDbosOptions struct {
 	schedulerPollingInterval time.Duration
 }
 
-func setupDbos(t *testing.T, opts setupDbosOptions) DbosContext {
+func setupDbos(t *testing.T, opts setupDbosOptions) Context {
 	t.Helper()
 
 	databaseUrl := backendDatabaseUrl(t)
@@ -309,7 +309,7 @@ func (e *Event) Clear() {
 	e.IsSet = false
 }
 
-func setWorkflowStatusPending(t *testing.T, dbosCtx DbosContext, workflowId string) {
+func setWorkflowStatusPending(t *testing.T, dbosCtx Context, workflowId string) {
 	t.Helper()
 	c, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected DbosContext to be *dbosContext")
@@ -322,7 +322,7 @@ func setWorkflowStatusPending(t *testing.T, dbosCtx DbosContext, workflowId stri
 	require.NoError(t, err, "failed to set workflow status to PENDING")
 }
 
-func queueEntriesAreCleanedUp(ctx DbosContext) bool {
+func queueEntriesAreCleanedUp(ctx Context) bool {
 	maxTries := 10
 	success := false
 	exec, ok := ctx.(*dbosContext)

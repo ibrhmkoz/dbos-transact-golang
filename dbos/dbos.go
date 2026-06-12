@@ -104,7 +104,7 @@ func processConfig(inputConfig *Config) (*Config, error) {
 	return dbosConfig, nil
 }
 
-type DbosContext interface {
+type Context interface {
 	context.Context
 
 	Launch() error
@@ -132,12 +132,12 @@ type DbosContext interface {
 	GetExecutorId() string
 	GetApplicationId() string
 
-	From(ctx context.Context) DbosContext
-	WithoutCancel() DbosContext
-	WithTimeout(timeout time.Duration) (DbosContext, context.CancelFunc)
-	WithValue(key, val any) DbosContext
-	WithCancel() (DbosContext, context.CancelFunc)
-	WithCancelCause() (DbosContext, context.CancelCauseFunc)
+	From(ctx context.Context) Context
+	WithoutCancel() Context
+	WithTimeout(timeout time.Duration) (Context, context.CancelFunc)
+	WithValue(key, val any) Context
+	WithCancel() (Context, context.CancelFunc)
+	WithCancelCause() (Context, context.CancelCauseFunc)
 }
 
 type dbosContext struct {
@@ -198,7 +198,7 @@ func (c *dbosContext) Value(key any) any {
 
 // The provided context must be a child of a context.Context that was provided by DBOS (e.g., the first argument of RunWorkflow or Run)
 // That is because such context embeds important metadata necessary for DBOS to function correctly.
-func (c *dbosContext) From(ctx context.Context) DbosContext {
+func (c *dbosContext) From(ctx context.Context) Context {
 	if ctx == nil {
 		return nil
 	}
@@ -221,21 +221,21 @@ func (c *dbosContext) From(ctx context.Context) DbosContext {
 	return childCtx
 }
 
-func From(dbosCtx DbosContext, ctx context.Context) DbosContext {
+func From(dbosCtx Context, ctx context.Context) Context {
 	if dbosCtx == nil {
 		return nil
 	}
 	return dbosCtx.From(ctx)
 }
 
-func WithValue(ctx DbosContext, key, val any) DbosContext {
+func WithValue(ctx Context, key, val any) Context {
 	if ctx == nil {
 		return nil
 	}
 	return ctx.WithValue(key, val)
 }
 
-func (c *dbosContext) WithValue(key, val any) DbosContext {
+func (c *dbosContext) WithValue(key, val any) Context {
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
 		ctx:                context.WithValue(c.ctx, key, val),
@@ -255,7 +255,7 @@ func (c *dbosContext) WithValue(key, val any) DbosContext {
 	return childCtx
 }
 
-func (c *dbosContext) WithoutCancel() DbosContext {
+func (c *dbosContext) WithoutCancel() Context {
 	launched := c.launched.Load()
 	childCtx := &dbosContext{
 		ctx:                context.WithoutCancel(c.ctx),
@@ -275,14 +275,14 @@ func (c *dbosContext) WithoutCancel() DbosContext {
 	return childCtx
 }
 
-func WithoutCancel(ctx DbosContext) DbosContext {
+func WithoutCancel(ctx Context) Context {
 	if ctx == nil {
 		return nil
 	}
 	return ctx.WithoutCancel()
 }
 
-func (c *dbosContext) WithCancel() (DbosContext, context.CancelFunc) {
+func (c *dbosContext) WithCancel() (Context, context.CancelFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelFunc := context.WithCancel(c.ctx)
 	childCtx := &dbosContext{
@@ -304,14 +304,14 @@ func (c *dbosContext) WithCancel() (DbosContext, context.CancelFunc) {
 
 // The returned CancelFunc must be called when the derived context is no longer needed,
 
-func WithCancel(ctx DbosContext) (DbosContext, context.CancelFunc) {
+func WithCancel(ctx Context) (Context, context.CancelFunc) {
 	if ctx == nil {
 		return nil, func() {}
 	}
 	return ctx.WithCancel()
 }
 
-func (c *dbosContext) WithCancelCause() (DbosContext, context.CancelCauseFunc) {
+func (c *dbosContext) WithCancelCause() (Context, context.CancelCauseFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelCauseFunc := context.WithCancelCause(c.ctx)
 	childCtx := &dbosContext{
@@ -331,14 +331,14 @@ func (c *dbosContext) WithCancelCause() (DbosContext, context.CancelCauseFunc) {
 	return childCtx, cancelCauseFunc
 }
 
-func WithCancelCause(ctx DbosContext) (DbosContext, context.CancelCauseFunc) {
+func WithCancelCause(ctx Context) (Context, context.CancelCauseFunc) {
 	if ctx == nil {
 		return nil, func(error) {}
 	}
 	return ctx.WithCancelCause()
 }
 
-func (c *dbosContext) WithTimeout(timeout time.Duration) (DbosContext, context.CancelFunc) {
+func (c *dbosContext) WithTimeout(timeout time.Duration) (Context, context.CancelFunc) {
 	launched := c.launched.Load()
 	newCtx, cancelFunc := context.WithTimeoutCause(c.ctx, timeout, errors.New("DBOS context timeout"))
 	childCtx := &dbosContext{
@@ -359,7 +359,7 @@ func (c *dbosContext) WithTimeout(timeout time.Duration) (DbosContext, context.C
 	return childCtx, cancelFunc
 }
 
-func WithTimeout(ctx DbosContext, timeout time.Duration) (DbosContext, context.CancelFunc) {
+func WithTimeout(ctx Context, timeout time.Duration) (Context, context.CancelFunc) {
 	if ctx == nil {
 		return nil, func() {}
 	}
@@ -400,7 +400,7 @@ func (c *dbosContext) ListRegisteredWorkflows(opts ...ListRegisteredWorkflowsOpt
 
 // The context must be launched with Launch() for workflow execution and should be shut down with Shutdown().
 
-func NewDbosContext(ctx context.Context, inputConfig Config) (DbosContext, error) {
+func NewDbosContext(ctx context.Context, inputConfig Config) (Context, error) {
 	dbosBaseCtx, cancelFunc := context.WithCancelCause(ctx)
 	initExecutor := &dbosContext{
 		workflowsWg:       &sync.WaitGroup{},
@@ -425,19 +425,19 @@ func NewDbosContext(ctx context.Context, inputConfig Config) (DbosContext, error
 	initExecutor.applicationId = os.Getenv("DBOS__APPID")
 	initExecutor.serializer = config.Serializer
 
-	newKernelInputs := newKernelInput{
-		databaseUrl:     config.DatabaseUrl,
-		databaseSchema:  config.DatabaseSchema,
-		customPool:      config.SystemDBPool,
-		logger:          initExecutor.logger,
-		applicationName: config.AppName,
+	kernelConfig := KernelConfig{
+		DatabaseUrl:     config.DatabaseUrl,
+		DatabaseSchema:  config.DatabaseSchema,
+		SystemDBPool:    config.SystemDBPool,
+		Logger:          initExecutor.logger,
+		ApplicationName: config.AppName,
 	}
 
 	if config.Kernel != nil {
 		initExecutor.kernel = config.Kernel
 	} else {
 
-		kernel, err := newKernel(initExecutor, newKernelInputs)
+		kernel, err := NewKernel(initExecutor, kernelConfig)
 		if err != nil {
 			initExecutor.logger.Error("failed to create system database", "error", err)
 			return nil, newInitializationError(err.Error())
@@ -461,7 +461,7 @@ func (c *dbosContext) Launch() error {
 	}
 
 	if c.ownsSystemDB {
-		c.kernel.launch(c)
+		c.kernel.Launch()
 	}
 
 	if err := retry(c, func() error {
@@ -574,7 +574,13 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 
 	if c.kernel != nil && c.ownsSystemDB {
 		c.logger.Debug("Shutting down system database")
-		c.kernel.shutdown(c, timeout)
+		// c is already cancelled at this point, so the shutdown deadline must
+		// come from a fresh context.
+		kernelCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		if err := c.kernel.Shutdown(kernelCtx); err != nil {
+			c.logger.Warn("Kernel shutdown did not complete in time", "error", err)
+		}
+		cancel()
 	}
 
 	c.launched.Store(false)
@@ -639,21 +645,21 @@ func getDbosVersion() string {
 	return "unknown"
 }
 
-func Launch(ctx DbosContext) error {
+func Launch(ctx Context) error {
 	if ctx == nil {
 		return fmt.Errorf("ctx cannot be nil")
 	}
 	return ctx.Launch()
 }
 
-func Shutdown(ctx DbosContext, timeout time.Duration) {
+func Shutdown(ctx Context, timeout time.Duration) {
 	if ctx == nil {
 		return
 	}
 	ctx.Shutdown(timeout)
 }
 
-func ClearRegistries(ctx DbosContext) {
+func ClearRegistries(ctx Context) {
 	c, ok := ctx.(*dbosContext)
 	if !ok {
 		return

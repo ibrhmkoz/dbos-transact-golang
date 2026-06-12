@@ -77,7 +77,7 @@ func NewDbosAdmin(ctx context.Context, config DbosAdminConfig) (DbosAdmin, error
 
 	asDbosCtx := dbosCtx.(*dbosContext)
 	if asDbosCtx.ownsSystemDB {
-		asDbosCtx.kernel.launch(asDbosCtx)
+		asDbosCtx.kernel.Launch()
 	}
 
 	return &dbosAdmin{dbosCtx: asDbosCtx}, nil
@@ -642,6 +642,12 @@ func (c *dbosAdmin) Shutdown(timeout time.Duration) {
 	// Close the system database only when this dbosAdmin created it.
 	if dbosCtx.kernel != nil && dbosCtx.ownsSystemDB {
 		dbosCtx.logger.Debug("Shutting down system database")
-		dbosCtx.kernel.shutdown(dbosCtx, timeout)
+		// dbosCtx is already cancelled, so the shutdown deadline must come
+		// from a fresh context.
+		kernelCtx, cancel := context.WithTimeout(context.Background(), timeout)
+		if err := dbosCtx.kernel.Shutdown(kernelCtx); err != nil {
+			dbosCtx.logger.Warn("Kernel shutdown did not complete in time", "error", err)
+		}
+		cancel()
 	}
 }
