@@ -84,7 +84,7 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 			}
 
 			// Pass encoded input directly - decoding will happen in workflow wrapper when we know the target type
-			_, err := registeredWorkflow.wrappedFunction(ctx, workflow.input, workflow.serialization, WithWorkflowID(workflow.id), withIsDequeue())
+			_, err := registeredWorkflow.wrappedFunction(ctx, workflow.input, workflow.serialization, withWorkflowID(workflow.id), withIsDequeue())
 			if err != nil {
 				workerLogger.Error("Error running claimed workflow", "error", err)
 			}

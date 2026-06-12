@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -25,7 +26,6 @@ func testAllSerializationPaths[T any](
 	executor DBOSContext,
 	recoveryWorkflow Workflow[T, T],
 	input T,
-	workflowID string,
 ) {
 	t.Helper()
 
@@ -44,15 +44,13 @@ func testAllSerializationPaths[T any](
 	// Setup events for recovery
 	startEvent := NewEvent()
 	blockingEvent := NewEvent()
-	recoveryEventRegistry[workflowID] = struct {
-		startEvent    *Event
-		blockingEvent *Event
-	}{startEvent, blockingEvent}
-	defer delete(recoveryEventRegistry, workflowID)
 
-	// Start the blocking workflow
-	handle, err := recoveryWorkflow(executor, input, WithWorkflowID(workflowID))
+	// Start the blocking workflow; register its events under the runtime-assigned ID
+	handle, err := recoveryWorkflow(executor, input)
 	require.NoError(t, err, "failed to start blocking workflow")
+	workflowID := handle.GetWorkflowID()
+	recoveryEventRegistry.Store(workflowID, recoveryEvents{startEvent, blockingEvent})
+	defer recoveryEventRegistry.Delete(workflowID)
 
 	// Wait for the workflow to reach the blocking step
 	startEvent.Wait()
@@ -227,17 +225,18 @@ func testSendRecv[T any](
 	senderWorkflow Workflow[T, T],
 	receiverWorkflow Workflow[T, T],
 	input T,
-	senderID string,
 ) {
 	t.Helper()
 
 	// Start receiver workflow first (it will wait for the message)
-	receiverHandle, err := receiverWorkflow(executor, input, WithWorkflowID(senderID+"-receiver"))
+	receiverHandle, err := receiverWorkflow(executor, input)
 	require.NoError(t, err, "Receiver workflow execution failed")
 
-	// Start sender workflow (it will send the message)
-	senderHandle, err := senderWorkflow(executor, input, WithWorkflowID(senderID))
+	// Start sender workflow and tell it where to send the message
+	senderHandle, err := senderWorkflow(executor, input)
 	require.NoError(t, err, "Sender workflow execution failed")
+	senderDestRegistry.Store(senderHandle.GetWorkflowID(), receiverHandle.GetWorkflowID())
+	defer senderDestRegistry.Delete(senderHandle.GetWorkflowID())
 
 	// Get sender result
 	senderResult, err := senderHandle.GetResult()
@@ -259,13 +258,11 @@ func testSetGetEvent[T any](
 	setEventWorkflow Workflow[T, T],
 	getEventWorkflow Workflow[string, T],
 	input T,
-	setEventID string,
-	getEventID string,
 ) {
 	t.Helper()
 
 	// Start setEvent workflow
-	setEventHandle, err := setEventWorkflow(executor, input, WithWorkflowID(setEventID))
+	setEventHandle, err := setEventWorkflow(executor, input)
 	require.NoError(t, err, "SetEvent workflow execution failed")
 
 	// Wait for setEvent to complete
@@ -273,7 +270,7 @@ func testSetGetEvent[T any](
 	require.NoError(t, err, "SetEvent workflow should complete")
 
 	// Start getEvent workflow (will retrieve the event)
-	getEventHandle, err := getEventWorkflow(executor, setEventID, WithWorkflowID(getEventID))
+	getEventHandle, err := getEventWorkflow(executor, setEventHandle.GetWorkflowID())
 	require.NoError(t, err, "GetEvent workflow execution failed")
 
 	// Get the event result
@@ -377,14 +374,26 @@ func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
 	}
 }
 
+// senderDestRegistry maps a sender workflow ID to its receiver workflow ID.
+// Workflow IDs are runtime-assigned, so the test stores the mapping right
+// after starting the sender; the sender polls until it appears.
+var senderDestRegistry sync.Map
+
 // makeSenderWorkflow creates a generic sender workflow that sends a message to a receiver workflow.
 func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
 	return func(ctx DBOSContext, input T) (T, error) {
-		receiverWorkflowID, err := GetWorkflowID(ctx)
+		myID, err := GetWorkflowID(ctx)
 		if err != nil {
 			return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
 		}
-		destID := receiverWorkflowID + "-receiver"
+		var destID string
+		for {
+			if v, ok := senderDestRegistry.Load(myID); ok {
+				destID = v.(string)
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
 		err = Send(ctx, destID, input, "test-topic")
 		if err != nil {
 			return *new(T), fmt.Errorf("send failed: %w", err)
@@ -445,11 +454,15 @@ func serializerErrorWorkflow(ctx DBOSContext, input TestWorkflowData) (TestWorkf
 	})
 }
 
-// recoveryEventRegistry stores events for recovery workflows by workflow ID
-var recoveryEventRegistry = make(map[string]struct {
+// recoveryEventRegistry stores events for recovery workflows by workflow ID.
+// Workflow IDs are runtime-assigned, so the test registers events right after
+// starting the workflow; the workflow polls until they appear.
+type recoveryEvents struct {
 	startEvent    *Event
 	blockingEvent *Event
-})
+}
+
+var recoveryEventRegistry sync.Map
 
 // makeRecoveryWorkflow creates a generic recovery workflow that has an initial step
 // and then a blocking step that uses the output of the first step.
@@ -474,9 +487,13 @@ func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
 			if err != nil {
 				return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
 			}
-			events, ok := recoveryEventRegistry[workflowID]
-			if !ok {
-				return *new(T), fmt.Errorf("no events registered for workflow ID: %s", workflowID)
+			var events recoveryEvents
+			for {
+				if v, ok := recoveryEventRegistry.Load(workflowID); ok {
+					events = v.(recoveryEvents)
+					break
+				}
+				time.Sleep(5 * time.Millisecond)
 			}
 			events.startEvent.Set()
 			events.blockingEvent.Wait()
@@ -595,20 +612,20 @@ func TestSerializer(t *testing.T) {
 			StringPtrPtr: &strPtrPtr,
 		}
 
-		testAllSerializationPaths(t, executor, serializerStructWorkflowD, input, "struct-values-wf")
+		testAllSerializationPaths(t, executor, serializerStructWorkflowD, input)
 	})
 
 	// Test nil values with pointer type workflow
 	t.Run("NilStructPointer", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, recoveryStructPtrWorkflowD, (*TestWorkflowData)(nil), "nil-pointer-wf")
+		testAllSerializationPaths(t, executor, recoveryStructPtrWorkflowD, (*TestWorkflowData)(nil))
 	})
 
 	t.Run("Int", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, recoveryIntWorkflowD, 0, "recovery-int-wf")
+		testAllSerializationPaths(t, executor, recoveryIntWorkflowD, 0)
 	})
 
 	t.Run("EmptyString", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, recoveryStringWorkflowD, "", "recovery-empty-string-wf")
+		testAllSerializationPaths(t, executor, recoveryStringWorkflowD, "")
 	})
 
 	// Pointer variants (single level only, nested pointers not supported)
@@ -616,13 +633,13 @@ func TestSerializer(t *testing.T) {
 		t.Run("NonNil", func(t *testing.T) {
 			v := 123
 			input := &v
-			testAllSerializationPaths(t, executor, recoveryIntPtrWorkflowD, input, "recovery-int-ptr-wf")
+			testAllSerializationPaths(t, executor, recoveryIntPtrWorkflowD, input)
 
 		})
 
 		t.Run("Nil", func(t *testing.T) {
 			var input *int = nil
-			testAllSerializationPaths(t, executor, recoveryIntPtrWorkflowD, input, "recovery-int-ptr-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryIntPtrWorkflowD, input)
 		})
 	})
 
@@ -631,90 +648,90 @@ func TestSerializer(t *testing.T) {
 			v := 123
 			ptr := &v
 			ptrPtr := &ptr
-			testAllSerializationPaths(t, executor, recoveryNestedIntPtrWorkflowD, ptrPtr, "recovery-nested-int-ptr-wf")
+			testAllSerializationPaths(t, executor, recoveryNestedIntPtrWorkflowD, ptrPtr)
 
 		})
 
 		t.Run("Nil", func(t *testing.T) {
 			var ptrPtr **int = nil
-			testAllSerializationPaths(t, executor, recoveryNestedIntPtrWorkflowD, ptrPtr, "recovery-nested-int-ptr-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryNestedIntPtrWorkflowD, ptrPtr)
 		})
 	})
 
 	t.Run("SlicesAndArrays", func(t *testing.T) {
 		t.Run("NonEmptySlice", func(t *testing.T) {
 			input := []int{1, 2, 3}
-			testAllSerializationPaths(t, executor, recoveryIntSliceWorkflowD, input, "recovery-int-slice-wf")
+			testAllSerializationPaths(t, executor, recoveryIntSliceWorkflowD, input)
 		})
 
 		t.Run("NilSlice", func(t *testing.T) {
 			var input []int = nil
-			testAllSerializationPaths(t, executor, recoveryIntSliceWorkflowD, input, "recovery-int-slice-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryIntSliceWorkflowD, input)
 		})
 
 		t.Run("Array", func(t *testing.T) {
 			input := [3]int{1, 2, 3}
-			testAllSerializationPaths(t, executor, recoveryIntArrayWorkflowD, input, "recovery-int-array-wf")
+			testAllSerializationPaths(t, executor, recoveryIntArrayWorkflowD, input)
 		})
 	})
 
 	t.Run("ByteSlices", func(t *testing.T) {
 		t.Run("NonEmpty", func(t *testing.T) {
 			input := []byte{1, 2, 3, 4, 5}
-			testAllSerializationPaths(t, executor, recoveryByteSliceWorkflowD, input, "recovery-byte-slice-wf")
+			testAllSerializationPaths(t, executor, recoveryByteSliceWorkflowD, input)
 		})
 
 		t.Run("Nil", func(t *testing.T) {
 			var input []byte = nil
-			testAllSerializationPaths(t, executor, recoveryByteSliceWorkflowD, input, "recovery-byte-slice-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryByteSliceWorkflowD, input)
 		})
 	})
 
 	t.Run("Maps", func(t *testing.T) {
 		t.Run("NonEmptyMap", func(t *testing.T) {
 			input := map[string]int{"x": 1, "y": 2}
-			testAllSerializationPaths(t, executor, recoveryStringIntMapWorkflowD, input, "recovery-string-int-map-wf")
+			testAllSerializationPaths(t, executor, recoveryStringIntMapWorkflowD, input)
 		})
 
 		t.Run("NilMap", func(t *testing.T) {
 			var input map[string]int = nil
-			testAllSerializationPaths(t, executor, recoveryStringIntMapWorkflowD, input, "recovery-string-int-map-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryStringIntMapWorkflowD, input)
 		})
 	})
 
 	t.Run("CustomTypes", func(t *testing.T) {
 		t.Run("MyInt", func(t *testing.T) {
 			input := MyInt(7)
-			testAllSerializationPaths(t, executor, recoveryMyIntWorkflowD, input, "recovery-myint-wf")
+			testAllSerializationPaths(t, executor, recoveryMyIntWorkflowD, input)
 		})
 
 		t.Run("MyString", func(t *testing.T) {
 			input := MyString("zeta")
-			testAllSerializationPaths(t, executor, recoveryMyStringWorkflowD, input, "recovery-mystring-wf")
+			testAllSerializationPaths(t, executor, recoveryMyStringWorkflowD, input)
 		})
 
 		t.Run("MyStringSlice", func(t *testing.T) {
 			input := []MyString{"a", "b"}
-			testAllSerializationPaths(t, executor, recoveryMyStringSliceWorkflowD, input, "recovery-mystring-slice-wf")
+			testAllSerializationPaths(t, executor, recoveryMyStringSliceWorkflowD, input)
 		})
 
 		t.Run("StringMyIntMap", func(t *testing.T) {
 			input := map[string]MyInt{"k": 9}
-			testAllSerializationPaths(t, executor, recoveryStringMyIntMapWorkflowD, input, "recovery-string-myint-map-wf")
+			testAllSerializationPaths(t, executor, recoveryStringMyIntMapWorkflowD, input)
 		})
 	})
 
 	// Empty struct
 	t.Run("EmptyStruct", func(t *testing.T) {
 		input := struct{}{}
-		testAllSerializationPaths(t, executor, recoveryEmptyStructWorkflowD, input, "recovery-empty-struct-wf")
+		testAllSerializationPaths(t, executor, recoveryEmptyStructWorkflowD, input)
 	})
 
 	// Nested collections
 	t.Run("NestedCollections", func(t *testing.T) {
 		t.Run("SliceOfSlices", func(t *testing.T) {
 			input := IntSliceSlice{{1, 2}, {3, 4, 5}}
-			testAllSerializationPaths(t, executor, recoveryIntSliceSliceWorkflowD, input, "recovery-int-slice-slice-wf")
+			testAllSerializationPaths(t, executor, recoveryIntSliceSliceWorkflowD, input)
 		})
 
 		t.Run("NestedMap", func(t *testing.T) {
@@ -722,7 +739,7 @@ func TestSerializer(t *testing.T) {
 				"outer1": {"inner1": 1, "inner2": 2},
 				"outer2": {"inner3": 3},
 			}
-			testAllSerializationPaths(t, executor, recoveryNestedMapWorkflowD, input, "recovery-nested-map-wf")
+			testAllSerializationPaths(t, executor, recoveryNestedMapWorkflowD, input)
 		})
 	})
 
@@ -733,12 +750,12 @@ func TestSerializer(t *testing.T) {
 			v2 := 20
 			v3 := 30
 			input := []*int{&v1, &v2, &v3}
-			testAllSerializationPaths(t, executor, recoveryIntPtrSliceWorkflowD, input, "recovery-int-ptr-slice-wf")
+			testAllSerializationPaths(t, executor, recoveryIntPtrSliceWorkflowD, input)
 		})
 
 		t.Run("NilSlice", func(t *testing.T) {
 			var input []*int = nil
-			testAllSerializationPaths(t, executor, recoveryIntPtrSliceWorkflowD, input, "recovery-int-ptr-slice-nil-wf")
+			testAllSerializationPaths(t, executor, recoveryIntPtrSliceWorkflowD, input)
 		})
 	})
 
@@ -746,7 +763,7 @@ func TestSerializer(t *testing.T) {
 	t.Run("Any", func(t *testing.T) {
 		// Test with a string value (avoids JSON number type conversion issues)
 		input := any("test-value")
-		testAllSerializationPaths(t, executor, recoveryAnyWorkflowD, input, "recovery-any-string-wf")
+		testAllSerializationPaths(t, executor, recoveryAnyWorkflowD, input)
 	})
 
 	// Test error values
@@ -811,7 +828,7 @@ func TestSerializer(t *testing.T) {
 			StringPtrPtr: &strPtrPtr,
 		}
 
-		testSendRecv(t, executor, serializerSenderWorkflowD, serializerReceiverWorkflowD, input, "sender-wf")
+		testSendRecv(t, executor, serializerSenderWorkflowD, serializerReceiverWorkflowD, input)
 	})
 
 	// Test SetEvent/GetEvent with non-basic types
@@ -837,7 +854,7 @@ func TestSerializer(t *testing.T) {
 			StringPtrPtr: &strPtrPtr,
 		}
 
-		testSetGetEvent(t, executor, serializerSetEventWorkflowD, serializerGetEventWorkflowD, input, "setevent-wf", "getevent-wf")
+		testSetGetEvent(t, executor, serializerSetEventWorkflowD, serializerGetEventWorkflowD, input)
 	})
 
 	// Test typed Send/Recv and SetEvent/GetEvent with various types
@@ -845,23 +862,23 @@ func TestSerializer(t *testing.T) {
 		// Test int (scalar type)
 		t.Run("Int", func(t *testing.T) {
 			input := 42
-			testSendRecv(t, executor, serializerIntSenderWorkflowD, serializerIntReceiverWorkflowD, input, "typed-int-sender-wf")
-			testSetGetEvent(t, executor, serializerIntSetEventWorkflowD, serializerIntGetEventWorkflowD, input, "typed-int-setevent-wf", "typed-int-getevent-wf")
+			testSendRecv(t, executor, serializerIntSenderWorkflowD, serializerIntReceiverWorkflowD, input)
+			testSetGetEvent(t, executor, serializerIntSetEventWorkflowD, serializerIntGetEventWorkflowD, input)
 		})
 
 		// Test MyInt (user defined type)
 		t.Run("MyInt", func(t *testing.T) {
 			input := MyInt(73)
-			testSendRecv(t, executor, serializerMyIntSenderWorkflowD, serializerMyIntReceiverWorkflowD, input, "typed-myint-sender-wf")
-			testSetGetEvent(t, executor, serializerMyIntSetEventWorkflowD, serializerMyIntGetEventWorkflowD, input, "typed-myint-setevent-wf", "typed-myint-getevent-wf")
+			testSendRecv(t, executor, serializerMyIntSenderWorkflowD, serializerMyIntReceiverWorkflowD, input)
+			testSetGetEvent(t, executor, serializerMyIntSetEventWorkflowD, serializerMyIntGetEventWorkflowD, input)
 		})
 
 		// Test *int (pointer type, set)
 		t.Run("IntPtrSet", func(t *testing.T) {
 			v := 99
 			input := &v
-			testSendRecv(t, executor, serializerIntPtrSenderWorkflowD, serializerIntPtrReceiverWorkflowD, input, "typed-intptr-set-sender-wf")
-			testSetGetEvent(t, executor, serializerIntPtrSetEventWorkflowD, serializerIntPtrGetEventWorkflowD, input, "typed-intptr-set-setevent-wf", "typed-intptr-set-getevent-wf")
+			testSendRecv(t, executor, serializerIntPtrSenderWorkflowD, serializerIntPtrReceiverWorkflowD, input)
+			testSetGetEvent(t, executor, serializerIntPtrSetEventWorkflowD, serializerIntPtrGetEventWorkflowD, input)
 		})
 	})
 
@@ -886,7 +903,7 @@ func TestSerializer(t *testing.T) {
 			StringPtrPtr: &strPtrPtr,
 		}
 
-		handle, err := queuedSerializerWorkflow(executor, input, WithWorkflowID("serializer-queued-wf"))
+		handle, err := queuedSerializerWorkflow(executor, input)
 		require.NoError(t, err, "failed to start queued workflow")
 
 		// Get result from the handle
@@ -902,14 +919,14 @@ func TestSerializer(t *testing.T) {
 			Data:     TestData{Message: "streamed", Value: 222},
 			Metadata: map[string]string{"stream": "json"},
 		}
-		handle, err := serializerStreamWorkflowD(executor, input, WithWorkflowID("json-stream-wf"))
+		handle, err := serializerStreamWorkflowD(executor, input)
 		require.NoError(t, err)
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[TestWorkflowData](executor, "json-stream-wf", "test-stream")
+		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowID(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
@@ -1035,27 +1052,27 @@ func TestGobSerializer(t *testing.T) {
 			},
 			NestedMap: map[string]MyInt{"k": MyInt(100)},
 		}
-		testAllSerializationPaths(t, executor, gobRecoveryStructWorkflowD, input, "gob-struct-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryStructWorkflowD, input)
 	})
 
 	t.Run("Int", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryIntWorkflowD, 42, "gob-int-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryIntWorkflowD, 42)
 	})
 
 	t.Run("String", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryStringWorkflowD, "hello gob", "gob-string-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryStringWorkflowD, "hello gob")
 	})
 
 	t.Run("IntSlice", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryIntSliceWorkflowD, []int{1, 2, 3}, "gob-int-slice-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryIntSliceWorkflowD, []int{1, 2, 3})
 	})
 
 	t.Run("Map", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryMapWorkflowD, map[string]int{"x": 1, "y": 2}, "gob-map-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryMapWorkflowD, map[string]int{"x": 1, "y": 2})
 	})
 
 	t.Run("MyInt", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryMyIntWorkflowD, MyInt(7), "gob-myint-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryMyIntWorkflowD, MyInt(7))
 	})
 
 	// Test gob-only type: uses GobEncoder/GobDecoder with unexported fields.
@@ -1063,7 +1080,7 @@ func TestGobSerializer(t *testing.T) {
 	// because recovery involves step output re-encoding which differs for GobOnly types.
 	t.Run("GobOnlyType", func(t *testing.T) {
 		input := GobOnlyType{real: 3.14, imag: 2.71, tag: "complex-value"}
-		handle, err := gobGobOnlyWorkflowD(executor, input, WithWorkflowID("gob-only-type-wf"))
+		handle, err := gobGobOnlyWorkflowD(executor, input)
 		require.NoError(t, err)
 
 		result, err := handle.GetResult()
@@ -1071,7 +1088,7 @@ func TestGobSerializer(t *testing.T) {
 		assert.Equal(t, input, result, "gob-only type should roundtrip correctly")
 
 		// Verify RetrieveWorkflow also works (reads from DB, decodes with gob)
-		h2, err := RetrieveWorkflow[GobOnlyType](executor, "gob-only-type-wf")
+		h2, err := RetrieveWorkflow[GobOnlyType](executor, handle.GetWorkflowID())
 		require.NoError(t, err)
 		result2, err := h2.GetResult()
 		require.NoError(t, err)
@@ -1084,7 +1101,7 @@ func TestGobSerializer(t *testing.T) {
 			Data:     TestData{Message: "nested", Value: 200},
 			Metadata: map[string]string{"comm": "gob"},
 		}
-		testSendRecv(t, executor, gobSenderWorkflowD, gobReceiverWorkflowD, input, "gob-sender-wf")
+		testSendRecv(t, executor, gobSenderWorkflowD, gobReceiverWorkflowD, input)
 	})
 
 	t.Run("SetGetEvent", func(t *testing.T) {
@@ -1093,19 +1110,19 @@ func TestGobSerializer(t *testing.T) {
 			Data:     TestData{Message: "event nested", Value: 333},
 			Metadata: map[string]string{"type": "gob-event"},
 		}
-		testSetGetEvent(t, executor, gobSetEventWorkflowD, gobGetEventWorkflowD, input, "gob-setevent-wf", "gob-getevent-wf")
+		testSetGetEvent(t, executor, gobSetEventWorkflowD, gobGetEventWorkflowD, input)
 	})
 
 	// Test gob-only type through Send/Recv
 	t.Run("GobOnlySendRecv", func(t *testing.T) {
 		input := GobOnlyType{real: 1.5, imag: 2.5, tag: "sendrecv"}
-		testSendRecv(t, executor, gobGobOnlySenderWorkflowD, gobGobOnlyReceiverWorkflowD, input, "gob-only-sender-wf")
+		testSendRecv(t, executor, gobGobOnlySenderWorkflowD, gobGobOnlyReceiverWorkflowD, input)
 	})
 
 	// Test gob-only type through SetEvent/GetEvent
 	t.Run("GobOnlySetGetEvent", func(t *testing.T) {
 		input := GobOnlyType{real: 9.8, imag: 6.7, tag: "event"}
-		testSetGetEvent(t, executor, gobGobOnlySetEventWorkflowD, gobGobOnlyGetEventWorkflowD, input, "gob-only-setevent-wf", "gob-only-getevent-wf")
+		testSetGetEvent(t, executor, gobGobOnlySetEventWorkflowD, gobGobOnlyGetEventWorkflowD, input)
 	})
 
 	// Test WriteStream/ReadStream with struct
@@ -1115,14 +1132,14 @@ func TestGobSerializer(t *testing.T) {
 			Data:     TestData{Message: "streamed", Value: 555},
 			Metadata: map[string]string{"stream": "gob"},
 		}
-		handle, err := gobStreamWorkflowD(executor, input, WithWorkflowID("gob-stream-wf"))
+		handle, err := gobStreamWorkflowD(executor, input)
 		require.NoError(t, err)
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[TestWorkflowData](executor, "gob-stream-wf", "test-stream")
+		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowID(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
@@ -1132,14 +1149,14 @@ func TestGobSerializer(t *testing.T) {
 	// Test WriteStream/ReadStream with gob-only type
 	t.Run("GobOnlyWriteReadStream", func(t *testing.T) {
 		input := GobOnlyType{real: 7.7, imag: 8.8, tag: "streamed"}
-		handle, err := gobGobOnlyStreamWorkflowD(executor, input, WithWorkflowID("gob-only-stream-wf"))
+		handle, err := gobGobOnlyStreamWorkflowD(executor, input)
 		require.NoError(t, err)
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[GobOnlyType](executor, "gob-only-stream-wf", "test-stream")
+		values, closed, err := ReadStream[GobOnlyType](executor, handle.GetWorkflowID(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
@@ -1153,7 +1170,7 @@ func TestGobSerializer(t *testing.T) {
 			Data:     TestData{Message: "queued", Value: 888},
 			Metadata: map[string]string{"type": "gob-queued"},
 		}
-		handle, err := queuedGobWorkflow(executor, input, WithWorkflowID("gob-queued-wf"))
+		handle, err := queuedGobWorkflow(executor, input)
 		require.NoError(t, err)
 
 		result, err := handle.GetResult()
@@ -1163,7 +1180,7 @@ func TestGobSerializer(t *testing.T) {
 
 	// Test recovery with gob-only type
 	t.Run("GobOnlyRecovery", func(t *testing.T) {
-		testAllSerializationPaths(t, executor, gobRecoveryGobOnlyWorkflowD, GobOnlyType{real: 5.5, imag: 6.6, tag: "recovered"}, "gob-only-recovery-wf")
+		testAllSerializationPaths(t, executor, gobRecoveryGobOnlyWorkflowD, GobOnlyType{real: 5.5, imag: 6.6, tag: "recovered"})
 	})
 }
 
@@ -1528,13 +1545,11 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	// workflow Recvs it and gets the correct value back. The serialization recorded in the
 	// receiver's Recv step output reflects what the sender used.
 	t.Run("WithPortableSend", func(t *testing.T) {
-		receiverID := "portable-op-send-receiver-" + t.Name()
-		senderID := "portable-op-send-sender-" + t.Name()
-
-		receiverHandle, err := portableSendReceiverWfD(executor, "", WithWorkflowID(receiverID))
+		receiverHandle, err := portableSendReceiverWfD(executor, "")
 		require.NoError(t, err)
+		receiverID := receiverHandle.GetWorkflowID()
 
-		_, err = portableSendSenderWfD(executor, receiverID, WithWorkflowID(senderID))
+		_, err = portableSendSenderWfD(executor, receiverID)
 		require.NoError(t, err)
 
 		result, err := receiverHandle.GetResult()
@@ -1548,17 +1563,15 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	// WithPortableSetEvent: a standard workflow sets an event with portable serialization;
 	// a standard GetEvent reads it back correctly.
 	t.Run("WithPortableSetEvent", func(t *testing.T) {
-		setterID := "portable-op-setter-" + t.Name()
-		getterID := "portable-op-getter-" + t.Name()
-
-		setHandle, err := portableSetterWfD(executor, "", WithWorkflowID(setterID))
+		setHandle, err := portableSetterWfD(executor, "")
 		require.NoError(t, err)
+		setterID := setHandle.GetWorkflowID()
 		_, err = setHandle.GetResult()
 		require.NoError(t, err)
 
 		assert.Equal(t, PortableSerializerName, eventSerialization(t, setterID, "evt-key"))
 
-		getHandle, err := portableGetterWfD(executor, setterID, WithWorkflowID(getterID))
+		getHandle, err := portableGetterWfD(executor, setterID)
 		require.NoError(t, err)
 		result, err := getHandle.GetResult()
 		require.NoError(t, err)
@@ -1568,10 +1581,9 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	// WithPortableWriteStream: a standard workflow writes with portable serialization;
 	// ReadStream reads it back correctly.
 	t.Run("WithPortableWriteStream", func(t *testing.T) {
-		wfID := "portable-op-writer-" + t.Name()
-
-		handle, err := portableWriterWfD(executor, "", WithWorkflowID(wfID))
+		handle, err := portableWriterWfD(executor, "")
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 		_, err = handle.GetResult()
 		require.NoError(t, err)
 
@@ -1702,10 +1714,10 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// 1. Normal struct input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("NormalInputPortableMode", func(t *testing.T) {
-		workflowID := "direct-portable-normal-" + t.Name()
 		handle, err := portableEchoWfD(executor, expectedInput,
-			WithWorkflowID(workflowID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		workflowID := handle.GetWorkflowID()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
@@ -1740,14 +1752,14 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// 2. PortableWorkflowArgs envelope input → WithPortableWorkflow → run, verify, recover.
 	t.Run("EnvelopeInputPortableMode", func(t *testing.T) {
-		workflowID := "direct-portable-envelope-" + t.Name()
 		envelopeInput := PortableWorkflowArgs{
 			PositionalArgs: []any{expectedInput, "extra", 42},
 			NamedArgs:      map[string]any{"lang": "go", "debug": false},
 		}
 		handle, err := portableEnvelopeWfD(executor, envelopeInput,
-			WithWorkflowID(workflowID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		workflowID := handle.GetWorkflowID()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
@@ -1782,10 +1794,10 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// 3. Primitive int input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("PrimitiveIntInputPortableMode", func(t *testing.T) {
-		workflowID := "direct-portable-int-" + t.Name()
 		handle, err := portableIntEchoWfD(executor, 42,
-			WithWorkflowID(workflowID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		workflowID := handle.GetWorkflowID()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
@@ -1819,10 +1831,10 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	// 4. Primitive string input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("PrimitiveStringInputPortableMode", func(t *testing.T) {
-		workflowID := "direct-portable-str-" + t.Name()
 		handle, err := portableStringEchoWfD(executor, "hello-portable",
-			WithWorkflowID(workflowID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		workflowID := handle.GetWorkflowID()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
@@ -1858,10 +1870,10 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	// reset to PENDING. On recovery every step is replayed from stored results using
 	// the serialization column in operation_outputs — NOT re-executed.
 	t.Run("PartialRecoveryFromStoredSteps", func(t *testing.T) {
-		workflowID := "partial-recovery-" + t.Name()
 		handle, err := multiStepWfD(executor, expectedInput,
-			WithWorkflowID(workflowID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		workflowID := handle.GetWorkflowID()
 		firstResult, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, expectedInput, firstResult.StepOut)
@@ -1968,10 +1980,10 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 
 	t.Run("PortableWorkflowErrorFields", func(t *testing.T) {
-		wfID := "portable-err-fields"
 		handle, err := portableErrWfD(executor, "test-value",
-			WithWorkflowID(wfID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
@@ -2004,10 +2016,10 @@ func TestPortableWorkflowError(t *testing.T) {
 	})
 
 	t.Run("PlainErrorBestEffortConversion", func(t *testing.T) {
-		wfID := "portable-err-plain"
 		handle, err := plainErrWfD(executor, "oops",
-			WithWorkflowID(wfID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
@@ -2035,10 +2047,10 @@ func TestPortableWorkflowError(t *testing.T) {
 	})
 
 	t.Run("StepPortableWorkflowError", func(t *testing.T) {
-		wfID := "portable-step-err"
 		handle, err := portableStepErrWfD(executor, "step-input",
-			WithWorkflowID(wfID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
@@ -2061,10 +2073,10 @@ func TestPortableWorkflowError(t *testing.T) {
 	})
 
 	t.Run("ListWorkflowsAndGetWorkflowSteps", func(t *testing.T) {
-		wfID := "portable-list-wf"
 		handle, err := portableErrWfD(executor, "list-test",
-			WithWorkflowID(wfID), WithPortableWorkflow())
+			WithPortableWorkflow())
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 

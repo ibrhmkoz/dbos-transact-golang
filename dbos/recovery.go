@@ -44,7 +44,7 @@ func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]*Workflo
 		// Auth identity is re-attached so child workflows spawned during
 		// recovery inherit the same identity as the original run.
 		opts := []WorkflowOption{
-			WithWorkflowID(workflow.ID),
+			withWorkflowID(workflow.ID),
 			withIsRecovery(),
 			WithAuthenticatedUser(workflow.AuthenticatedUser),
 			WithAssumedRole(workflow.AssumedRole),

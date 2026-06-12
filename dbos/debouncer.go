@@ -117,7 +117,7 @@ func internalDebouncerWF[P any, R any](ctx DBOSContext, input debouncerInput[P])
 	// Reconstruct WorkflowOptions from serializable format
 	workflowOpts := []WorkflowOption{}
 	if input.WorkflowOptions.WorkflowID != "" {
-		workflowOpts = append(workflowOpts, WithWorkflowID(input.WorkflowOptions.WorkflowID))
+		workflowOpts = append(workflowOpts, withWorkflowID(input.WorkflowOptions.WorkflowID))
 	}
 	if input.WorkflowOptions.ApplicationVersion != "" {
 		workflowOpts = append(workflowOpts, WithApplicationVersion(input.WorkflowOptions.ApplicationVersion))

@@ -312,7 +312,7 @@ func registerScheduledWorkflow(ctx DBOSContext, workflowFQN, customName string, 
 			return nil, fmt.Errorf("failed to encode scheduled workflow input: %w", err)
 		}
 		opts := []WorkflowOption{
-			WithWorkflowID(wfID),
+			withWorkflowID(wfID),
 			withWorkflowName(workflowFQN),
 			withAlreadyEncodedInput(),
 		}
@@ -486,7 +486,7 @@ func NewWorkflow[P any, R any](ctx DBOSContext, fn WorkflowFn[P, R], opts ...Wor
 			}
 
 			for {
-				handle, err := ctx.RunWorkflow(internalWF, dInput, WithWorkflowID(internalWorkflowID), WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
+				handle, err := ctx.RunWorkflow(internalWF, dInput, withWorkflowID(internalWorkflowID), WithDeduplicationID(key), withWorkflowName(internalDebouncerFQN))
 				if err != nil {
 					return nil, err
 				}
@@ -715,8 +715,12 @@ type workflowOptions struct {
 // registration time (NewWorkflow) and at invocation time (RunWorkflow).
 type WorkflowOption func(*workflowOptions)
 
-// WithWorkflowID sets a custom workflow ID instead of generating one automatically.
-func WithWorkflowID(id string) WorkflowOption {
+// withWorkflowID sets a custom workflow ID instead of generating one
+// automatically. Internal only: workflow IDs are runtime-assigned. To make a
+// child workflow invocation idempotent, generate a durable key with UUID and
+// pass it via WithDeduplicationID — the invocation then behaves like any other
+// retryable step.
+func withWorkflowID(id string) WorkflowOption {
 	return func(p *workflowOptions) {
 		p.WorkflowID = id
 	}

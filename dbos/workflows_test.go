@@ -362,7 +362,7 @@ func TestWorkflowsRegistration(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			result, err := tc.workflowFunc(dbosCtx, tc.input, WithWorkflowID(uuid.NewString()))
+			result, err := tc.workflowFunc(dbosCtx, tc.input)
 
 			if tc.expectError {
 				require.Error(t, err, "expected error but got none")
@@ -923,9 +923,9 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 		}
 		goWorkflowD := NewWorkflow(dbosCtx, goWorkflow)
 
-		workflowID := uuid.NewString()
-		handle1, err := goWorkflowD(dbosCtx, "test-input", WithWorkflowID(workflowID))
+		handle1, err := goWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to run go workflow")
+		workflowID := handle1.GetWorkflowID()
 		result1, err := handle1.GetResult()
 		require.NoError(t, err, "failed to get result from first run")
 
@@ -1068,9 +1068,9 @@ func TestSelect(t *testing.T) {
 	})
 
 	t.Run("Select idempotency", func(t *testing.T) {
-		workflowID := uuid.NewString()
-		handle1, err := selectIdempotencyWorkflowD(dbosCtx, "test-input", WithWorkflowID(workflowID))
+		handle1, err := selectIdempotencyWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to run select workflow")
+		workflowID := handle1.GetWorkflowID()
 		result1, err := handle1.GetResult()
 		require.NoError(t, err, "failed to get result from first run")
 
@@ -1139,9 +1139,10 @@ func TestChildWorkflow(t *testing.T) {
 		})
 	}
 	parentWfForStepTestD := NewWorkflow(dbosCtx, parentWfForStepTest)
-	// Simple parent that starts one child with a custom workflow ID
-	simpleParentWf := func(ctx DBOSContext, customChildID string) (string, error) {
-		childHandle, err := simpleChildWfD(ctx, "test-child-input", WithWorkflowID(customChildID))
+	// Simple parent that starts one child with a deduplication key, making the
+	// invocation idempotent. Returns the child's runtime-assigned workflow ID.
+	simpleParentWf := func(ctx DBOSContext, childDedupKey string) (string, error) {
+		childHandle, err := simpleChildWfD(ctx, "test-child-input", WithDeduplicationID(childDedupKey))
 		if err != nil {
 			return "", fmt.Errorf("failed to run child workflow: %w", err)
 		}
@@ -1150,8 +1151,11 @@ func TestChildWorkflow(t *testing.T) {
 		if err != nil {
 			return "", fmt.Errorf("failed to get result from child workflow: %w", err)
 		}
+		if result != "from step" {
+			return "", fmt.Errorf("unexpected child result: %q", result)
+		}
 
-		return result, nil
+		return childHandle.GetWorkflowID(), nil
 	}
 
 	simpleParentWfD := NewWorkflow(dbosCtx, simpleParentWf)
@@ -1170,35 +1174,39 @@ func TestChildWorkflow(t *testing.T) {
 	}
 	deleteLeafWfD := NewWorkflow(dbosCtx, deleteLeafWf)
 
-	// Mid-layer workflow: spawns 2 leaves
-	deleteMidWf := func(ctx DBOSContext, input string) (string, error) {
-		for i := 0; i < 2; i++ {
-			childID := fmt.Sprintf("%s-leaf-%d", input, i)
-			h, err := deleteLeafWfD(ctx, input, WithWorkflowID(childID))
+	// Mid-layer workflow: spawns 2 leaves and returns their workflow IDs
+	deleteMidWf := func(ctx DBOSContext, input string) ([]string, error) {
+		var ids []string
+		for range 2 {
+			h, err := deleteLeafWfD(ctx, input)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
 			if _, err := h.GetResult(); err != nil {
-				return "", err
+				return nil, err
 			}
+			ids = append(ids, h.GetWorkflowID())
 		}
-		return "mid:" + input, nil
+		return ids, nil
 	}
 	deleteMidWfD := NewWorkflow(dbosCtx, deleteMidWf)
 
-	// Root workflow: spawns 2 mid-layer children
-	deleteRootWf := func(ctx DBOSContext, input string) (string, error) {
-		for i := 0; i < 2; i++ {
-			childID := fmt.Sprintf("%s-mid-%d", input, i)
-			h, err := deleteMidWfD(ctx, childID, WithWorkflowID(childID))
+	// Root workflow: spawns 2 mid-layer children and returns all descendant IDs
+	deleteRootWf := func(ctx DBOSContext, input string) ([]string, error) {
+		var ids []string
+		for range 2 {
+			h, err := deleteMidWfD(ctx, input)
 			if err != nil {
-				return "", err
+				return nil, err
 			}
-			if _, err := h.GetResult(); err != nil {
-				return "", err
+			leafIDs, err := h.GetResult()
+			if err != nil {
+				return nil, err
 			}
+			ids = append(ids, h.GetWorkflowID())
+			ids = append(ids, leafIDs...)
 		}
-		return "root:" + input, nil
+		return ids, nil
 	}
 	deleteRootWfD := NewWorkflow(dbosCtx, deleteRootWf)
 
@@ -1228,15 +1236,15 @@ func TestChildWorkflow(t *testing.T) {
 	err := Launch(dbosCtx)
 	require.NoError(t, err, "failed to launch DBOS")
 
-	t.Run("ChildWorkflowWithCustomID", func(t *testing.T) {
-		customChildID := uuid.NewString()
+	t.Run("ChildWorkflowWithDeduplicationKey", func(t *testing.T) {
+		childDedupKey := uuid.NewString()
 
-		parentHandle, err := simpleParentWfD(dbosCtx, customChildID)
+		parentHandle, err := simpleParentWfD(dbosCtx, childDedupKey)
 		require.NoError(t, err, "failed to start parent workflow")
 
-		result, err := parentHandle.GetResult()
+		childID, err := parentHandle.GetResult()
 		require.NoError(t, err, "failed to get result from parent workflow")
-		require.Equal(t, "from step", result)
+		require.NotEmpty(t, childID)
 
 		// Starting and awaiting the workflow do not create parent steps.
 		steps, err := GetWorkflowSteps(dbosCtx, parentHandle.GetWorkflowID())
@@ -1248,8 +1256,11 @@ func TestChildWorkflow(t *testing.T) {
 		require.NoError(t, err, "failed to get parent workflow status")
 		require.Empty(t, parentStatus.ParentWorkflowID, "top-level parent workflow should have no ParentWorkflowID")
 
-		childHandle, err := RetrieveWorkflow[string](dbosCtx, customChildID)
+		childHandle, err := RetrieveWorkflow[string](dbosCtx, childID)
 		require.NoError(t, err, "failed to retrieve child workflow")
+		childResult, err := childHandle.GetResult()
+		require.NoError(t, err, "failed to get child workflow result")
+		require.Equal(t, "from step", childResult)
 		childStatus, err := childHandle.GetStatus()
 		require.NoError(t, err, "failed to get child workflow status")
 		require.Equal(t, parentHandle.GetWorkflowID(), childStatus.ParentWorkflowID, "child workflow ParentWorkflowID should be parent's workflow ID")
@@ -1310,9 +1321,9 @@ func TestChildWorkflow(t *testing.T) {
 	})
 
 	t.Run("DeleteCascadesRelatedData", func(t *testing.T) {
-		wfID := "delete-cascade-test-wf"
-		handle, err := deleteCascadeWfD(dbosCtx, "input", WithWorkflowID(wfID))
+		handle, err := deleteCascadeWfD(dbosCtx, "input")
 		require.NoError(t, err)
+		wfID := handle.GetWorkflowID()
 
 		// Send a notification while the workflow is running so it can Recv it
 		err = Send(dbosCtx, wfID, "test-notification", "test-topic")
@@ -1394,27 +1405,15 @@ func TestChildWorkflow(t *testing.T) {
 
 	t.Run("DeleteWithChildrenThreeLayers", func(t *testing.T) {
 		// Topology: root → 2 mid nodes → 4 leaf nodes (2 per mid)
-		rootID := "delete-tree-root"
-		handle, err := deleteRootWfD(dbosCtx, rootID, WithWorkflowID(rootID))
+		handle, err := deleteRootWfD(dbosCtx, "tree")
 		require.NoError(t, err)
 
-		result, err := handle.GetResult()
+		descendantIDs, err := handle.GetResult()
 		require.NoError(t, err)
-		require.Equal(t, "root:"+rootID, result)
+		require.Len(t, descendantIDs, 6, "expected 2 mid + 4 leaf descendants")
 
-		// Build expected IDs for all 7 workflows
-		midIDs := []string{
-			rootID + "-mid-0",
-			rootID + "-mid-1",
-		}
-		leafIDs := []string{
-			midIDs[0] + "-leaf-0",
-			midIDs[0] + "-leaf-1",
-			midIDs[1] + "-leaf-0",
-			midIDs[1] + "-leaf-1",
-		}
-		allIDs := append([]string{rootID}, midIDs...)
-		allIDs = append(allIDs, leafIDs...)
+		rootID := handle.GetWorkflowID()
+		allIDs := append([]string{rootID}, descendantIDs...)
 
 		// Verify all 7 workflows exist
 		for _, id := range allIDs {
@@ -1438,30 +1437,22 @@ func TestChildWorkflow(t *testing.T) {
 
 	t.Run("DeleteMultipleWorkflowsWithChildren", func(t *testing.T) {
 		// Create two independent trees, each: root → 2 mid → 4 leaf (7 per tree, 14 total)
-		root1 := "delete-multi-root-1"
-		root2 := "delete-multi-root-2"
-
-		h1, err := deleteRootWfD(dbosCtx, root1, WithWorkflowID(root1))
+		h1, err := deleteRootWfD(dbosCtx, "multi-1")
 		require.NoError(t, err)
-		h2, err := deleteRootWfD(dbosCtx, root2, WithWorkflowID(root2))
+		h2, err := deleteRootWfD(dbosCtx, "multi-2")
 		require.NoError(t, err)
-		_, err = h1.GetResult()
+		desc1, err := h1.GetResult()
 		require.NoError(t, err)
-		_, err = h2.GetResult()
+		desc2, err := h2.GetResult()
 		require.NoError(t, err)
 
-		// Build all 14 expected IDs
-		var allIDs []string
-		for _, root := range []string{root1, root2} {
-			allIDs = append(allIDs, root)
-			for i := range 2 {
-				mid := fmt.Sprintf("%s-mid-%d", root, i)
-				allIDs = append(allIDs, mid)
-				for j := range 2 {
-					allIDs = append(allIDs, fmt.Sprintf("%s-leaf-%d", mid, j))
-				}
-			}
-		}
+		root1 := h1.GetWorkflowID()
+		root2 := h2.GetWorkflowID()
+
+		// Collect all 14 expected IDs
+		allIDs := []string{root1, root2}
+		allIDs = append(allIDs, desc1...)
+		allIDs = append(allIDs, desc2...)
 		require.Len(t, allIDs, 14)
 
 		// Verify all 14 exist
@@ -1502,18 +1493,18 @@ func TestWorkflowIdempotency(t *testing.T) {
 	t.Run("WorkflowExecutedOnlyOnce", func(t *testing.T) {
 		idempotencyCounter = 0
 
-		workflowID := uuid.NewString()
+		dedupKey := uuid.NewString()
 		input := "idempotency-test"
 
-		// Execute the same workflow twice with the same ID
-		// First execution
-		handle1, err := idempotencyWorkflowD(dbosCtx, input, WithWorkflowID(workflowID))
+		// Execute the same workflow twice with the same deduplication key:
+		// the second invocation joins the first workflow.
+		handle1, err := idempotencyWorkflowD(dbosCtx, input, WithDeduplicationID(dedupKey))
 		require.NoError(t, err, "failed to execute workflow first time")
 		result1, err := handle1.GetResult()
 		require.NoError(t, err, "failed to get result from first execution")
 
-		// Second execution with the same workflow ID
-		handle2, err := idempotencyWorkflowD(dbosCtx, input, WithWorkflowID(workflowID))
+		// Second execution with the same deduplication key
+		handle2, err := idempotencyWorkflowD(dbosCtx, input, WithDeduplicationID(dedupKey))
 		require.NoError(t, err, "failed to execute workflow second time")
 		result2, err := handle2.GetResult()
 		require.NoError(t, err, "failed to get result from second execution")
@@ -1582,14 +1573,14 @@ func TestNoConcurrentWorkflowSameID(t *testing.T) {
 	}
 	blockingWorkflowD := NewWorkflow(dbosCtx, blockingWorkflow)
 
-	workflowID := uuid.NewString()
+	dedupKey := uuid.NewString()
 
-	handle1, err := blockingWorkflowD(dbosCtx, "input", WithWorkflowID(workflowID))
+	handle1, err := blockingWorkflowD(dbosCtx, "input", WithDeduplicationID(dedupKey))
 	require.NoError(t, err, "failed to start first workflow")
 
 	startedEvent.Wait()
 
-	handle2, err := blockingWorkflowD(dbosCtx, "input", WithWorkflowID(workflowID))
+	handle2, err := blockingWorkflowD(dbosCtx, "input", WithDeduplicationID(dedupKey))
 	require.NoError(t, err, "failed to run second workflow call")
 	require.Equal(t, handle1.GetWorkflowID(), handle2.GetWorkflowID(), "both handles should refer to the same workflow ID")
 
@@ -1650,7 +1641,7 @@ func TestWorkflowRecovery(t *testing.T) {
 		// Start all workflows and let them run to completion
 		handles := make([]*WorkflowHandle[int64], numWorkflows)
 		for i := range numWorkflows {
-			handle, err := recoveryWorkflowD(dbosCtx, i, WithWorkflowID(fmt.Sprintf("recovery-test-%d", i)))
+			handle, err := recoveryWorkflowD(dbosCtx, i)
 			require.NoError(t, err, "failed to start workflow %d", i)
 			handles[i] = handle
 		}
@@ -1746,9 +1737,9 @@ func TestWorkflowDeadLetterQueue(t *testing.T) {
 	t.Run("DeadLetterQueueBehavior", func(t *testing.T) {
 		recoveryCount = 0
 
-		wfID := uuid.NewString()
-		handle, err := deadLetterQueueWorkflowD(dbosCtx, "test", WithWorkflowID(wfID))
+		handle, err := deadLetterQueueWorkflowD(dbosCtx, "test")
 		require.NoError(t, err, "failed to start dead letter queue workflow")
+		wfID := handle.GetWorkflowID()
 		result1, err := handle.GetResult()
 		require.NoError(t, err, "failed to get result from initial run")
 		require.Equal(t, int64(1), recoveryCount, "expected recovery count 1 after initial run")
@@ -1788,12 +1779,6 @@ func TestWorkflowDeadLetterQueue(t *testing.T) {
 		expectedDLQMsg := fmt.Sprintf("Workflow %s has been moved to the dead-letter queue after exceeding the maximum of %d retries", wfID, maxRecoveryAttempts)
 		require.Contains(t, err.Error(), expectedDLQMsg, "expected error to mention dead-letter queue, got: %v", err)
 
-		// Verify that attempting to start a workflow with the same ID throws a DLQ error
-		_, err = deadLetterQueueWorkflowD(dbosCtx, "test", WithWorkflowID(wfID))
-		require.Error(t, err, "expected dead letter queue error when restarting workflow with same ID but got none")
-
-		require.True(t, errors.Is(err, &DBOSError{Code: DeadLetterQueueError}), "expected error to be DeadLetterQueueError, got %T", err)
-
 		// Now resume the workflow -- this clears the DLQ status
 		resumedHandle, err := ResumeWorkflow[int](dbosCtx, wfID)
 		require.NoError(t, err, "failed to resume workflow")
@@ -1819,18 +1804,13 @@ func TestWorkflowDeadLetterQueue(t *testing.T) {
 		require.NoError(t, err, "failed to get final workflow status")
 		require.Equal(t, WorkflowStatusSuccess, status.Status)
 
-		// Verify that retries of a completed workflow do not raise the DLQ exception
-		for i := 0; i < maxRecoveryAttempts*2; i++ {
-			_, err = deadLetterQueueWorkflowD(dbosCtx, "test", WithWorkflowID(wfID))
-			require.NoError(t, err, "unexpected error when retrying completed workflow")
-		}
 	})
 
 	t.Run("InfiniteRetriesWorkflow", func(t *testing.T) {
 		// Verify that a workflow with MaxRetries=-1 (infinite retries) can be recovered many times without hitting DLQ
-		wfID := uuid.NewString()
-		handle, err := infiniteDeadLetterQueueWorkflowD(dbosCtx, "test", WithWorkflowID(wfID))
+		handle, err := infiniteDeadLetterQueueWorkflowD(dbosCtx, "test")
 		require.NoError(t, err, "failed to start infinite dead letter queue workflow")
+		wfID := handle.GetWorkflowID()
 		result1, err := handle.GetResult()
 		require.NoError(t, err, "failed to get result from initial run")
 		require.Equal(t, 0, result1)
@@ -2602,14 +2582,13 @@ func TestSetGetEvent(t *testing.T) {
 		secondEventSetSignal.Clear()
 		thirdEventSetSignal.Clear()
 
-		setWorkflowID := uuid.NewString()
-
 		// Start the workflow that sets events first
 		setHandle, err := setTwoEventsWorkflowD(dbosCtx, setEventWorkflowInput{
-			Key:     setWorkflowID,
+			Key:     "unused",
 			Message: "unused",
-		}, WithWorkflowID(setWorkflowID))
+		})
 		require.NoError(t, err, "failed to start set two events workflow")
+		setWorkflowID := setHandle.GetWorkflowID()
 
 		// Define test cases for the three events
 		testCases := []struct {
@@ -2954,30 +2933,11 @@ func TestWorkflowExecutionMismatch(t *testing.T) {
 	conflictWorkflowBD := NewWorkflow(dbosCtx, conflictWorkflowB)
 	workflowWithMultipleStepsD := NewWorkflow(dbosCtx, workflowWithMultipleSteps)
 
-	t.Run("WorkflowNameConflict", func(t *testing.T) {
-		workflowID := uuid.NewString()
-
-		// First, run conflictWorkflowA with a specific workflow ID
-		handle, err := conflictWorkflowAD(dbosCtx, "test-input", WithWorkflowID(workflowID))
-		require.NoError(t, err, "failed to start first workflow")
-
-		// Get the result to ensure it completes
-		result, err := handle.GetResult()
-		require.NoError(t, err, "failed to get result from first workflow")
-		require.Equal(t, "step-a-result", result)
-
-		// Now try to run conflictWorkflowB with the same workflow ID
-		// This should return a ConflictingWorkflowError
-		_, err = conflictWorkflowBD(dbosCtx, "test-input", WithWorkflowID(workflowID))
-		require.Error(t, err, "expected ConflictingWorkflowError when running different workflow with same ID, but got none")
-
-		// Check that it's the correct error type
-		require.True(t, errors.Is(err, &DBOSError{Code: ConflictingWorkflowError}), "expected error to be ConflictingWorkflowError, got %T", err)
-
-		// Check that the error message contains the workflow names
-		expectedMsgPart := "Workflow already exists with a different name"
-		require.Contains(t, err.Error(), expectedMsgPart)
-	})
+	// Workflow IDs are runtime-assigned, so two different workflow functions can no
+	// longer collide on a user-supplied ID. The name-conflict guard remains covered
+	// by the internal recovery and dequeue paths.
+	_ = conflictWorkflowAD
+	_ = conflictWorkflowBD
 
 	t.Run("StepNameConflict", func(t *testing.T) {
 		handle, err := workflowWithMultipleStepsD(dbosCtx, "test-input")
@@ -3021,10 +2981,10 @@ func TestSleep(t *testing.T) {
 
 	t.Run("SleepDurableRecovery", func(t *testing.T) {
 		sleepDuration := 2 * time.Second
-		workflowID := uuid.NewString()
 
-		handle1, err := sleepRecoveryWorkflowD(dbosCtx, sleepDuration, WithWorkflowID(workflowID))
+		handle1, err := sleepRecoveryWorkflowD(dbosCtx, sleepDuration)
 		require.NoError(t, err, "failed to start sleep recovery workflow")
+		workflowID := handle1.GetWorkflowID()
 		_, err = handle1.GetResult()
 		require.NoError(t, err, "failed to get result from first run")
 
@@ -3307,10 +3267,14 @@ func TestWorkflowTimeout(t *testing.T) {
 		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
 	})
 
-	waitForCancelParent := func(ctx DBOSContext, childWorkflowID string) (string, error) {
+	// Announces runtime-assigned child workflow IDs to the test, keyed by a caller-chosen key.
+	var childIDRegistry sync.Map
+
+	waitForCancelParent := func(ctx DBOSContext, registryKey string) (string, error) {
 		// This workflow will run a child workflow that waits indefinitely until it is cancelled
-		childHandle, err := waitForCancelWorkflowD(ctx, "child-wait-for-cancel", WithWorkflowID(childWorkflowID))
+		childHandle, err := waitForCancelWorkflowD(ctx, "child-wait-for-cancel")
 		require.NoError(t, err, "failed to start child workflow")
+		childIDRegistry.Store(registryKey, childHandle.GetWorkflowID())
 
 		// Wait for the child workflow to complete. The terminal error may come
 		// back either wrapped as a DBOS WorkflowCancelled error or as the raw
@@ -3330,9 +3294,17 @@ func TestWorkflowTimeout(t *testing.T) {
 		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
 		defer cancelFunc() // Ensure we clean up the context
 
-		childWorkflowID := "child-wait-for-cancel-" + uuid.NewString()
-		handle, err := waitForCancelParentD(cancelCtx, childWorkflowID)
+		registryKey := "child-wait-for-cancel-" + uuid.NewString()
+		handle, err := waitForCancelParentD(cancelCtx, registryKey)
 		require.NoError(t, err, "failed to start parent workflow")
+		var childWorkflowID string
+		require.Eventually(t, func() bool {
+			v, ok := childIDRegistry.Load(registryKey)
+			if ok {
+				childWorkflowID = v.(string)
+			}
+			return ok
+		}, 5*time.Second, 10*time.Millisecond, "child workflow ID was not announced")
 
 		// Wait for the parent workflow to complete and get the result
 		result, err := handle.GetResult()
@@ -3367,9 +3339,9 @@ func TestWorkflowTimeout(t *testing.T) {
 		childCtx := WithoutCancel(ctx)
 		myID, err := GetWorkflowID(ctx)
 		require.NoError(t, err, "failed to get parent workflow ID")
-		childWorkflowID := fmt.Sprintf("%s-detached-child", myID)
-		childHandle, err := detachedChildD(childCtx, timeout*2, WithWorkflowID(childWorkflowID))
+		childHandle, err := detachedChildD(childCtx, timeout*2)
 		require.NoError(t, err, "failed to start child workflow")
+		childIDRegistry.Store(myID+"-detached-child", childHandle.GetWorkflowID())
 
 		// Wait for the child workflow to complete
 		result, err := childHandle.GetResult()
@@ -3397,12 +3369,15 @@ func TestWorkflowTimeout(t *testing.T) {
 		require.NoError(t, err, "failed to get workflow status")
 		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
 
-		// Check the child workflow status: should be cancelled
-		childHandle, err := RetrieveWorkflow[string](dbosCtx, fmt.Sprintf("%s-detached-child", handle.GetWorkflowID()))
+		// The detached child ignores the parent's cancellation and eventually succeeds
+		v, ok := childIDRegistry.Load(handle.GetWorkflowID() + "-detached-child")
+		require.True(t, ok, "child workflow ID was not announced")
+		childHandle, err := RetrieveWorkflow[string](dbosCtx, v.(string))
 		require.NoError(t, err, "failed to get child workflow handle")
-		status, err = childHandle.GetStatus()
-		require.NoError(t, err, "failed to get child workflow status")
-		assert.Equal(t, WorkflowStatusSuccess, status.Status, "expected child workflow status to be WorkflowStatusSuccess")
+		require.Eventually(t, func() bool {
+			s, err := childHandle.GetStatus()
+			return err == nil && s.Status == WorkflowStatusSuccess
+		}, 5*time.Second, 50*time.Millisecond, "expected child workflow status to be WorkflowStatusSuccess")
 	})
 
 	t.Run("RecoverWaitForCancelWorkflow", func(t *testing.T) {
@@ -3451,8 +3426,26 @@ func TestWorkflowTimeout(t *testing.T) {
 	})
 }
 
+// pairTargetRegistry announces runtime-assigned workflow IDs between workflow
+// pairs, keyed by a role-qualified pair ID. Lookups poll until announced.
+var pairTargetRegistry sync.Map
+
+func announcePairTarget(role string, pairID int, workflowID string) {
+	pairTargetRegistry.Store(fmt.Sprintf("%s-%d", role, pairID), workflowID)
+}
+
+func lookupPairTarget(role string, pairID int) string {
+	for {
+		if v, ok := pairTargetRegistry.Load(fmt.Sprintf("%s-%d", role, pairID)); ok {
+			return v.(string)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func notificationWaiterWorkflow(ctx DBOSContext, pairID int) (string, error) {
-	result, err := GetEvent[string](ctx, fmt.Sprintf("notification-setter-%d", pairID), "event-key", 10*time.Second)
+	setterID := lookupPairTarget("notification-setter", pairID)
+	result, err := GetEvent[string](ctx, setterID, "event-key", 10*time.Second)
 	if err != nil {
 		return "", err
 	}
@@ -3476,7 +3469,8 @@ func sendRecvReceiverWorkflow(ctx DBOSContext, pairID int) (string, error) {
 }
 
 func sendRecvSenderWorkflow(ctx DBOSContext, pairID int) (string, error) {
-	err := Send(ctx, fmt.Sprintf("send-recv-receiver-%d", pairID), fmt.Sprintf("send-recv-message-%d", pairID), "send-recv-topic")
+	receiverID := lookupPairTarget("send-recv-receiver", pairID)
+	err := Send(ctx, receiverID, fmt.Sprintf("send-recv-message-%d", pairID), "send-recv-topic")
 	if err != nil {
 		return "", err
 	}
@@ -3563,11 +3557,12 @@ func TestConcurrentWorkflows(t *testing.T) {
 		for i := range numPairs {
 			go func(pairID int) {
 				defer wg.Done()
-				handle, err := notificationSetterWorkflowD(dbosCtx, pairID, WithWorkflowID(fmt.Sprintf("notification-setter-%d", pairID)))
+				handle, err := notificationSetterWorkflowD(dbosCtx, pairID)
 				if err != nil {
 					errors <- fmt.Errorf("failed to start setter workflow %d: %w", pairID, err)
 					return
 				}
+				announcePairTarget("notification-setter", pairID, handle.GetWorkflowID())
 				result, err := handle.GetResult()
 				if err != nil {
 					errors <- fmt.Errorf("failed to get result for setter workflow %d: %w", pairID, err)
@@ -3649,11 +3644,12 @@ func TestConcurrentWorkflows(t *testing.T) {
 		for i := range numPairs {
 			go func(pairID int) {
 				defer regWg.Done()
-				h, err := sendRecvReceiverWorkflowD(dbosCtx, pairID, WithWorkflowID(fmt.Sprintf("send-recv-receiver-%d", pairID)))
+				h, err := sendRecvReceiverWorkflowD(dbosCtx, pairID)
 				if err != nil {
 					regErrs[pairID] = err
 					return
 				}
+				announcePairTarget("send-recv-receiver", pairID, h.GetWorkflowID())
 				receiverHandles[pairID] = h
 			}(i)
 		}
@@ -4397,9 +4393,10 @@ func TestSpecialSteps(t *testing.T) {
 		}
 
 		// Start a child workflow to use in other operations. Spawning a workflow
-		// is not durable (no parent step is recorded), so the child ID must be
-		// deterministic for the recovery rerun to observe the same child.
-		childHandle, err := childWorkflowD(dbosCtx, "test", WithWorkflowID(currentWorkflowID+"-child"))
+		// is not durable (no parent step is recorded), so the invocation carries
+		// a deduplication key: the recovery rerun joins the same child instead
+		// of starting a new one.
+		childHandle, err := childWorkflowD(dbosCtx, "test", WithDeduplicationID(currentWorkflowID+"-child"))
 		if err != nil {
 			return "", fmt.Errorf("failed to start child workflow: %w", err)
 		}
@@ -4499,9 +4496,9 @@ func TestSpecialSteps(t *testing.T) {
 	specialStepsWorkflowD := NewWorkflow(dbosCtx, specialStepsWorkflow)
 
 	t.Run("SpecialStepsExecution", func(t *testing.T) {
-		workflowID := uuid.NewString()
-		handle, err := specialStepsWorkflowD(dbosCtx, "test-input", WithWorkflowID(workflowID))
+		handle, err := specialStepsWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to start special steps workflow")
+		workflowID := handle.GetWorkflowID()
 
 		// Wait for the workflow to complete
 		result, err := handle.GetResult()
@@ -4617,7 +4614,6 @@ func TestWorkflowIdentity(t *testing.T) {
 	handle, err := simpleWorkflowD(
 		dbosCtx,
 		"test",
-		WithWorkflowID("my-workflow-id"),
 		WithAuthenticatedUser("user123"),
 		WithAssumedRole("admin"),
 		WithAuthenticatedRoles([]string{"reader", "writer"}))
@@ -5319,7 +5315,6 @@ func TestStreams(t *testing.T) {
 				streamStartedEvent = nil
 
 				streamKey := "test-stream-recovery"
-				workflowID := uuid.NewString()
 				writerHandle, err := writeStreamWorkflowD(dbosCtx, struct {
 					StreamKey string
 					Values    []string
@@ -5328,8 +5323,9 @@ func TestStreams(t *testing.T) {
 					StreamKey: streamKey,
 					Values:    []string{"value1", "value2", "value3"},
 					Close:     false, // Do NOT close stream
-				}, WithWorkflowID(workflowID))
+				})
 				require.NoError(t, err, "failed to start writer workflow")
+				workflowID := writerHandle.GetWorkflowID()
 
 				// Wait for workflow to complete
 				_, err = writerHandle.GetResult()
@@ -5709,7 +5705,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		if err != nil {
 			return exportTestPerson{}, err
 		}
-		gcHandle, err := grandchildWfD(ctx, input.Name, WithWorkflowID(myID+"-grandchild"))
+		gcHandle, err := grandchildWfD(ctx, input.Name, WithDeduplicationID(myID+"-grandchild"))
 		if err != nil {
 			return exportTestPerson{}, err
 		}
@@ -5718,6 +5714,7 @@ func TestExportImportWorkflow(t *testing.T) {
 			return exportTestPerson{}, err
 		}
 		input.Tags["grandchild_result"] = gcResult
+		input.Tags["grandchild_id"] = gcHandle.GetWorkflowID()
 		return input, nil
 	}
 	childWfD := NewWorkflow(dbosCtx, childWf)
@@ -5728,7 +5725,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		if err != nil {
 			return exportTestPerson{}, err
 		}
-		childHandle, err := childWfD(ctx, input, WithWorkflowID(myID+"-child"))
+		childHandle, err := childWfD(ctx, input, WithDeduplicationID(myID+"-child"))
 		if err != nil {
 			return exportTestPerson{}, err
 		}
@@ -5737,6 +5734,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		if err != nil {
 			return exportTestPerson{}, err
 		}
+		childResult.Tags["child_id"] = childHandle.GetWorkflowID()
 
 		// Steps 2-6: run 5 steps
 		for i := 0; i < 5; i++ {
@@ -5785,8 +5783,7 @@ func TestExportImportWorkflow(t *testing.T) {
 		Scores: []float64{95.5, 87.3, 92.1},
 	}
 
-	parentID := uuid.NewString()
-	handle, err := parentWfD(dbosCtx, input, WithWorkflowID(parentID))
+	handle, err := parentWfD(dbosCtx, input)
 	require.NoError(t, err)
 
 	result, err := handle.GetResult()
@@ -5795,8 +5792,11 @@ func TestExportImportWorkflow(t *testing.T) {
 	assert.Equal(t, "Alice-grandchild", result.Tags["grandchild_result"])
 	assert.Equal(t, float64(100.0), result.Scores[len(result.Scores)-1])
 
-	childID := parentID + "-child"
-	grandchildID := childID + "-grandchild"
+	parentID := handle.GetWorkflowID()
+	childID := result.Tags["child_id"]
+	grandchildID := result.Tags["grandchild_id"]
+	require.NotEmpty(t, childID)
+	require.NotEmpty(t, grandchildID)
 
 	// Spawning and awaiting child workflows do not create parent steps.
 	// Parent: 5 steps (0-4) + setEvent (5) + writeStream (6) = 7 steps
@@ -6081,24 +6081,27 @@ func TestGetWorkflowAggregates(t *testing.T) {
 	})
 
 	t.Run("FilterByWorkflowIDPrefix", func(t *testing.T) {
-		// Run workflows with known prefixes
+		// Workflow IDs are runtime-assigned: use one workflow's full ID as the prefix
+		var prefixID string
 		for i := 0; i < 2; i++ {
-			handle, err := aggregatesWorkflowSuccessD(dbosCtx, fmt.Sprintf("prefix-%d", i),
-				WithWorkflowID(fmt.Sprintf("agg-prefix-%d", i)))
+			handle, err := aggregatesWorkflowSuccessD(dbosCtx, fmt.Sprintf("prefix-%d", i))
 			require.NoError(t, err)
 			_, err = handle.GetResult()
 			require.NoError(t, err)
+			if i == 0 {
+				prefixID = handle.GetWorkflowID()
+			}
 		}
 
 		rows, err := GetWorkflowAggregates(dbosCtx, GetWorkflowAggregatesInput{
 			GroupByName:      true,
-			WorkflowIDPrefix: []string{"agg-prefix"},
+			WorkflowIDPrefix: []string{prefixID},
 		})
 		require.NoError(t, err)
 		require.Len(t, rows, 1)
 		require.NotNil(t, rows[0].Group["name"])
 		assert.Equal(t, successFQN, *rows[0].Group["name"])
-		assert.Equal(t, int64(2), rows[0].Count)
+		assert.Equal(t, int64(1), rows[0].Count)
 
 		// Filter by nonexistent prefix yields no rows
 		rows, err = GetWorkflowAggregates(dbosCtx, GetWorkflowAggregatesInput{

@@ -447,11 +447,10 @@ func TestChaosEvents(t *testing.T) {
 		if i%100 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
 		}
-		wfID := uuid.NewString()
-
-		// Start workflow with specific ID
-		handle, err := eventWorkflowWF(dbosCtx, "", dbos.WithWorkflowID(wfID))
+		// Start workflow; the runtime assigns its ID
+		handle, err := eventWorkflowWF(dbosCtx, "")
 		require.NoError(t, err, "failed to start workflow %d", i)
+		wfID := handle.GetWorkflowID()
 
 		// Get the workflow result
 		value, err := handle.GetResult()

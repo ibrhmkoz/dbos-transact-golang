@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -292,7 +291,7 @@ func TestConfig(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT version FROM dbos.dbos_migrations").Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(40), version, "migration version should be 40 (latest migration: drop child_workflow_id)")
+		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
 
 		// Test manual shutdown and recreate
 		Shutdown(ctx, 1*time.Minute)
@@ -582,7 +581,7 @@ func TestCustomSystemDBSchema(t *testing.T) {
 
 		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT version FROM %s.dbos_migrations", customSchema)).Scan(&version)
 		require.NoError(t, err)
-		assert.Equal(t, int64(40), version, "migration version should be 40 (latest migration: drop child_workflow_id)")
+		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
 	})
 
 	// Test workflows for exercising Send/Recv and SetEvent/GetEvent
@@ -644,16 +643,12 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		// Launch the DBOS context
 		Launch(ctx)
 
-		// Test RunWorkflow - start both workflows that will communicate with each other
-		workflowAID := uuid.NewString()
-		workflowBID := uuid.NewString()
-
-		// Start workflow B first (receiver)
+		// Start workflow B first (receiver); it does not need its partner's ID
 		handleB, err := recvSetEventWF(ctx, testWorkflowInput{
-			PartnerWorkflowID: workflowAID,
-			Message:           "test-message-from-b",
-		}, WithWorkflowID(workflowBID))
+			Message: "test-message-from-b",
+		})
 		require.NoError(t, err, "failed to start recvSetEventWorkflow")
+		workflowBID := handleB.GetWorkflowID()
 
 		// Wait for workflow B to be ready to receive
 		workflowBReadyEvent.Wait()
@@ -662,8 +657,9 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		handleA, err := sendGetEventWF(ctx, testWorkflowInput{
 			PartnerWorkflowID: workflowBID,
 			Message:           "test-message-from-a",
-		}, WithWorkflowID(workflowAID))
+		})
 		require.NoError(t, err, "failed to start sendGetEventWorkflow")
+		workflowAID := handleA.GetWorkflowID()
 
 		// Wait for both workflows to complete
 		resultA, err := handleA.GetResult()
@@ -805,16 +801,12 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err)
 		defer Shutdown(dbosCtx, 1*time.Minute)
 
-		// Test RunWorkflow - start both workflows that will communicate with each other
-		workflowAID := uuid.NewString()
-		workflowBID := uuid.NewString()
-
-		// Start workflow B first (receiver)
+		// Start workflow B first (receiver); it does not need its partner's ID
 		handleB, err := recvSetEventCustomWF(customdbosContext, customPoolWorkflowInput{
-			PartnerWorkflowID: workflowAID,
-			Message:           "custom-pool-message-from-b",
-		}, WithWorkflowID(workflowBID))
+			Message: "custom-pool-message-from-b",
+		})
 		require.NoError(t, err, "failed to start recvSetEventWorkflowCustom")
+		workflowBID := handleB.GetWorkflowID()
 
 		// Small delay to ensure workflow B is ready to receive
 		time.Sleep(100 * time.Millisecond)
@@ -823,8 +815,9 @@ func TestCustomPool(t *testing.T) {
 		handleA, err := sendGetEventCustomWF(customdbosContext, customPoolWorkflowInput{
 			PartnerWorkflowID: workflowBID,
 			Message:           "custom-pool-message-from-a",
-		}, WithWorkflowID(workflowAID))
+		})
 		require.NoError(t, err, "failed to start sendGetEventWorkflowCustom")
+		workflowAID := handleA.GetWorkflowID()
 
 		// Wait for both workflows to complete
 		resultA, err := handleA.GetResult()

@@ -169,7 +169,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 		}
 
 		opts := []WorkflowOption{
-			WithWorkflowID(wfID),
+			withWorkflowID(wfID),
 			withWorkflowName(entry.FQN),
 		}
 		// Scheduled workflows always run against the latest registered application version, so a stale executor does not pick them up after a new deploy.
