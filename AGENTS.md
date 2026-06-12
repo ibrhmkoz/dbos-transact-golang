@@ -1,95 +1,89 @@
-# Repository Notes
+# Go repository conventions
 
-## Test Results
+## No comments by default
 
-Run tests with:
+Write no comments. Identifier names carry meaning. Only add a comment when the WHY is non-obvious: a hidden constraint,
+a workaround, a subtle invariant.
 
-```bash
-just test
+## Identifier casing — acronyms use PascalCase, not all-caps
+
+Project-wide override of the Go-stdlib initialism rule.
+
+| Use    | Not    |
+|--------|--------|
+| `Url`  | `URL`  |
+| `Id`   | `ID`   |
+| `Html` | `HTML` |
+| `Api`  | `API`  |
+| `Http` | `HTTP` |
+| `Json` | `JSON` |
+| `Xml`  | `XML`  |
+
+Applies to both exported and unexported identifiers:
+
+```go
+// Yes
+type ApiError struct{ ... }
+const DefaultBaseUrl = "..."
+func (c *Client) DocumentUrl(id string) string { ... }
+baseUrl   string
+sourceUrl string
+
+// No
+type APIError struct{ ... }
+const DefaultBaseURL = "..."
+func (c *Client) DocumentURL(id string) string { ... }
+baseURL   string
+sourceURL string
 ```
 
-The recipe records the complete `go test -json` stream in DuckDB.
+What this does **not** change:
 
-Each run gets an immutable database:
+* Wire-format JSON tags (`json:"id"`, `json:"url"`) — keep server-side casing.
+* Plain English in comments/error messages ("HTML payload", "the API returned…").
+* Third-party identifiers (`http.Client`, `url.QueryEscape`) — imported as-is.
 
-```text
-.test-results/runs/<run-id>.duckdb
+Rationale: consistent visual rhythm with neighboring camelCase tokens; avoids
+the `HTTPSURLId` readability cliff when two acronyms collide.
+
+## Tests
+
+### Black-box: always use the `_test` package
+
+Put tests for `pkg/foo` in `package foo_test`, not `package foo`. Tests should
+exercise the package only through its exported surface. If a test cannot be
+written without reaching into unexported state, the API is the thing that
+needs to change, not the test.
+
+```go
+// Yes
+package foo_test
+
+import "example.com/repo/pkg/foo"
+
+// No
+package foo // gives the test access to unexported fields/methods
 ```
 
-`.test-results/latest.duckdb` is a symlink to the newest run. Query it with:
+### Use `t.Context()` for test contexts
 
-```bash
-just results
-```
+Prefer `t.Context()` over `context.Background()` inside `*testing.T` /
+`*testing.B` test bodies. It is automatically cancelled when the test
+finishes, so stray goroutines and HTTP calls don't outlive the test.
+Reach for `context.Background()` / `context.WithCancel(...)` only when
+the test genuinely needs a context whose lifetime is decoupled from the
+test (e.g. constructing one before calling `t.Run`, or testing
+cancellation semantics).
 
-Do not replace this with one shared writable DuckDB file. DuckDB permits only
-one read-write process, and long-lived GoLand connections cause lock failures.
-The per-run files allow new recordings while older files remain open.
+### No test doubles by default
 
-Relevant scripts:
+No mocks, stubs, fakes, or in-process `httptest` servers standing in for real
+collaborators. Drive the real code paths against the real dependency
+(database, HTTP API, message bus, …). The signal we want from tests is "does
+the integrated thing work," not "does the code call the methods we told the
+mock to expect."
 
-- `scripts/record-tests.sh`: captures output and creates one DuckDB per run.
-- `scripts/load-test-results.sql`: loads structured Go test events.
-- `scripts/test-results-schema.sql`: tables and reusable views.
-- `scripts/test-results.sql`: standard analysis reports.
+Exceptions exist (test must be fully hermetic, dependency is destructive or
+costs money, third-party service has no sandbox) — in those cases the task
+will say so explicitly. Until then: real dependency, real call.
 
-Useful views:
-
-- `latest_test_run`: latest run metadata and wall time.
-- `latest_test_results`: every test and subtest result.
-- `latest_leaf_test_results`: excludes parent tests whose elapsed time includes
-  subtests. Use this view when summing test durations.
-- `latest_test_events`: ordered raw Go test events and output.
-- `latest_test_parallelism`: serial/parallel leaf-test counts and work.
-- `latest_parallel_phase`: wall time from first parallel `cont` event to final
-  test completion.
-- `failed_test_results`: failures across recorded runs in the current file.
-
-Tests are marked parallel when the test or an ancestor emitted Go's `pause`
-event from `t.Parallel()`. Nested subtests inherit their parent's parallel
-classification.
-
-Important timing interpretation:
-
-- `serial_leaf_seconds`: serial work; directly contributes to the serial phase.
-- `parallel_work_seconds`: summed parallel test work; not wall time.
-- `parallel_phase_wall_seconds`: actual wall time consumed by the parallel
-  phase.
-- `effective_parallelism`: total leaf work divided by total wall time.
-- Go pauses parallel top-level tests until all serial top-level tests finish.
-
-Find the next tests to parallelize:
-
-```sql
-SELECT test, elapsed_seconds
-FROM latest_leaf_test_results
-WHERE NOT parallel
-ORDER BY elapsed_seconds DESC
-LIMIT 30;
-```
-
-Inspect one test's complete output:
-
-```bash
-TEST_NAME='TestName/Subtest' \
-  duckdb -readonly .test-results/latest.duckdb -f scripts/test-results.sql
-```
-
-## Parallel Tests
-
-Use `parallelTest(t)` instead of calling `t.Parallel()` directly. It also
-prevents process-wide leak checks from reporting goroutines belonging to other
-parallel tests.
-
-Test database isolation:
-
-- PostgreSQL uses one migrated template database and clones one database per
-  test.
-
-Keep tests serial when they depend on process-wide state that has not been
-isolated, including:
-
-- Environment mutation through `t.Setenv`, `os.Setenv`, or `os.Unsetenv`.
-- Fixed admin-server port `3001`.
-- Shared mutable package-level test variables.
-- Process-wide goroutine leak assertions.
