@@ -15,14 +15,14 @@ import (
 
 func TestConfig(t *testing.T) {
 	defer verifyNoLeaks(t)
-	databaseURL := backendDatabaseURL(t)
+	databaseUrl := backendDatabaseUrl(t)
 
-	t.Run("CreatesDBOSContext", func(t *testing.T) {
+	t.Run("CreatesDbosContext", func(t *testing.T) {
 		t.Setenv("DBOS__APPVERSION", "v1.0.0")
 		t.Setenv("DBOS__APPID", "test-app-id")
 		t.Setenv("DBOS__VMID", "test-executor-id")
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: databaseURL,
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-initialize",
 		})
 		require.NoError(t, err)
@@ -30,32 +30,30 @@ func TestConfig(t *testing.T) {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
-		}() // Clean up executor
+		}()
 
 		require.NotNil(t, ctx)
 
-		// Test that executor implements DBOSContext interface
-		var _ DBOSContext = ctx
+		var _ DbosContext = ctx
 
-		// Test that we can call methods on the executor
 		appVersion := ctx.GetApplicationVersion()
 		assert.Equal(t, "v1.0.0", appVersion)
-		executorID := ctx.GetExecutorID()
-		assert.Equal(t, "test-executor-id", executorID)
-		appID := ctx.GetApplicationID()
-		assert.Equal(t, "test-app-id", appID)
+		executorId := ctx.GetExecutorId()
+		assert.Equal(t, "test-executor-id", executorId)
+		appId := ctx.GetApplicationId()
+		assert.Equal(t, "test-app-id", appId)
 	})
 
 	t.Run("FailsWithoutAppName", func(t *testing.T) {
 		config := Config{
-			DatabaseURL: databaseURL,
+			DatabaseUrl: databaseUrl,
 		}
 
-		_, err := NewDBOSContext(context.Background(), config)
+		_, err := NewDbosContext(context.Background(), config)
 		require.Error(t, err)
 
-		dbosErr, ok := err.(*DBOSError)
-		require.True(t, ok, "expected DBOSError, got %T", err)
+		dbosErr, ok := err.(*DbosError)
+		require.True(t, ok, "expected DbosError, got %T", err)
 
 		assert.Equal(t, InitializationError, dbosErr.Code)
 
@@ -68,11 +66,11 @@ func TestConfig(t *testing.T) {
 			AppName: "test-app",
 		}
 
-		_, err := NewDBOSContext(context.Background(), config)
+		_, err := NewDbosContext(context.Background(), config)
 		require.Error(t, err)
 
-		dbosErr, ok := err.(*DBOSError)
-		require.True(t, ok, "expected DBOSError, got %T", err)
+		dbosErr, ok := err.(*DbosError)
+		require.True(t, ok, "expected DbosError, got %T", err)
 
 		assert.Equal(t, InitializationError, dbosErr.Code)
 
@@ -86,11 +84,11 @@ func TestConfig(t *testing.T) {
 			t.Setenv("DBOS__APPVERSION", "")
 			t.Setenv("DBOS__VMID", "")
 
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL:        databaseURL,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl:        databaseUrl,
 				AppName:            "test-config-values",
 				ApplicationVersion: "config-v1.2.3",
-				ExecutorID:         "config-executor-123",
+				ExecutorId:         "config-executor-123",
 			})
 			require.NoError(t, err)
 			defer func() {
@@ -100,18 +98,18 @@ func TestConfig(t *testing.T) {
 			}()
 
 			assert.Equal(t, "config-v1.2.3", ctx.GetApplicationVersion())
-			assert.Equal(t, "config-executor-123", ctx.GetExecutorID())
+			assert.Equal(t, "config-executor-123", ctx.GetExecutorId())
 		})
 
 		t.Run("EnvVarsOverrideConfigValues", func(t *testing.T) {
 			t.Setenv("DBOS__APPVERSION", "env-v2.0.0")
 			t.Setenv("DBOS__VMID", "env-executor-456")
 
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL:        databaseURL,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl:        databaseUrl,
 				AppName:            "test-env-override",
 				ApplicationVersion: "config-v1.2.3",
-				ExecutorID:         "config-executor-123",
+				ExecutorId:         "config-executor-123",
 			})
 			require.NoError(t, err)
 			defer func() {
@@ -120,20 +118,18 @@ func TestConfig(t *testing.T) {
 				}
 			}()
 
-			// Env vars should override config values
 			assert.Equal(t, "env-v2.0.0", ctx.GetApplicationVersion())
-			assert.Equal(t, "env-executor-456", ctx.GetExecutorID())
+			assert.Equal(t, "env-executor-456", ctx.GetExecutorId())
 		})
 
 		t.Run("UsesDefaultsWhenEmpty", func(t *testing.T) {
-			// Clear env vars and don't set config values
+
 			t.Setenv("DBOS__APPVERSION", "")
 			t.Setenv("DBOS__VMID", "")
 
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL: databaseURL,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl: databaseUrl,
 				AppName:     "test-defaults",
-				// ApplicationVersion and ExecutorID left empty
 			})
 			require.NoError(t, err)
 			defer func() {
@@ -142,23 +138,21 @@ func TestConfig(t *testing.T) {
 				}
 			}()
 
-			// Should use computed application version (hash) and "local" executor ID
 			appVersion := ctx.GetApplicationVersion()
 			assert.NotEmpty(t, appVersion, "ApplicationVersion should not be empty")
 			assert.NotEqual(t, "", appVersion, "ApplicationVersion should have a default value")
 
-			executorID := ctx.GetExecutorID()
-			assert.Equal(t, "local", executorID)
+			executorId := ctx.GetExecutorId()
+			assert.Equal(t, "local", executorId)
 		})
 
 		t.Run("EnvVarsOverrideEmptyConfig", func(t *testing.T) {
 			t.Setenv("DBOS__APPVERSION", "env-only-v3.0.0")
 			t.Setenv("DBOS__VMID", "env-only-executor")
 
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL: databaseURL,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl: databaseUrl,
 				AppName:     "test-env-only",
-				// ApplicationVersion and ExecutorID left empty
 			})
 			require.NoError(t, err)
 			defer func() {
@@ -167,16 +161,15 @@ func TestConfig(t *testing.T) {
 				}
 			}()
 
-			// Should use env vars even when config is empty
 			assert.Equal(t, "env-only-v3.0.0", ctx.GetApplicationVersion())
-			assert.Equal(t, "env-only-executor", ctx.GetExecutorID())
+			assert.Equal(t, "env-only-executor", ctx.GetExecutorId())
 		})
 	})
 
 	t.Run("ConductorExecutorMetadata", func(t *testing.T) {
 		t.Run("AcceptsJSONSerializable", func(t *testing.T) {
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL: databaseURL,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl: databaseUrl,
 				AppName:     "test-conductor-metadata-valid",
 				ConductorExecutorMetadata: map[string]any{
 					"region":   "us-east-1",
@@ -199,8 +192,8 @@ func TestConfig(t *testing.T) {
 		})
 
 		t.Run("RejectsNonSerializable", func(t *testing.T) {
-			_, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL: databaseURL,
+			_, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl: databaseUrl,
 				AppName:     "test-conductor-metadata-invalid",
 				ConductorExecutorMetadata: map[string]any{
 					"bad": make(chan int),
@@ -216,8 +209,8 @@ func TestConfig(t *testing.T) {
 		t.Setenv("DBOS__APPID", "test-migration")
 		t.Setenv("DBOS__VMID", "test-executor-id")
 
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: databaseURL,
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-migration",
 		})
 		require.NoError(t, err)
@@ -229,38 +222,31 @@ func TestConfig(t *testing.T) {
 
 		require.NotNil(t, ctx)
 
-		// Get the internal kernel instance to check tables directly
 		dbosCtx, ok := ctx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
 		require.NotNil(t, dbosCtx.kernel)
 
 		Kernel := dbosCtx.kernel
 
-		// Verify all expected tables exist and have correct structure
 		dbCtx := context.Background()
 
-		// Test workflow_status table
 		var exists bool
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_status')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_status table should exist")
 
-		// Test operation_outputs table
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'operation_outputs')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "operation_outputs table should exist")
 
-		// Test workflow_events table
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'workflow_events')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_events table should exist")
 
-		// Test notifications table
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'notifications')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "notifications table should exist")
 
-		// Test that all tables can be queried (empty results expected)
 		rows, err := Kernel.pool.Query(dbCtx, "SELECT workflow_uuid FROM dbos.workflow_status LIMIT 1")
 		require.NoError(t, err)
 		rows.Close()
@@ -277,12 +263,10 @@ func TestConfig(t *testing.T) {
 		require.NoError(t, err)
 		rows.Close()
 
-		// Check that the dbos_migrations table exists and has one row with the correct version
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'dbos' AND table_name = 'dbos_migrations')").Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "dbos_migrations table should exist")
 
-		// Verify migration version is 14 (after initial migration through pgsql_client_functions)
 		var version int64
 		var count int
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT COUNT(*) FROM dbos.dbos_migrations").Scan(&count)
@@ -293,12 +277,10 @@ func TestConfig(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
 
-		// Test manual shutdown and recreate
 		Shutdown(ctx, 1*time.Minute)
 
-		// Recreate context - should have no error since DB is already migrated
-		ctx2, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: databaseURL,
+		ctx2, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-migration-recreate",
 		})
 		require.NoError(t, err)
@@ -316,20 +298,17 @@ func TestConfig(t *testing.T) {
 		t.Setenv("DBOS__APPID", "test-keyvalue-format")
 		t.Setenv("DBOS__VMID", "test-executor-id")
 
-		// Get base connection parameters
-		originalURL := databaseURL
-		parsedURL, err := pgxpool.ParseConfig(originalURL)
+		originalUrl := databaseUrl
+		parsedUrl, err := pgxpool.ParseConfig(originalUrl)
 		require.NoError(t, err)
 
-		user := parsedURL.ConnConfig.User
-		database := parsedURL.ConnConfig.Database
-		host := parsedURL.ConnConfig.Host
-		port := parsedURL.ConnConfig.Port
+		user := parsedUrl.ConnConfig.User
+		database := parsedUrl.ConnConfig.Database
+		host := parsedUrl.ConnConfig.Host
+		port := parsedUrl.ConnConfig.Port
 
-		// Use a unique test password that won't match other connection parameters
 		testPassword := "TEST_PASSWORD_UNIQUE_12345!@#$%"
 
-		// Test password masking with various spacing formats
 		maskingTestCases := []struct {
 			name    string
 			connStr string
@@ -342,12 +321,11 @@ func TestConfig(t *testing.T) {
 			{"MixedCaseKey", fmt.Sprintf("user=%s Password=%s database=%s host=%s", user, testPassword, database, host)},
 		}
 
-		// Add port and sslmode if needed
 		portSSL := ""
 		if port != 0 {
 			portSSL += fmt.Sprintf(" port=%d", port)
 		}
-		if strings.Contains(originalURL, "sslmode=disable") {
+		if strings.Contains(originalUrl, "sslmode=disable") {
 			portSSL += " sslmode=disable"
 		}
 		for i := range maskingTestCases {
@@ -364,10 +342,9 @@ func TestConfig(t *testing.T) {
 			})
 		}
 
-		// Integration test: verify DBOS context works with key-value format
-		t.Run("DBOSContextCreation", func(t *testing.T) {
-			// Use the actual password from config for integration test
-			actualPassword := parsedURL.ConnConfig.Password
+		t.Run("DbosContextCreation", func(t *testing.T) {
+
+			actualPassword := parsedUrl.ConnConfig.Password
 			var keyValueConnStr string
 			if actualPassword == "" {
 				keyValueConnStr = fmt.Sprintf("user='%s' database=%s host=%s%s", user, database, host, portSSL)
@@ -375,8 +352,8 @@ func TestConfig(t *testing.T) {
 				keyValueConnStr = fmt.Sprintf("user='%s' password='%s' database=%s host=%s%s", user, actualPassword, database, host, portSSL)
 			}
 
-			ctx, err := NewDBOSContext(context.Background(), Config{
-				DatabaseURL: keyValueConnStr,
+			ctx, err := NewDbosContext(context.Background(), Config{
+				DatabaseUrl: keyValueConnStr,
 				AppName:     "test-keyvalue-format",
 			})
 			require.NoError(t, err)
@@ -388,7 +365,6 @@ func TestConfig(t *testing.T) {
 
 			require.NotNil(t, ctx)
 
-			// Verify system DB is functional
 			dbosCtx, ok := ctx.(*dbosContext)
 			require.True(t, ok)
 			Kernel := dbosCtx.kernel
@@ -398,7 +374,6 @@ func TestConfig(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, exists)
 
-			// Verify masking works
 			poolConnStr := PgxPool(Kernel.pool).Config().ConnString()
 			maskedConnStr, err := maskPassword(poolConnStr)
 			require.NoError(t, err)
@@ -415,24 +390,22 @@ func TestConfig(t *testing.T) {
 }
 
 func TestContext(t *testing.T) {
-	databaseURL := backendDatabaseURL(t)
+	databaseUrl := backendDatabaseUrl(t)
 
 	t.Run("PreservesContextValues", func(t *testing.T) {
-		// Define test keys and values
+
 		type contextKey string
 		key1 := contextKey("test-key-1")
 		key2 := contextKey("test-key-2")
 		value1 := "test-value-1"
 		value2 := 42
 
-		// Create a context with seeded values
 		baseCtx := context.Background()
 		ctxWithValues := context.WithValue(baseCtx, key1, value1)
 		ctxWithValues = context.WithValue(ctxWithValues, key2, value2)
 
-		// Create DBOSContext with the seeded context
-		dbosCtx, err := NewDBOSContext(ctxWithValues, Config{
-			DatabaseURL: databaseURL,
+		dbosCtx, err := NewDbosContext(ctxWithValues, Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-context-values",
 		})
 		require.NoError(t, err)
@@ -444,13 +417,11 @@ func TestContext(t *testing.T) {
 
 		require.NotNil(t, dbosCtx)
 
-		// Verify that the context values are preserved in DBOSContext
-		assert.Equal(t, value1, dbosCtx.Value(key1), "DBOSContext should preserve context value for key1")
-		assert.Equal(t, value2, dbosCtx.Value(key2), "DBOSContext should preserve context value for key2")
+		assert.Equal(t, value1, dbosCtx.Value(key1), "DbosContext should preserve context value for key1")
+		assert.Equal(t, value2, dbosCtx.Value(key2), "DbosContext should preserve context value for key2")
 
-		// Verify that non-existent keys return nil
 		nonExistentKey := contextKey("non-existent-key")
-		assert.Nil(t, dbosCtx.Value(nonExistentKey), "DBOSContext should return nil for non-existent keys")
+		assert.Nil(t, dbosCtx.Value(nonExistentKey), "DbosContext should return nil for non-existent keys")
 	})
 
 	t.Run("FromPreservesDerivedContextValues", func(t *testing.T) {
@@ -462,15 +433,13 @@ func TestContext(t *testing.T) {
 		value2 := 100
 		value3 := "new-value-3"
 
-		// Build a context chain: base has key1, key2; derived adds key3
 		baseCtx := context.Background()
 		baseCtx = context.WithValue(baseCtx, key1, value1)
 		baseCtx = context.WithValue(baseCtx, key2, value2)
 		derivedCtx := context.WithValue(baseCtx, key3, value3)
 
-		// Create DBOSContext with the base context
-		dbosCtx, err := NewDBOSContext(baseCtx, Config{
-			DatabaseURL: databaseURL,
+		dbosCtx, err := NewDbosContext(baseCtx, Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-context-from",
 		})
 		require.NoError(t, err)
@@ -481,7 +450,6 @@ func TestContext(t *testing.T) {
 		}()
 		require.NotNil(t, dbosCtx)
 
-		// From(dbosCtx, derivedCtx) returns a DBOS context that wraps the derived context
 		fromCtx := From(dbosCtx, derivedCtx)
 		require.NotNil(t, fromCtx)
 
@@ -498,11 +466,11 @@ func TestCustomSystemDBSchema(t *testing.T) {
 	t.Setenv("DBOS__APPID", "test-custom-schema")
 	t.Setenv("DBOS__VMID", "test-executor-id")
 
-	databaseURL := backendDatabaseURL(t)
+	databaseUrl := backendDatabaseUrl(t)
 	customSchema := "dbos_custom_test"
 
-	ctx, err := NewDBOSContext(context.Background(), Config{
-		DatabaseURL:    databaseURL,
+	ctx, err := NewDbosContext(context.Background(), Config{
+		DatabaseUrl:    databaseUrl,
 		AppName:        "test-custom-schema-migration",
 		DatabaseSchema: customSchema,
 	})
@@ -516,41 +484,34 @@ func TestCustomSystemDBSchema(t *testing.T) {
 	require.NotNil(t, ctx)
 
 	t.Run("CustomSchemaSetup", func(t *testing.T) {
-		// Get the internal kernel instance to check tables directly
+
 		dbosCtx, ok := ctx.(*dbosContext)
 		require.True(t, ok, "expected dbosContext")
 		require.NotNil(t, dbosCtx.kernel)
 
 		Kernel := dbosCtx.kernel
 
-		// Verify schema name was set correctly
 		assert.Equal(t, customSchema, Kernel.schema, "schema name should match custom schema")
 
-		// Verify all expected tables exist in the custom schema
 		dbCtx := context.Background()
 
-		// Test workflow_status table in custom schema
 		var exists bool
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_status')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_status table should exist in custom schema")
 
-		// Test operation_outputs table in custom schema
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'operation_outputs')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "operation_outputs table should exist in custom schema")
 
-		// Test workflow_events table in custom schema
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'workflow_events')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "workflow_events table should exist in custom schema")
 
-		// Test notifications table in custom schema
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'notifications')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "notifications table should exist in custom schema")
 
-		// Test that all tables can be queried using custom schema (empty results expected)
 		rows, err := Kernel.pool.Query(dbCtx, fmt.Sprintf("SELECT workflow_uuid FROM %s.workflow_status LIMIT 1", customSchema))
 		require.NoError(t, err)
 		rows.Close()
@@ -567,12 +528,10 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		require.NoError(t, err)
 		rows.Close()
 
-		// Check that the dbos_migrations table exists in custom schema
 		err = Kernel.pool.QueryRow(dbCtx, "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = $1 AND table_name = 'dbos_migrations')", customSchema).Scan(&exists)
 		require.NoError(t, err)
 		assert.True(t, exists, "dbos_migrations table should exist in custom schema")
 
-		// Verify migration version is 14 (after initial migration through pgsql_client_functions)
 		var version int64
 		var count int
 		err = Kernel.pool.QueryRow(dbCtx, fmt.Sprintf("SELECT COUNT(*) FROM %s.dbos_migrations", customSchema)).Scan(&count)
@@ -584,25 +543,21 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		assert.Equal(t, int64(41), version, "migration version should be 41 (latest migration: add error_encoded)")
 	})
 
-	// Test workflows for exercising Send/Recv and SetEvent/GetEvent
 	type testWorkflowInput struct {
-		PartnerWorkflowID string
+		PartnerWorkflowId string
 		Message           string
 	}
 
-	// Event to signal when workflow B is ready to receive
 	var workflowBReadyEvent *Event
 
-	// Workflow A: Uses Send() and GetEvent() - waits for workflow B
-	sendGetEventWorkflow := func(ctx DBOSContext, input testWorkflowInput) (string, error) {
-		// Send a message to the partner workflow
-		err := Send(ctx, input.PartnerWorkflowID, input.Message, "test-topic")
+	sendGetEventWorkflow := func(ctx DbosContext, input testWorkflowInput) (string, error) {
+
+		err := Send(ctx, input.PartnerWorkflowId, input.Message, "test-topic")
 		if err != nil {
 			return "", err
 		}
 
-		// Wait for an event from the partner workflow
-		result, err := GetEvent[string](ctx, input.PartnerWorkflowID, "response-key", 5*time.Hour)
+		result, err := GetEvent[string](ctx, input.PartnerWorkflowId, "response-key", 5*time.Hour)
 		if err != nil {
 			return "", err
 		}
@@ -610,20 +565,17 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		return result, nil
 	}
 
-	// Workflow B: Uses Recv() and SetEvent() - waits for workflow A
-	recvSetEventWorkflow := func(ctx DBOSContext, input testWorkflowInput) (string, error) {
-		// Signal that this workflow has started and is ready to receive
+	recvSetEventWorkflow := func(ctx DbosContext, input testWorkflowInput) (string, error) {
+
 		if workflowBReadyEvent != nil {
 			workflowBReadyEvent.Set()
 		}
 
-		// Receive a message from the partner workflow
 		receivedMsg, err := Recv[string](ctx, "test-topic", 5*time.Hour)
 		if err != nil {
 			return "", err
 		}
 
-		// Set an event for the partner workflow
 		err = SetEvent(ctx, "response-key", "response-from-workflow-b")
 		if err != nil {
 			return "", err
@@ -633,14 +585,12 @@ func TestCustomSystemDBSchema(t *testing.T) {
 	}
 
 	t.Run("CustomSchemaUsage", func(t *testing.T) {
-		// Initialize the event to signal when workflow B is ready to receive
+
 		workflowBReadyEvent = NewEvent()
 
-		// Register the test workflows
 		sendGetEventWF := NewWorkflow(ctx, sendGetEventWorkflow)
 		recvSetEventWF := NewWorkflow(ctx, recvSetEventWorkflow)
 
-		// Launch the DBOS context
 		Launch(ctx)
 
 		// Start workflow B first (receiver); it does not need its partner's ID
@@ -648,20 +598,17 @@ func TestCustomSystemDBSchema(t *testing.T) {
 			Message: "test-message-from-b",
 		})
 		require.NoError(t, err, "failed to start recvSetEventWorkflow")
-		workflowBID := handleB.GetWorkflowID()
+		workflowBId := handleB.GetWorkflowId()
 
-		// Wait for workflow B to be ready to receive
 		workflowBReadyEvent.Wait()
 
-		// Start workflow A (sender)
 		handleA, err := sendGetEventWF(ctx, testWorkflowInput{
-			PartnerWorkflowID: workflowBID,
+			PartnerWorkflowId: workflowBId,
 			Message:           "test-message-from-a",
 		})
 		require.NoError(t, err, "failed to start sendGetEventWorkflow")
-		workflowAID := handleA.GetWorkflowID()
+		workflowAId := handleA.GetWorkflowId()
 
-		// Wait for both workflows to complete
 		resultA, err := handleA.GetResult()
 		require.NoError(t, err, "failed to get result from workflow A")
 		assert.Equal(t, "response-from-workflow-b", resultA, "workflow A should receive response from workflow B")
@@ -670,13 +617,12 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		require.NoError(t, err, "failed to get result from workflow B")
 		assert.Equal(t, "test-message-from-a", resultB, "workflow B should receive message from workflow A")
 
-		// Test GetWorkflowSteps
-		stepsA, err := GetWorkflowSteps(ctx, workflowAID)
+		stepsA, err := GetWorkflowSteps(ctx, workflowAId)
 		require.NoError(t, err, "failed to get workflow A steps")
 		require.GreaterOrEqual(t, len(stepsA), 2, "workflow A should have at least 2 steps")
 		require.LessOrEqual(t, len(stepsA), 3, "workflow A should have at most 3 steps")
 		assert.Equal(t, "DBOS.send", stepsA[0].StepName, "first step should be Send")
-		// Verify GetEvent step is present (required)
+
 		foundGetEvent := false
 		for i := 1; i < len(stepsA); i++ {
 			if stepsA[i].StepName == "DBOS.getEvent" {
@@ -686,12 +632,12 @@ func TestCustomSystemDBSchema(t *testing.T) {
 		}
 		assert.True(t, foundGetEvent, "workflow A should have GetEvent step")
 
-		stepsB, err := GetWorkflowSteps(ctx, workflowBID)
+		stepsB, err := GetWorkflowSteps(ctx, workflowBId)
 		require.NoError(t, err, "failed to get workflow B steps")
 		require.GreaterOrEqual(t, len(stepsB), 2, "workflow B should have at least 2 steps")
 		require.LessOrEqual(t, len(stepsB), 3, "workflow B should have at most 3 steps")
 		assert.Equal(t, "DBOS.recv", stepsB[0].StepName, "first step should be Recv")
-		// Verify SetEvent step is present (required)
+
 		foundSetEvent := false
 		for i := 1; i < len(stepsB); i++ {
 			if stepsB[i].StepName == "DBOS.setEvent" {
@@ -705,22 +651,20 @@ func TestCustomSystemDBSchema(t *testing.T) {
 
 func TestCustomPool(t *testing.T) {
 	defer verifyNoLeaks(t)
-	// Test workflows for custom pool testing
+
 	type customPoolWorkflowInput struct {
-		PartnerWorkflowID string
+		PartnerWorkflowId string
 		Message           string
 	}
 
-	// Workflow A: Uses Send() and GetEvent() - waits for workflow B
-	sendGetEventWorkflowCustom := func(ctx DBOSContext, input customPoolWorkflowInput) (string, error) {
-		// Send a message to the partner workflow
-		err := Send(ctx, input.PartnerWorkflowID, input.Message, "custom-pool-topic")
+	sendGetEventWorkflowCustom := func(ctx DbosContext, input customPoolWorkflowInput) (string, error) {
+
+		err := Send(ctx, input.PartnerWorkflowId, input.Message, "custom-pool-topic")
 		if err != nil {
 			return "", err
 		}
 
-		// Wait for an event from the partner workflow
-		result, err := GetEvent[string](ctx, input.PartnerWorkflowID, "custom-response-key", 5*time.Hour)
+		result, err := GetEvent[string](ctx, input.PartnerWorkflowId, "custom-response-key", 5*time.Hour)
 		if err != nil {
 			return "", err
 		}
@@ -728,9 +672,8 @@ func TestCustomPool(t *testing.T) {
 		return result, nil
 	}
 
-	// Workflow B: Uses Recv() and SetEvent() - waits for workflow A
-	recvSetEventWorkflowCustom := func(ctx DBOSContext, input customPoolWorkflowInput) (string, error) {
-		// Receive a message from the partner workflow
+	recvSetEventWorkflowCustom := func(ctx DbosContext, input customPoolWorkflowInput) (string, error) {
+
 		receivedMsg, err := Recv[string](ctx, "custom-pool-topic", 5*time.Hour)
 		if err != nil {
 			return "", err
@@ -738,7 +681,6 @@ func TestCustomPool(t *testing.T) {
 
 		time.Sleep(1 * time.Second)
 
-		// Set an event for the partner workflow
 		err = SetEvent(ctx, "custom-response-key", "response-from-custom-pool-workflow")
 		if err != nil {
 			return "", err
@@ -748,9 +690,9 @@ func TestCustomPool(t *testing.T) {
 	}
 
 	t.Run("CustomPool", func(t *testing.T) {
-		// Custom Pool
-		databaseURL := backendDatabaseURL(t)
-		poolConfig, err := pgxpool.ParseConfig(databaseURL)
+
+		databaseUrl := backendDatabaseUrl(t)
+		poolConfig, err := pgxpool.ParseConfig(databaseUrl)
 		require.NoError(t, err)
 
 		poolConfig.MaxConns = 10
@@ -771,7 +713,7 @@ func TestCustomPool(t *testing.T) {
 			SystemDBPool: pool,
 		}
 
-		customdbosContext, err := NewDBOSContext(context.Background(), config)
+		customdbosContext, err := NewDbosContext(context.Background(), config)
 		require.NoError(t, err)
 		require.NotNil(t, customdbosContext)
 
@@ -792,11 +734,9 @@ func TestCustomPool(t *testing.T) {
 		assert.Equal(t, 2*time.Minute, sysdbConfig.MaxConnIdleTime)
 		assert.Equal(t, 10*time.Second, sysdbConfig.ConnConfig.ConnectTimeout)
 
-		// Register the test workflows
 		sendGetEventCustomWF := NewWorkflow(customdbosContext, sendGetEventWorkflowCustom)
 		recvSetEventCustomWF := NewWorkflow(customdbosContext, recvSetEventWorkflowCustom)
 
-		// Launch the DBOS context
 		err = Launch(customdbosContext)
 		require.NoError(t, err)
 		defer Shutdown(dbosCtx, 1*time.Minute)
@@ -806,20 +746,18 @@ func TestCustomPool(t *testing.T) {
 			Message: "custom-pool-message-from-b",
 		})
 		require.NoError(t, err, "failed to start recvSetEventWorkflowCustom")
-		workflowBID := handleB.GetWorkflowID()
+		workflowBId := handleB.GetWorkflowId()
 
 		// Small delay to ensure workflow B is ready to receive
 		time.Sleep(100 * time.Millisecond)
 
-		// Start workflow A (sender)
 		handleA, err := sendGetEventCustomWF(customdbosContext, customPoolWorkflowInput{
-			PartnerWorkflowID: workflowBID,
+			PartnerWorkflowId: workflowBId,
 			Message:           "custom-pool-message-from-a",
 		})
 		require.NoError(t, err, "failed to start sendGetEventWorkflowCustom")
-		workflowAID := handleA.GetWorkflowID()
+		workflowAId := handleA.GetWorkflowId()
 
-		// Wait for both workflows to complete
 		resultA, err := handleA.GetResult()
 		require.NoError(t, err, "failed to get result from workflow A")
 		assert.Equal(t, "response-from-custom-pool-workflow", resultA, "workflow A should receive response from workflow B")
@@ -828,15 +766,14 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err, "failed to get result from workflow B")
 		assert.Equal(t, "custom-pool-message-from-a", resultB, "workflow B should receive message from workflow A")
 
-		// Test GetWorkflowSteps
-		stepsA, err := GetWorkflowSteps(customdbosContext, workflowAID)
+		stepsA, err := GetWorkflowSteps(customdbosContext, workflowAId)
 		require.NoError(t, err, "failed to get workflow A steps")
 		require.Len(t, stepsA, 3, "workflow A should have 3 steps (Send + GetEvent + Sleep)")
 		assert.Equal(t, "DBOS.send", stepsA[0].StepName, "first step should be Send")
 		assert.Equal(t, "DBOS.getEvent", stepsA[1].StepName, "second step should be GetEvent")
 		assert.Equal(t, "DBOS.sleep", stepsA[2].StepName, "third step should be Sleep")
 
-		stepsB, err := GetWorkflowSteps(customdbosContext, workflowBID)
+		stepsB, err := GetWorkflowSteps(customdbosContext, workflowBId)
 		require.NoError(t, err, "failed to get workflow B steps")
 		require.Len(t, stepsB, 3, "workflow B should have 3 steps (Recv + Sleep + SetEvent)")
 		assert.Equal(t, "DBOS.recv", stepsB[0].StepName, "first step should be Recv")
@@ -844,14 +781,14 @@ func TestCustomPool(t *testing.T) {
 		assert.Equal(t, "DBOS.setEvent", stepsB[2].StepName, "third step should be SetEvent")
 	})
 
-	wf := func(ctx DBOSContext, input string) (string, error) {
+	wf := func(ctx DbosContext, input string) (string, error) {
 		return input, nil
 	}
 
 	t.Run("CustomPoolTakesPrecedence", func(t *testing.T) {
-		invalidDatabaseURL := "postgres://invalid:invalid@localhost:5432/invaliddb"
-		databaseURL := backendDatabaseURL(t)
-		poolConfig, err := pgxpool.ParseConfig(databaseURL)
+		invalidDatabaseUrl := "postgres://invalid:invalid@localhost:5432/invaliddb"
+		databaseUrl := backendDatabaseUrl(t)
+		poolConfig, err := pgxpool.ParseConfig(databaseUrl)
 		require.NoError(t, err)
 		// A custom pool owns its connection settings: DBOS cannot inject the
 		// search_path, so the pool must route unqualified queries to the DBOS schema.
@@ -860,42 +797,40 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err)
 
 		config := Config{
-			DatabaseURL:  invalidDatabaseURL,
+			DatabaseUrl:  invalidDatabaseUrl,
 			AppName:      "test-invalid-db-url",
 			SystemDBPool: pool,
 		}
-		dbosCtx, err := NewDBOSContext(context.Background(), config)
+		dbosCtx, err := NewDbosContext(context.Background(), config)
 		require.NoError(t, err)
 
 		wfDef := NewWorkflow(dbosCtx, wf)
 
-		// Launch the DBOS context
 		err = Launch(dbosCtx)
 		require.NoError(t, err)
 		defer Shutdown(dbosCtx, 1*time.Minute)
 
-		// Run a workflow
 		_, err = wfDef(dbosCtx, "test-input")
 		require.NoError(t, err)
 	})
 
 	t.Run("InvalidCustomPool", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		poolConfig, err := pgxpool.ParseConfig(databaseURL)
+		databaseUrl := backendDatabaseUrl(t)
+		poolConfig, err := pgxpool.ParseConfig(databaseUrl)
 		require.NoError(t, err)
 		poolConfig.ConnConfig.Host = "invalid-host"
 		pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 		require.NoError(t, err)
 
 		config := Config{
-			DatabaseURL:  databaseURL,
+			DatabaseUrl:  databaseUrl,
 			AppName:      "test-invalid-custom-pool",
 			SystemDBPool: pool,
 		}
-		_, err = NewDBOSContext(context.Background(), config)
+		_, err = NewDbosContext(context.Background(), config)
 		require.Error(t, err)
-		dbosErr, ok := err.(*DBOSError)
-		require.True(t, ok, "expected DBOSError, got %T", err)
+		dbosErr, ok := err.(*DbosError)
+		require.True(t, ok, "expected DbosError, got %T", err)
 		assert.Equal(t, InitializationError, dbosErr.Code)
 		expectedMsg := "Error initializing DBOS Transact: failed to validate custom pool"
 		assert.Contains(t, dbosErr.Message, expectedMsg)
@@ -903,11 +838,10 @@ func TestCustomPool(t *testing.T) {
 
 	t.Run("DirectKernel", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
-		databaseURL := backendDatabaseURL(t)
+		databaseUrl := backendDatabaseUrl(t)
 		logger := slog.Default()
 
-		// Create custom pool
-		poolConfig, err := pgxpool.ParseConfig(databaseURL)
+		poolConfig, err := pgxpool.ParseConfig(databaseUrl)
 		require.NoError(t, err)
 		poolConfig.MaxConns = 15
 		poolConfig.MinConns = 3
@@ -915,9 +849,8 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err)
 		defer customPool.Close()
 
-		// Create system database with custom pool
 		sysDBInput := newKernelInput{
-			databaseURL:    databaseURL,
+			databaseUrl:    databaseUrl,
 			databaseSchema: "dbos_test_custom_direct",
 			customPool:     customPool,
 			logger:         logger,
@@ -927,7 +860,6 @@ func TestCustomPool(t *testing.T) {
 		require.NoError(t, err, "failed to create system database with custom pool")
 		require.NotNil(t, kernel)
 
-		// Launch the system database
 		kernel.launch(ctx)
 
 		require.Eventually(t, func() bool {
@@ -939,8 +871,7 @@ func TestCustomPool(t *testing.T) {
 			return true
 		}, 5*time.Second, 100*time.Millisecond, "system database should be reachable")
 
-		// Shutdown the system database
-		cancel() // Cancel context
+		cancel()
 		shutdownTimeout := 2 * time.Second
 		kernel.shutdown(ctx, shutdownTimeout)
 		assert.False(t, kernel.launched)

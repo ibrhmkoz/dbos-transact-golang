@@ -6,10 +6,8 @@ import (
 	"time"
 )
 
-type wrappedWorkflowFunc func(ctx DBOSContext, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
+type wrappedWorkflowFunc func(ctx DbosContext, input any, inputSerialization string, opts ...WorkflowOption) (*WorkflowHandle[any], error)
 
-// persistWorkflowDefinitions writes the execution limits of every worker-dispatched
-// workflow to the system database. Called once at launch.
 func (c *dbosContext) persistWorkflowDefinitions() error {
 	for _, entry := range c.workflowRegistry.List(false) {
 		if err := c.kernel.upsertWorkflowDefinition(c, entry.Name, entry.GlobalConcurrency, entry.RateLimit, entry.Retention); err != nil {
@@ -19,21 +17,18 @@ func (c *dbosContext) persistWorkflowDefinitions() error {
 	return nil
 }
 
-// rateLimiter configures workflow execution rate limiting.
-// Rate limits prevent overwhelming external services and provide backpressure.
 type rateLimiter struct {
-	limit  int           // Maximum number of workflows to start within the period
-	period time.Duration // Time period for the rate limit
+	limit  int
+	period time.Duration
 }
 
 type WorkflowRegistryEntry struct {
 	wrappedFunction wrappedWorkflowFunc
 	MaxRetries      int
 	Name            string
-	FQN             string // Fully qualified name of the workflow function
-	CronSchedule    string // Empty string for non-scheduled workflows
+	FQN             string
+	CronSchedule    string
 
-	// Execution limits applied when the workflow is claimed by a worker.
 	GlobalConcurrency *int
 	RateLimit         *rateLimiter
 	Retention         time.Duration
@@ -94,7 +89,6 @@ func (wf *WorkflowRegistry) SetCronSchedule(workflowName, cronSchedule string) b
 	return true
 }
 
-// SetExecutionPolicies attaches persisted execution policies to a workflow.
 func (wf *WorkflowRegistry) SetExecutionPolicies(workflowName string, globalConcurrency *int, rateLimit *rateLimiter, retention time.Duration) bool {
 	wf.mu.Lock()
 	defer wf.mu.Unlock()

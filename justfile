@@ -1,7 +1,11 @@
-set dotenv-load := true
+set dotenv-load
 
 default:
     @just --list
+
+# Regenerate database query code.
+sqlc:
+    sqlc generate
 
 # Run dbos tests against PostgreSQL and record results in DuckDB.
 test:

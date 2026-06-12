@@ -52,7 +52,7 @@ func TestAdminClientListWorkflows(t *testing.T) {
 	})
 	require.NoError(t, err)
 	require.Len(t, workflows, 1)
-	assert.Equal(t, "workflow-id", workflows[0].WorkflowUUID)
+	assert.Equal(t, "workflow-id", workflows[0].WorkflowUuid)
 	assert.Equal(t, WorkflowStatusSuccess, workflows[0].Status)
 	assert.Equal(t, AdminEpochMillis(1780920000123), workflows[0].CreatedAt)
 	assert.Equal(t, time.UnixMilli(1780920000123), workflows[0].CreatedAt.Time())

@@ -8,26 +8,18 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// dbq.go: a thin driver-agnostic SQL surface used by Kernel.
-//
-// The adapter keeps pgx pool and transaction operations behind one small SQL surface.
-
-// Querier is the subset of SQL operations available on both a pool and a
-// transaction.
 type Querier interface {
 	Exec(ctx context.Context, query string, args ...any) (Result, error)
 	Query(ctx context.Context, query string, args ...any) (Rows, error)
 	QueryRow(ctx context.Context, query string, args ...any) Row
 }
 
-// Tx is a transaction that can also execute queries.
 type Tx interface {
 	Querier
 	Commit(ctx context.Context) error
 	Rollback(ctx context.Context) error
 }
 
-// Pool is a connection pool that can begin transactions.
 type Pool interface {
 	Querier
 	BeginTx(ctx context.Context, opts TxOptions) (Tx, error)
@@ -35,13 +27,11 @@ type Pool interface {
 	Close()
 }
 
-// TxOptions configures a new transaction.
 type TxOptions struct {
 	IsoLevel IsoLevel
 	ReadOnly bool
 }
 
-// IsoLevel is a portable isolation level. Dialects map it to their native enum.
 type IsoLevel int
 
 const (
@@ -51,7 +41,6 @@ const (
 	IsoLevelSerializable
 )
 
-// Rows is a cursor over a multi-row result set.
 type Rows interface {
 	Next() bool
 	Scan(dest ...any) error
@@ -59,27 +48,16 @@ type Rows interface {
 	Close() error
 }
 
-// Row is a single-row result that has not yet been scanned. Scan returns
-// ErrNoRows if no row matched.
 type Row interface {
 	Scan(dest ...any) error
 }
 
-// Result describes the effects of a write. Mirrors database/sql.Result. For
-// pgx-backed results, the int64 returned by pgconn.CommandTag.RowsAffected()
-// is wrapped with a nil error.
 type Result interface {
 	RowsAffected() (int64, error)
 }
 
-// ErrNoRows is returned by Row.Scan when no row matched.
 var ErrNoRows = pgx.ErrNoRows
 
-/* ---------------------------------------------------------------------------
-   pgx adapter
-   ------------------------------------------------------------------------- */
-
-// newPgxPool wraps a *pgxpool.Pool so it satisfies Pool.
 func newPgxPool(p *pgxpool.Pool) Pool { return &pgxPoolAdapter{p: p} }
 
 type pgxPoolAdapter struct{ p *pgxpool.Pool }
@@ -115,9 +93,6 @@ func (a *pgxPoolAdapter) BeginTx(ctx context.Context, opts TxOptions) (Tx, error
 func (a *pgxPoolAdapter) Ping(ctx context.Context) error { return a.p.Ping(ctx) }
 func (a *pgxPoolAdapter) Close()                         { a.p.Close() }
 
-// PgxPool unwraps the underlying *pgxpool.Pool. Returns nil if the Pool is not
-// pgx-backed. Used by call sites that still need pgx-specific features
-// (notably the LISTEN/NOTIFY listener).
 func PgxPool(p Pool) *pgxpool.Pool {
 	if a, ok := p.(*pgxPoolAdapter); ok {
 		return a.p
@@ -125,9 +100,6 @@ func PgxPool(p Pool) *pgxpool.Pool {
 	return nil
 }
 
-// PgxTx unwraps the underlying pgx.Tx from a Tx. Returns nil if the Tx is not
-// pgx-backed. Used to bind sqlc-generated queries to an in-flight transaction
-// via db.Queries.WithTx.
 func PgxTx(t Tx) pgx.Tx {
 	if a, ok := t.(*pgxTxAdapter); ok {
 		return a.tx
@@ -193,7 +165,7 @@ func pgxTxOpts(o TxOptions) pgx.TxOptions {
 	case IsoLevelSerializable:
 		iso = pgx.Serializable
 	default:
-		iso = "" // pgx default (ReadCommitted for Postgres)
+		iso = ""
 	}
 	mode := pgx.ReadWrite
 	if o.ReadOnly {

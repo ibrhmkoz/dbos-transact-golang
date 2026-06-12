@@ -7,14 +7,14 @@ import (
 )
 
 var (
-	Version = "dev" // overridden by -ldflags in CI releases
+	Version = "dev"
 	Commit  = ""
 	BuiltAt = ""
 )
 
 func init() {
 	if info, ok := debug.ReadBuildInfo(); ok {
-		// If built via `go install module/cmd@vX.Y.Z`, use the module version.
+
 		if Version == "dev" && info.Main.Version != "" && info.Main.Version != "(devel)" {
 			Version = info.Main.Version
 		}
@@ -52,6 +52,6 @@ var versionCmd = &cobra.Command{
 		if BuiltAt != "" {
 			versionInfo["built"] = BuiltAt
 		}
-		return outputJSON(versionInfo)
+		return outputJson(versionInfo)
 	},
 }

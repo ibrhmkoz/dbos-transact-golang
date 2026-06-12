@@ -16,13 +16,11 @@ var (
 		SilenceUsage: true,
 	}
 
-	// Global flags
-	dbURL      string
+	dbUrl      string
 	configFile string
 	verbose    bool
 	schema     string
 
-	// Global config
 	config *Config
 	logger *slog.Logger
 )
@@ -30,13 +28,11 @@ var (
 func init() {
 	cobra.OnInitialize(initConfig)
 
-	// Global flags available to all commands
-	rootCmd.PersistentFlags().StringVarP(&dbURL, "db-url", "D", "", "Your DBOS system database URL")
+	rootCmd.PersistentFlags().StringVarP(&dbUrl, "db-url", "D", "", "Your DBOS system database URL")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file (default is dbos-config.yaml)")
 	rootCmd.PersistentFlags().BoolVar(&verbose, "verbose", false, "Enable verbose mode (DEBUG level logging)")
 	rootCmd.PersistentFlags().StringVar(&schema, "schema", "", "Database schema name (defaults to \"dbos\")")
 
-	// Add all subcommands
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(startCmd)
 	rootCmd.AddCommand(migrateCmd)
@@ -47,7 +43,7 @@ func init() {
 }
 
 func initConfig() {
-	// Initialize global logger
+
 	logger = initLogger(slog.LevelInfo)
 
 	if configFile != "" {
@@ -58,9 +54,8 @@ func initConfig() {
 		viper.AddConfigPath(".")
 	}
 
-	// If a config file is found, read it in and parse it
 	if err := viper.ReadInConfig(); err == nil {
-		// Expand environment variables in all string values
+
 		expandEnvVarsInConfig()
 
 		var cfg Config
@@ -79,7 +74,6 @@ func initLogger(logLevel slog.Level) *slog.Logger {
 	}))
 }
 
-// expandEnvVarsInConfig recursively expands environment variables in all string values
 func expandEnvVarsInConfig() {
 	for _, key := range viper.AllKeys() {
 		value := viper.Get(key)

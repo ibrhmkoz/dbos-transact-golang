@@ -12,23 +12,17 @@ import (
 )
 
 const (
-	// nilMarker is a special marker string used to represent nil values in the database.
 	nilMarker = "__DBOS_NIL"
 
-	// PortableSerializerName is the serialization format name for cross-language interop.
 	PortableSerializerName = "portable_json"
 )
 
-// Serializer defines the interface for encoding and decoding workflow data for storage.
-// The type parameter T determines what types the serializer handles.
-// The built-in JSON serializer uses concrete types (Serializer[P]) for correct struct unmarshaling.
 // Custom serializers implement Serializer[any] and must embed type info in payloads (e.g., using a type envelope)
 type Serializer[T any] interface {
-	// Name returns the name of the serialization format (e.g., "DBOS_JSON", "DBOS_GOB").
 	Name() string
-	// Encode serializes a value to a string representation for database storage.
+
 	Encode(data T) (*string, error)
-	// Decode deserializes a string from the database back into a value.
+
 	Decode(data *string) (T, error)
 }
 
@@ -36,7 +30,7 @@ type jsonSerializer[T any] struct {
 	portable bool
 }
 
-func newJSONSerializer[T any]() Serializer[T] {
+func newJsonSerializer[T any]() Serializer[T] {
 	return &jsonSerializer[T]{portable: false}
 }
 
@@ -103,12 +97,10 @@ func (j *jsonSerializer[T]) Decode(data *string) (T, error) {
 	return result, nil
 }
 
-// GobSerializer implements Serializer[any] using Go's gob encoding.
 // Users must call gob.Register(ConcreteType{}) for each concrete type
-// used in workflow inputs, outputs, events, and messages.
+
 type GobSerializer struct{}
 
-// NewGobSerializer returns a new gob-based serializer.
 func NewGobSerializer() Serializer[any] {
 	return &GobSerializer{}
 }
@@ -151,8 +143,6 @@ func (g *GobSerializer) Decode(data *string) (any, error) {
 	return result, nil
 }
 
-// typedCustomSerializerAdapter wraps a user-provided Serializer[any] into Serializer[T],
-// handling the type assertion on decode.
 type typedCustomSerializerAdapter[T any] struct {
 	inner Serializer[any]
 }
@@ -180,32 +170,16 @@ func (a *typedCustomSerializerAdapter[T]) Decode(data *string) (T, error) {
 	return typed, nil
 }
 
-// PortableWorkflowArgs is the cross-language envelope for workflow inputs.
-// Use this to pass positional and/or named arguments when enqueuing
-// a workflow that will be executed by a DBOS application in another language.
-//
-// Example:
-//
-//	args := dbos.PortableWorkflowArgs{
-//	    PositionalArgs: []any{"hello", 42},
-//	    NamedArgs:      map[string]any{"key": "value"},
-//	}
-//	handle, err := client.Enqueue("queue", "pyWorkflow", args)
 type PortableWorkflowArgs struct {
 	PositionalArgs []any          `json:"positionalArgs"`
 	NamedArgs      map[string]any `json:"namedArgs"`
 }
 
-// portableArgsRaw is used internally for decoding, where json.RawMessage
-// preserves the original JSON for type-safe unmarshaling of individual args.
 type portableArgsRaw struct {
 	PositionalArgs []json.RawMessage `json:"positionalArgs"`
 	NamedArgs      map[string]any    `json:"namedArgs"`
 }
 
-// encodePortableArgs wraps a value into the portable args envelope and encodes it as plain JSON.
-// If the value is already a PortableWorkflowArgs, it is encoded as-is.
-// Otherwise, the value is placed as the single positional arg inside a new envelope.
 func encodePortableArgs(data any) (*string, error) {
 	var toEncode any
 	if _, ok := data.(PortableWorkflowArgs); ok {
@@ -223,13 +197,11 @@ func encodePortableArgs(data any) (*string, error) {
 	return newPortableSerializer[any]().Encode(toEncode)
 }
 
-// decodePortableArgs unwraps the first positional arg from the portable args envelope into T.
-// If T is PortableWorkflowArgs, the full envelope is decoded as-is (no unwrapping).
 func decodePortableArgs[T any](data *string) (T, error) {
 	if data == nil || *data == "null" {
 		return getNilOrZeroValue[T](), nil
 	}
-	// If T is the envelope type itself, decode the full data directly.
+
 	if reflect.TypeFor[T]() == reflect.TypeFor[PortableWorkflowArgs]() {
 		var result T
 		if err := json.Unmarshal([]byte(*data), &result); err != nil {
@@ -251,8 +223,6 @@ func decodePortableArgs[T any](data *string) (T, error) {
 	return result, nil
 }
 
-// resolveEncoder returns the serializer to use for encoding values within a workflow.
-// Priority: portable workflow → user custom serializer → default JSON.
 func resolveEncoder(ctx context.Context) Serializer[any] {
 	if wfState, ok := ctx.Value(workflowStateKey).(*workflowState); ok && wfState != nil && wfState.isPortableWorkflow {
 		return newPortableSerializer[any]()
@@ -260,11 +230,9 @@ func resolveEncoder(ctx context.Context) Serializer[any] {
 	if dc, ok := ctx.(*dbosContext); ok && dc.serializer != nil {
 		return dc.serializer
 	}
-	return newJSONSerializer[any]()
+	return newJsonSerializer[any]()
 }
 
-// resolveDecoder returns a typed serializer for decoding a value based on the stored serialization format.
-// Priority: portable_json → user custom serializer → default JSON.
 func resolveDecoder[T any](storedSerialization string, customSer Serializer[any]) (Serializer[T], error) {
 	if storedSerialization == PortableSerializerName {
 		return newPortableSerializer[T](), nil
@@ -273,20 +241,18 @@ func resolveDecoder[T any](storedSerialization string, customSer Serializer[any]
 		return &typedCustomSerializerAdapter[T]{inner: customSer}, nil
 	}
 	if storedSerialization == "" || storedSerialization == "DBOS_JSON" {
-		return newJSONSerializer[T](), nil
+		return newJsonSerializer[T](), nil
 	}
 	return nil, fmt.Errorf("unknown serialization format %q", storedSerialization)
 }
 
-// getCustomSerializerFromCtx extracts the user-provided custom serializer from a DBOSContext, if set.
-func getCustomSerializerFromCtx(ctx DBOSContext) Serializer[any] {
+func getCustomSerializerFromCtx(ctx DbosContext) Serializer[any] {
 	if dc, ok := ctx.(*dbosContext); ok {
 		return dc.serializer
 	}
 	return nil
 }
 
-// isNilValue checks if a value is nil (for pointer types, slice, map, etc.).
 func isNilValue(v any) bool {
 	val := reflect.ValueOf(v)
 	if !val.IsValid() {
@@ -299,14 +265,13 @@ func isNilValue(v any) bool {
 	return false
 }
 
-// getNilOrZeroValue returns nil for pointer types, or zero value for non-pointer types.
 func getNilOrZeroValue[T any]() T {
 	var result T
 	resultType := reflect.TypeOf(result)
 	if resultType == nil {
 		return result
 	}
-	// If T is a pointer type, return nil
+
 	if resultType.Kind() == reflect.Pointer {
 		return reflect.Zero(resultType).Interface().(T)
 	}
@@ -314,27 +279,17 @@ func getNilOrZeroValue[T any]() T {
 	return result
 }
 
-// PortableWorkflowError is the cross-language error type for workflows using portable serialization.
-// When a workflow using the portable JSON format fails, errors are stored in this structure,
-// readable by all DBOS-supported languages.
-//
-// Raise a PortableWorkflowError to pass structured error info to callers in other languages:
-//
-//	return nil, &dbos.PortableWorkflowError{Name: "ValidationError", Message: "invalid input", Code: 400}
 type PortableWorkflowError struct {
-	Name    string `json:"name"`           // Error type/class name
-	Message string `json:"message"`        // Human-readable error message
-	Code    any    `json:"code,omitempty"` // Optional application-specific error code (number or string)
-	Data    any    `json:"data,omitempty"` // Optional structured error details
+	Name    string `json:"name"`
+	Message string `json:"message"`
+	Code    any    `json:"code,omitempty"`
+	Data    any    `json:"data,omitempty"`
 }
 
 func (e *PortableWorkflowError) Error() string {
 	return e.Message
 }
 
-// serializeWorkflowError serializes an error for DB storage.
-// For portable workflows, uses the portable JSON format ({"name":..., "message":..., ...}).
-// For all others, stores the plain error string.
 func serializeWorkflowError(err error, serialization string) string {
 	if serialization != PortableSerializerName {
 		return err.Error()
@@ -350,16 +305,11 @@ func serializeWorkflowError(err error, serialization string) string {
 	}
 	b, jsonErr := json.Marshal(errData)
 	if jsonErr != nil {
-		return err.Error() // fallback to plain string
+		return err.Error()
 	}
 	return string(b)
 }
 
-// deserializeWorkflowError deserializes an error from DB storage.
-// For portable serialization, parses the JSON into a PortableWorkflowError.
-// For all others, prefers the cockroachdb/errors encoded representation
-// (preserving error types and errors.Is identity) and falls back to a plain
-// error built from the human-readable string.
 func deserializeWorkflowError(errStr *string, errEncoded *string, serialization string) error {
 	if errStr == nil || *errStr == "" {
 		return nil
@@ -372,7 +322,7 @@ func deserializeWorkflowError(errStr *string, errEncoded *string, serialization 
 	}
 	var pe PortableWorkflowError
 	if err := json.Unmarshal([]byte(*errStr), &pe); err != nil {
-		return errors.New(*errStr) // fallback: return plain error
+		return errors.New(*errStr)
 	}
 	return &pe
 }

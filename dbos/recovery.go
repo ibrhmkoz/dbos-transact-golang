@@ -1,8 +1,8 @@
 package dbos
 
-func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]*WorkflowHandle[any], error) {
+func recoverPendingWorkflows(ctx *dbosContext, executorIds []string) ([]*WorkflowHandle[any], error) {
 	workflowHandles := make([]*WorkflowHandle[any], 0)
-	// List pending workflows for the executors
+
 	pendingWorkflows, err := retryWithResult(ctx, func() ([]WorkflowStatus, error) {
 		appVersion := []string{}
 		if ctx.applicationVersion != "" {
@@ -10,7 +10,7 @@ func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]*Workflo
 		}
 		return ctx.kernel.listWorkflows(ctx, listWorkflowsDBInput{
 			status:             []WorkflowStatusType{WorkflowStatusPending},
-			executorIDs:        executorIDs,
+			executorIds:        executorIds,
 			applicationVersion: appVersion,
 			loadInput:          true,
 		})
@@ -22,36 +22,32 @@ func recoverPendingWorkflows(ctx *dbosContext, executorIDs []string) ([]*Workflo
 	for _, workflow := range pendingWorkflows {
 		if workflow.QueueName != "" {
 			cleared, err := retryWithResult(ctx, func() (bool, error) {
-				return ctx.kernel.clearQueueAssignment(ctx, workflow.ID)
+				return ctx.kernel.clearQueueAssignment(ctx, workflow.Id)
 			}, withRetrierLogger(ctx.logger))
 			if err != nil {
-				ctx.logger.Error("Error clearing queue assignment for workflow", "workflow_id", workflow.ID, "name", workflow.Name, "error", err)
+				ctx.logger.Error("Error clearing queue assignment for workflow", "workflow_id", workflow.Id, "name", workflow.Name, "error", err)
 				continue
 			}
 			if cleared {
-				workflowHandles = append(workflowHandles, newWorkflowHandle[any](ctx, workflow.ID))
+				workflowHandles = append(workflowHandles, newWorkflowHandle[any](ctx, workflow.Id))
 			}
 			continue
 		}
 
 		registeredWorkflow, exists := ctx.workflowRegistry.Load(workflow.Name)
 		if !exists {
-			ctx.logger.Error("Workflow function not found in registry", "workflow_id", workflow.ID, "name", workflow.Name)
+			ctx.logger.Error("Workflow function not found in registry", "workflow_id", workflow.Id, "name", workflow.Name)
 			continue
 		}
 
-		// Convert workflow parameters to options.
-		// Auth identity is re-attached so child workflows spawned during
-		// recovery inherit the same identity as the original run.
 		opts := []WorkflowOption{
-			withWorkflowID(workflow.ID),
+			withWorkflowId(workflow.Id),
 			withIsRecovery(),
 			WithAuthenticatedUser(workflow.AuthenticatedUser),
 			WithAssumedRole(workflow.AssumedRole),
 			WithAuthenticatedRoles(workflow.AuthenticatedRoles),
 		}
-		// Create a workflow context from the executor context
-		// Pass encoded input directly - decoding will happen in workflow wrapper when we know the target type
+
 		handle, err := registeredWorkflow.wrappedFunction(ctx, workflow.Input, workflow.Serialization, opts...)
 		if err != nil {
 			return nil, err

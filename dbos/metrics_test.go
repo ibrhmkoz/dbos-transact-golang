@@ -11,16 +11,14 @@ import (
 
 func TestGetMetrics(t *testing.T) {
 	parallelTest(t)
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	defer Shutdown(dbosCtx, 1*time.Minute)
 
-	// Get the internal kernel instance
 	Kernel, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected dbosContext")
 	require.NotNil(t, Kernel.kernel)
 
-	// Define test workflows
-	testWorkflowA := func(ctx DBOSContext, input string) (string, error) {
+	testWorkflowA := func(ctx DbosContext, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "x", nil
 		}, WithStepName("testStepX"))
@@ -36,7 +34,7 @@ func TestGetMetrics(t *testing.T) {
 		return "a", nil
 	}
 
-	testWorkflowB := func(ctx DBOSContext, input string) (string, error) {
+	testWorkflowB := func(ctx DbosContext, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return "y", nil
 		}, WithStepName("testStepY"))
@@ -46,16 +44,13 @@ func TestGetMetrics(t *testing.T) {
 		return "b", nil
 	}
 
-	// Register workflows with custom names
 	wfA := NewWorkflow(dbosCtx, testWorkflowA, WithWorkflowName("testWorkflowA"))
 	wfB := NewWorkflow(dbosCtx, testWorkflowB, WithWorkflowName("testWorkflowB"))
 
 	require.NoError(t, Launch(dbosCtx))
 
-	// Record start time before creating workflows
 	startTime := time.Now()
 
-	// Execute workflows to create metrics data
 	handle1, err := wfA(dbosCtx, "input1")
 	require.NoError(t, err)
 	_, err = handle1.GetResult()
@@ -71,20 +66,17 @@ func TestGetMetrics(t *testing.T) {
 	_, err = handle3.GetResult()
 	require.NoError(t, err)
 
-	// Query metrics from start to now + 10 hours
 	endTime := time.Now().Add(10 * time.Hour)
 	metrics, err := Kernel.kernel.getMetrics(context.Background(), startTime.Format(time.RFC3339), endTime.Format(time.RFC3339))
 	require.NoError(t, err)
 	assert.GreaterOrEqual(t, len(metrics), 4, "Expected at least 4 metrics (2 workflow counts + 2 step counts)")
 
-	// Convert to map for easier assertion
 	metricsMap := make(map[string]float64)
 	for _, m := range metrics {
 		key := m.MetricType + ":" + m.MetricName
 		metricsMap[key] = m.Value
 	}
 
-	// Verify workflow counts
 	workflowCountAFound := false
 	workflowCountBFound := false
 	stepCountXFound := false
@@ -117,14 +109,13 @@ func TestGetMetrics(t *testing.T) {
 
 func TestGetMetricsEmptyTimeRange(t *testing.T) {
 	parallelTest(t)
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	defer Shutdown(dbosCtx, 1*time.Minute)
 
 	Kernel, ok := dbosCtx.(*dbosContext)
 	require.True(t, ok, "expected dbosContext")
 	require.NotNil(t, Kernel.kernel)
 
-	// Query metrics for a time range with no data
 	futureTime := time.Now().Add(24 * time.Hour)
 	futureTime2 := futureTime.Add(1 * time.Hour)
 

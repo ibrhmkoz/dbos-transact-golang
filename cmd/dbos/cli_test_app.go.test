@@ -18,24 +18,24 @@ import (
 type Config struct {
 	Name        string `yaml:"name"`
 	Language    string `yaml:"language"`
-	DatabaseURL string `yaml:"database_url"`
+	DatabaseUrl string `yaml:"database_url"`
 }
 
 // Global variables
-var dbosCtx dbos.DBOSContext
+var dbosCtx dbos.DbosContext
 
 /*****************************/
 /**** WORKFLOWS AND STEPS ****/
 /*****************************/
 
-func ExampleWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
-	_, err := dbos.RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+func ExampleWorkflow(ctx dbos.DbosContext, _ string) (string, error) {
+	_, err := dbos.Run(ctx, func(stepCtx context.Context) (string, error) {
 		return stepOne(stepCtx)
 	})
 	if err != nil {
 		return "", err
 	}
-	return dbos.RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+	return dbos.Run(ctx, func(stepCtx context.Context) (string, error) {
 		return stepTwo(stepCtx)
 	})
 }
@@ -54,13 +54,13 @@ func stepTwo(ctx context.Context) (string, error) {
 /**** QUEUES *****************/
 /*****************************/
 
-func QueuedStepWorkflow(ctx dbos.DBOSContext, i int) (int, error) {
+func QueuedStepWorkflow(ctx dbos.DbosContext, i int) (int, error) {
 	dbos.Sleep(ctx, 5*time.Second)
 	fmt.Printf("Step %d completed!\n", i)
 	return i, nil
 }
 
-func QueueWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
+func QueueWorkflow(ctx dbos.DbosContext, _ string) (string, error) {
 	fmt.Println("Enqueueing steps")
 	handles := make([]dbos.WorkflowHandle[int], 10)
 	for i := range 10 {
@@ -78,7 +78,7 @@ func QueueWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
 /**** SCHEDULED WORKFLOWS ****/
 /*****************************/
 
-func ScheduledWorkflow(ctx dbos.DBOSContext, scheduledTime time.Time) (string, error) {
+func ScheduledWorkflow(ctx dbos.DbosContext, scheduledTime time.Time) (string, error) {
 	fmt.Printf("I am a scheduled workflow scheduled at %v and running at %v\n", scheduledTime, time.Now())
 	return "", nil
 }
@@ -87,7 +87,7 @@ func main() {
 	// Create DBOS context
 	var err error
 	config := dbos.Config{
-		DatabaseURL: os.Getenv("DBOS_SYSTEM_DATABASE_URL"),
+		DatabaseUrl: os.Getenv("DBOS_SYSTEM_DATABASE_URL"),
 		AppName:     "cli-test",
 		AdminServer: true,
 	}
@@ -97,7 +97,7 @@ func main() {
 		config.DatabaseSchema = schema
 	}
 
-	dbosCtx, err = dbos.NewDBOSContext(context.Background(), config)
+	dbosCtx, err = dbos.NewDbosContext(context.Background(), config)
 	if err != nil {
 		panic(err)
 	}
@@ -159,14 +159,14 @@ func workflowHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func queueHandler(w http.ResponseWriter, r *http.Request) {
-	workflowID := uuid.NewString()
-	_, err := dbos.RunWorkflow(dbosCtx, QueueWorkflow, "", dbos.WithWorkflowID(workflowID))
+	workflowId := uuid.NewString()
+	_, err := dbos.RunWorkflow(dbosCtx, QueueWorkflow, "", dbos.WithWorkflowId(workflowId))
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Error: %s", err), http.StatusInternalServerError)
 		return
 	}
 
-	response := map[string]string{"workflow_id": workflowID}
+	response := map[string]string{"workflow_id": workflowId}
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
 		fmt.Println("Error encoding response:", err)

@@ -22,9 +22,8 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-var testCLIPath string
+var testCliPath string
 
-// Event struct provides a simple synchronization primitive that can be used to signal between goroutines.
 type Event struct {
 	mu    sync.Mutex
 	cond  *sync.Cond
@@ -52,11 +51,10 @@ func (e *Event) Set() {
 	e.cond.Broadcast()
 }
 
-// dropDatabaseIfExists force-drops a PostgreSQL database.
 func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) error {
 	sanitizedDBName := pgx.Identifier{dbName}.Sanitize()
-	dropSQL := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
-	if _, err := conn.Exec(ctx, dropSQL); err != nil {
+	dropSql := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
+	if _, err := conn.Exec(ctx, dropSql); err != nil {
 		return fmt.Errorf("failed to drop database %s: %w", dbName, err)
 	}
 	return nil
@@ -68,27 +66,22 @@ func (e *Event) Clear() {
 	e.IsSet = false
 }
 
-// TestMain builds the CLI once for all tests
 func TestMain(m *testing.M) {
-	// Get the directory where this test file is located
+
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "Failed to get current file path\n")
 		os.Exit(1)
 	}
 
-	// Navigate to the project root then to cmd/dbos
 	testDir := filepath.Dir(filename)
-	projectRoot := filepath.Dir(testDir) // Go up from integration/ to project root
+	projectRoot := filepath.Dir(testDir)
 	cmdDir := filepath.Join(projectRoot, "cmd", "dbos")
 
-	// Build output path in the integration directory (where test is)
 	cliPath := filepath.Join(testDir, "dbos-cli-test")
 
-	// Delete any existing binary before building
 	os.Remove(cliPath)
 
-	// Build the CLI from the cmd/dbos directory
 	buildCmd := exec.Command("go", "build", "-o", cliPath, ".")
 	buildCmd.Dir = cmdDir
 	buildOutput, buildErr := buildCmd.CombinedOutput()
@@ -97,15 +90,13 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Set the global CLI path
 	absPath, err := filepath.Abs(cliPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to get absolute path: %v\n", err)
 		os.Exit(1)
 	}
-	testCLIPath = absPath
+	testCliPath = absPath
 
-	// Start postgres
 	startPostgresCmd := exec.Command(cliPath, "postgres", "start")
 	startOutput, startErr := startPostgresCmd.CombinedOutput()
 	if startErr != nil {
@@ -113,10 +104,8 @@ func TestMain(m *testing.M) {
 		os.Exit(1)
 	}
 
-	// Run tests
 	code := m.Run()
 
-	// Clean up CLI binary
 	os.Remove(cliPath)
 
 	os.Exit(code)
@@ -131,7 +120,6 @@ func startPostgres(cliPath string) error {
 	return nil
 }
 
-// Use the DBOS CLI to stop postgres.
 func stopPostgres(cliPath string) error {
 	cmd := exec.Command(cliPath, "postgres", "stop")
 	output, err := cmd.CombinedOutput()
@@ -141,7 +129,7 @@ func stopPostgres(cliPath string) error {
 	return nil
 }
 
-func retryCLI(t *testing.T, label string, op func() error, timeout time.Duration) {
+func retryCli(t *testing.T, label string, op func() error, timeout time.Duration) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	var lastErr error
@@ -158,9 +146,8 @@ func retryCLI(t *testing.T, label string, op func() error, timeout time.Duration
 	}
 }
 
-// PostgresChaosMonkey starts a goroutine that randomly stops and starts PostgreSQL
 func PostgresChaosMonkey(t *testing.T, ctx context.Context, wg *sync.WaitGroup) {
-	cliPath := testCLIPath
+	cliPath := testCliPath
 
 	wg.Add(1)
 	go func() {
@@ -168,14 +155,14 @@ func PostgresChaosMonkey(t *testing.T, ctx context.Context, wg *sync.WaitGroup) 
 		defer t.Logf("Chaos Monkey: Exiting")
 
 		ensureUp := func() {
-			retryCLI(t, "start postgres", func() error { return startPostgres(cliPath) }, 60*time.Second)
+			retryCli(t, "start postgres", func() error { return startPostgres(cliPath) }, 60*time.Second)
 		}
 		ensureDown := func() {
-			retryCLI(t, "stop postgres", func() error { return stopPostgres(cliPath) }, 60*time.Second)
+			retryCli(t, "stop postgres", func() error { return stopPostgres(cliPath) }, 60*time.Second)
 		}
 
 		for {
-			// Check for context cancellation first
+
 			select {
 			case <-ctx.Done():
 				ensureUp()
@@ -183,17 +170,14 @@ func PostgresChaosMonkey(t *testing.T, ctx context.Context, wg *sync.WaitGroup) 
 			default:
 			}
 
-			// Random down time between 0 and 2 seconds
 			downTime := time.Duration(rand.Float64()*2) * time.Second
 
-			// Stop PostgreSQL
 			ensureDown()
 			t.Logf("🐒 Chaos Monkey: Stopped PostgreSQL")
 
-			// Sleep for random down time
 			select {
 			case <-time.After(downTime):
-				// Start PostgreSQL again
+
 				ensureUp()
 				t.Logf("🐒 Chaos Monkey: Starting PostgreSQL")
 			case <-ctx.Done():
@@ -201,11 +185,10 @@ func PostgresChaosMonkey(t *testing.T, ctx context.Context, wg *sync.WaitGroup) 
 				return
 			}
 
-			// Wait a bit before next chaos event (between 5 and 40 seconds)
 			upTime := time.Duration(5+rand.Float64()*35) * time.Second
 			select {
 			case <-time.After(upTime):
-				// Continue to next iteration
+
 			case <-ctx.Done():
 				t.Logf("Chaos Monkey: Context cancelled during uptime")
 				return
@@ -214,42 +197,39 @@ func PostgresChaosMonkey(t *testing.T, ctx context.Context, wg *sync.WaitGroup) 
 	}()
 }
 
-// setupDBOS sets up a DBOS context for integration testing
-func setupDBOS(t *testing.T) dbos.DBOSContext {
+func setupDbos(t *testing.T) dbos.DbosContext {
 	t.Helper()
 
-	databaseURL := os.Getenv("DBOS_SYSTEM_DATABASE_URL")
-	if databaseURL == "" {
+	databaseUrl := os.Getenv("DBOS_SYSTEM_DATABASE_URL")
+	if databaseUrl == "" {
 		password := os.Getenv("PGPASSWORD")
 		if password == "" {
 			password = "dbos"
 		}
-		databaseURL = fmt.Sprintf("postgres://postgres:%s@localhost:5432/dbos?sslmode=disable", url.QueryEscape(password))
+		databaseUrl = fmt.Sprintf("postgres://postgres:%s@localhost:5432/dbos?sslmode=disable", url.QueryEscape(password))
 	}
 
-	// Clean up the test database
-	parsedURL, err := pgx.ParseConfig(databaseURL)
+	parsedUrl, err := pgx.ParseConfig(databaseUrl)
 	require.NoError(t, err)
 
-	dbName := parsedURL.Database
-	postgresURL := parsedURL.Copy()
-	postgresURL.Database = "postgres"
-	conn, err := pgx.ConnectConfig(context.Background(), postgresURL)
+	dbName := parsedUrl.Database
+	postgresUrl := parsedUrl.Copy()
+	postgresUrl.Database = "postgres"
+	conn, err := pgx.ConnectConfig(context.Background(), postgresUrl)
 	require.NoError(t, err)
 	defer conn.Close(context.Background())
 
 	err = dropDatabaseIfExists(context.Background(), conn, dbName)
 	require.NoError(t, err)
 
-	dbosCtx, err := dbos.NewDBOSContext(context.Background(), dbos.Config{
-		DatabaseURL: databaseURL,
+	dbosCtx, err := dbos.NewDbosContext(context.Background(), dbos.Config{
+		DatabaseUrl: databaseUrl,
 		AppName:     "chaos-test",
 		Logger:      slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelDebug})),
 	})
 	require.NoError(t, err)
 	require.NotNil(t, dbosCtx)
 
-	// Register cleanup to run after test completes
 	t.Cleanup(func() {
 		if dbosCtx != nil {
 			dbos.Shutdown(dbosCtx, 30*time.Second)
@@ -259,23 +239,19 @@ func setupDBOS(t *testing.T) dbos.DBOSContext {
 	return dbosCtx
 }
 
-// Test workflow with multiple steps and transactions
 func TestChaosWorkflow(t *testing.T) {
-	dbosCtx := setupDBOS(t)
+	dbosCtx := setupDbos(t)
 
-	// Start chaos monkey
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	PostgresChaosMonkey(t, ctx, &wg)
 
-	// Define scheduled workflow that runs every second
-	scheduledWorkflow := func(ctx dbos.DBOSContext, scheduledTime time.Time) (struct{}, error) {
+	scheduledWorkflow := func(ctx dbos.DbosContext, scheduledTime time.Time) (struct{}, error) {
 		return struct{}{}, nil
 	}
 
-	// Define step functions
 	stepOne := func(_ context.Context, x int) (int, error) {
 		return x + 1, nil
 	}
@@ -284,9 +260,8 @@ func TestChaosWorkflow(t *testing.T) {
 		return x + 2, nil
 	}
 
-	// Define workflow function
-	workflow := func(ctx dbos.DBOSContext, x int) (int, error) {
-		// Execute step one
+	workflow := func(ctx dbos.DbosContext, x int) (int, error) {
+
 		x, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return stepOne(context, x)
 		})
@@ -294,7 +269,6 @@ func TestChaosWorkflow(t *testing.T) {
 			return 0, fmt.Errorf("step one failed: %w", err)
 		}
 
-		// Execute step two
 		x, err = dbos.Run(ctx, func(context context.Context) (int, error) {
 			return stepTwo(context, x)
 		})
@@ -305,15 +279,13 @@ func TestChaosWorkflow(t *testing.T) {
 		return x, nil
 	}
 
-	// Register the workflows
 	workflowWF := dbos.NewWorkflow(dbosCtx, workflow)
-	// Register scheduled workflow to run every second for chaos testing
+
 	dbos.NewWorkflow(dbosCtx, scheduledWorkflow, dbos.WithSchedule("* * * * * *"), dbos.WithWorkflowName("ScheduledChaosTest"))
 
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
 
-	// Run multiple workflows
 	numWorkflows := 10000
 	for i := range numWorkflows {
 		if i%100 == 0 {
@@ -327,7 +299,6 @@ func TestChaosWorkflow(t *testing.T) {
 		assert.Equal(t, i+3, result, "unexpected result for workflow %d", i)
 	}
 
-	// Validate scheduled workflow executions using ListWorkflows
 	scheduledWorkflows, err := dbos.ListWorkflows(dbosCtx,
 		dbos.WithName("ScheduledChaosTest"),
 		dbos.WithStatus([]dbos.WorkflowStatusType{dbos.WorkflowStatusSuccess}),
@@ -340,18 +311,15 @@ func TestChaosWorkflow(t *testing.T) {
 
 	assert.Equal(t, len(scheduledWorkflows), 1, "Expected exactly one scheduled workflow execution")
 
-	// Check the last execution was within 10 seconds -- reasonable for a 1 second schedule and 2 seconds postgres downtime
-	latestWorkflow := scheduledWorkflows[0] // Sorted descending
+	latestWorkflow := scheduledWorkflows[0]
 	timeSinceLastExecution := time.Since(latestWorkflow.CreatedAt)
 	assert.Less(t, timeSinceLastExecution, 10*time.Second,
 		"Last scheduled execution was %v ago, expected less than 60 seconds", timeSinceLastExecution)
 }
 
-// Test send/recv functionality
 func TestChaosRecv(t *testing.T) {
-	dbosCtx := setupDBOS(t)
+	dbosCtx := setupDbos(t)
 
-	// Start chaos monkey
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -360,19 +328,16 @@ func TestChaosRecv(t *testing.T) {
 
 	topic := "test_topic"
 
-	// Pre-allocate signals for all workflows, indexed by workflow index
 	numWorkflows := 10000
 	signals := make([]*Event, numWorkflows)
 	for i := range numWorkflows {
 		signals[i] = NewEvent()
 	}
 
-	// Define recv workflow - takes index as parameter
-	recvWorkflow := func(ctx dbos.DBOSContext, index int) (string, error) {
-		// Signal that we've started
+	recvWorkflow := func(ctx dbos.DbosContext, index int) (string, error) {
+
 		signals[index].Set()
 
-		// Receive from topic with timeout
 		value, err := dbos.Recv[string](ctx, topic, 10*time.Minute)
 		if err != nil {
 			return "", fmt.Errorf("failed to receive: %w", err)
@@ -380,13 +345,11 @@ func TestChaosRecv(t *testing.T) {
 		return value, nil
 	}
 
-	// Register the workflow
 	recvWorkflowWF := dbos.NewWorkflow(dbosCtx, recvWorkflow)
 
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
 
-	// Run multiple workflows with send/recv
 	for i := range numWorkflows {
 		if i%100 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
@@ -394,29 +357,23 @@ func TestChaosRecv(t *testing.T) {
 		handle, err := recvWorkflowWF(dbosCtx, i)
 		require.NoError(t, err, "failed to start workflow %d", i)
 
-		// Wait for the workflow to actually start before calling Recv
 		signals[i].Wait()
 
-		// Generate a random value
 		value := uuid.NewString()
 
-		// Send the value to the workflow
-		workflowID := handle.GetWorkflowID()
-		err = dbos.Send(dbosCtx, workflowID, value, topic)
+		workflowId := handle.GetWorkflowId()
+		err = dbos.Send(dbosCtx, workflowId, value, topic)
 		require.NoError(t, err, "failed to send value for workflow %d", i)
 
-		// Get the result and verify it matches
 		result, err := handle.GetResult()
 		require.NoError(t, err, "failed to get result for workflow %d", i)
 		assert.Equal(t, value, result, "unexpected result for workflow %d", i)
 	}
 }
 
-// Test event functionality
 func TestChaosEvents(t *testing.T) {
-	dbosCtx := setupDBOS(t)
+	dbosCtx := setupDbos(t)
 
-	// Start chaos monkey
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
@@ -425,8 +382,7 @@ func TestChaosEvents(t *testing.T) {
 
 	key := "test_key"
 
-	// Define event workflow
-	eventWorkflow := func(ctx dbos.DBOSContext, _ string) (string, error) {
+	eventWorkflow := func(ctx dbos.DbosContext, _ string) (string, error) {
 		value := uuid.NewString()
 		err := dbos.SetEvent(ctx, key, value)
 		if err != nil {
@@ -435,48 +391,41 @@ func TestChaosEvents(t *testing.T) {
 		return value, nil
 	}
 
-	// Register the workflow
 	eventWorkflowWF := dbos.NewWorkflow(dbosCtx, eventWorkflow)
 
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
 
-	// Run multiple workflows with events
 	numWorkflows := 5000
 	for i := range numWorkflows {
 		if i%100 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
 		}
-		// Start workflow; the runtime assigns its ID
+
 		handle, err := eventWorkflowWF(dbosCtx, "")
 		require.NoError(t, err, "failed to start workflow %d", i)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 
-		// Get the workflow result
 		value, err := handle.GetResult()
 		require.NoError(t, err, "failed to get result for workflow %d", i)
 
-		// Retrieve the event and verify it matches
-		retrievedValue, err := dbos.GetEvent[string](dbosCtx, wfID, key, 10*time.Minute)
+		retrievedValue, err := dbos.GetEvent[string](dbosCtx, wfId, key, 10*time.Minute)
 		require.NoError(t, err, "failed to get event for workflow %d", i)
 		assert.Equal(t, value, retrievedValue, "unexpected event value for workflow %d", i)
 	}
 }
 
-// Test queue functionality
 func TestChaosQueues(t *testing.T) {
-	dbosCtx := setupDBOS(t)
+	dbosCtx := setupDbos(t)
 
-	// Start chaos monkey
 	var wg sync.WaitGroup
 	defer wg.Wait()
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	PostgresChaosMonkey(t, ctx, &wg)
 
-	// Define step functions
-	stepOne := func(ctx dbos.DBOSContext, x int) (int, error) {
-		// Run as a step
+	stepOne := func(ctx dbos.DbosContext, x int) (int, error) {
+
 		result, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return x + 1, nil
 		})
@@ -486,8 +435,8 @@ func TestChaosQueues(t *testing.T) {
 		return result, nil
 	}
 
-	stepTwo := func(ctx dbos.DBOSContext, x int) (int, error) {
-		// Run as a step
+	stepTwo := func(ctx dbos.DbosContext, x int) (int, error) {
+
 		result, err := dbos.Run(ctx, func(context context.Context) (int, error) {
 			return x + 2, nil
 		})
@@ -500,9 +449,8 @@ func TestChaosQueues(t *testing.T) {
 	stepOneWorkflow := dbos.NewWorkflow(dbosCtx, stepOne)
 	stepTwoWorkflow := dbos.NewWorkflow(dbosCtx, stepTwo)
 
-	// Define main workflow that enqueues other workflows
-	workflow := func(ctx dbos.DBOSContext, x int) (int, error) {
-		// Enqueue step one
+	workflow := func(ctx dbos.DbosContext, x int) (int, error) {
+
 		handle1, err := stepOneWorkflow(ctx, x)
 		if err != nil {
 			return 0, fmt.Errorf("failed to enqueue step one: %w", err)
@@ -512,7 +460,6 @@ func TestChaosQueues(t *testing.T) {
 			return 0, fmt.Errorf("failed to get result from step one: %w", err)
 		}
 
-		// Enqueue step two
 		handle2, err := stepTwoWorkflow(ctx, x)
 		if err != nil {
 			return 0, fmt.Errorf("failed to enqueue step two: %w", err)
@@ -529,13 +476,12 @@ func TestChaosQueues(t *testing.T) {
 	err := dbos.Launch(dbosCtx)
 	require.NoError(t, err)
 
-	// Run multiple workflows
 	numWorkflows := 30
 	for i := range numWorkflows {
 		if i%10 == 0 {
 			t.Logf("Starting workflow %d/%d", i+1, numWorkflows)
 		}
-		// Enqueue the main workflow
+
 		handle, err := mainWorkflow(dbosCtx, i)
 		require.NoError(t, err, "failed to enqueue workflow %d", i)
 

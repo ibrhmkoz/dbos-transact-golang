@@ -18,15 +18,11 @@ import (
 	"go.uber.org/goleak"
 )
 
-// getDatabaseURL returns the backend database URL shared by all tests. When
-// DBOS_SYSTEM_DATABASE_URL is not set, it starts a throwaway Postgres
-// testcontainer (once per test binary; torn down in TestMain) so tests don't
-// depend on a locally running server.
-func getDatabaseURL(t *testing.T) string {
+func getDatabaseUrl(t *testing.T) string {
 	t.Helper()
 	pgContainerOnce.Do(func() {
-		if databaseURL := os.Getenv("DBOS_SYSTEM_DATABASE_URL"); databaseURL != "" {
-			pgDatabaseURL = databaseURL
+		if databaseUrl := os.Getenv("DBOS_SYSTEM_DATABASE_URL"); databaseUrl != "" {
+			pgDatabaseUrl = databaseUrl
 			return
 		}
 		password := os.Getenv("PGPASSWORD")
@@ -34,7 +30,7 @@ func getDatabaseURL(t *testing.T) string {
 			password = "dbos"
 		}
 		// context.Background() rather than t.Context(): the container outlives the
-		// first test that happens to start it.
+
 		container, err := postgres.Run(context.Background(), "postgres:16-alpine",
 			postgres.WithDatabase("dbos"),
 			postgres.WithUsername("postgres"),
@@ -46,26 +42,26 @@ func getDatabaseURL(t *testing.T) string {
 			return
 		}
 		pgContainer = container
-		pgDatabaseURL, pgContainerErr = container.ConnectionString(context.Background(), "sslmode=disable")
+		pgDatabaseUrl, pgContainerErr = container.ConnectionString(context.Background(), "sslmode=disable")
 	})
 	require.NoError(t, pgContainerErr)
-	return pgDatabaseURL
+	return pgDatabaseUrl
 }
 
 var (
-	testDBURLs        sync.Map // *testing.T -> string; ensures setupDBOS and follow-up callers share the same database.
-	usedTestDBs       sync.Map // *testing.T -> struct{}; tracks whether setupDBOS has initialized the test database.
+	testDBUrls        sync.Map
+	usedTestDBs       sync.Map
 	parallelTestCount atomic.Int64
-	testDatabaseID    atomic.Uint64
+	testDatabaseId    atomic.Uint64
 	pgTemplateOnce    sync.Once
-	pgTemplateURL     string
+	pgTemplateUrl     string
 	pgTemplateName    string
 	pgTemplateErr     error
 	pgTemplateCloneMu sync.Mutex
 	pgContainerOnce   sync.Once
 	pgContainer       *postgres.PostgresContainer
 	pgContainerErr    error
-	pgDatabaseURL     string
+	pgDatabaseUrl     string
 )
 
 var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
@@ -73,7 +69,7 @@ var invalidDatabaseNameChars = regexp.MustCompile(`[^a-zA-Z0-9_]`)
 func TestMain(m *testing.M) {
 	exitCode := m.Run()
 	if pgTemplateName != "" {
-		config, err := pgx.ParseConfig(pgTemplateURL)
+		config, err := pgx.ParseConfig(pgTemplateUrl)
 		if err == nil {
 			config.Database = "postgres"
 			conn, connectErr := pgx.ConnectConfig(context.Background(), config)
@@ -98,15 +94,15 @@ func parallelTest(t *testing.T) {
 	t.Cleanup(func() { parallelTestCount.Add(-1) })
 }
 
-func backendDatabaseURL(t *testing.T) string {
+func backendDatabaseUrl(t *testing.T) string {
 	t.Helper()
-	if v, ok := testDBURLs.Load(t); ok {
+	if v, ok := testDBUrls.Load(t); ok {
 		return v.(string)
 	}
 	url := createPostgresTestDatabase(t)
-	testDBURLs.Store(t, url)
+	testDBUrls.Store(t, url)
 	t.Cleanup(func() {
-		testDBURLs.Delete(t)
+		testDBUrls.Delete(t)
 		usedTestDBs.Delete(t)
 	})
 	return url
@@ -116,7 +112,7 @@ func createPostgresTestDatabase(t *testing.T) string {
 	t.Helper()
 	ensurePostgresTemplate(t)
 
-	config, err := pgx.ParseConfig(pgTemplateURL)
+	config, err := pgx.ParseConfig(pgTemplateUrl)
 	require.NoError(t, err)
 	adminConfig := config.Copy()
 	adminConfig.Database = "postgres"
@@ -125,13 +121,13 @@ func createPostgresTestDatabase(t *testing.T) string {
 	defer conn.Close(context.Background())
 
 	dbName := testDatabaseName(t.Name())
-	createSQL := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", pgx.Identifier{dbName}.Sanitize(), pgx.Identifier{pgTemplateName}.Sanitize())
+	createSql := fmt.Sprintf("CREATE DATABASE %s TEMPLATE %s", pgx.Identifier{dbName}.Sanitize(), pgx.Identifier{pgTemplateName}.Sanitize())
 	pgTemplateCloneMu.Lock()
-	_, err = conn.Exec(context.Background(), createSQL)
+	_, err = conn.Exec(context.Background(), createSql)
 	pgTemplateCloneMu.Unlock()
 	require.NoError(t, err)
 
-	databaseURL := replaceDatabaseInURL(t, pgTemplateURL, dbName)
+	databaseUrl := replaceDatabaseInUrl(t, pgTemplateUrl, dbName)
 	t.Cleanup(func() {
 		cleanupConfig := adminConfig.Copy()
 		cleanupConn, cleanupErr := pgx.ConnectConfig(context.Background(), cleanupConfig)
@@ -139,13 +135,13 @@ func createPostgresTestDatabase(t *testing.T) string {
 		defer cleanupConn.Close(context.Background())
 		require.NoError(t, dropDatabaseIfExists(context.Background(), cleanupConn, dbName))
 	})
-	return databaseURL
+	return databaseUrl
 }
 
 func ensurePostgresTemplate(t *testing.T) {
 	t.Helper()
 	pgTemplateOnce.Do(func() {
-		config, err := pgx.ParseConfig(getDatabaseURL(t))
+		config, err := pgx.ParseConfig(getDatabaseUrl(t))
 		if err != nil {
 			pgTemplateErr = err
 			return
@@ -169,9 +165,9 @@ func ensurePostgresTemplate(t *testing.T) {
 			return
 		}
 
-		pgTemplateURL = replaceDatabaseInURL(t, getDatabaseURL(t), pgTemplateName)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: pgTemplateURL,
+		pgTemplateUrl = replaceDatabaseInUrl(t, getDatabaseUrl(t), pgTemplateName)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: pgTemplateUrl,
 			AppName:     "test-template",
 		})
 		if err != nil {
@@ -183,28 +179,24 @@ func ensurePostgresTemplate(t *testing.T) {
 	require.NoError(t, pgTemplateErr)
 }
 
-// verifyNoLeaks asserts no goroutines leaked, ignoring goroutines that
 // legitimately outlive a single test.
 func verifyNoLeaks(t *testing.T) {
 	t.Helper()
 	goleak.VerifyNone(t,
-		// Ignore pgx health checks
-		// https://github.com/jackc/pgx/blob/15bca4a4e14e0049777c1245dba4c16300fe4fd0/pgxpool/pool.go#L417
+
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).backgroundHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck"),
 		goleak.IgnoreAnyFunction("github.com/jackc/pgx/v5/pgxpool.(*Pool).triggerHealthCheck.func1"),
-		// Ignore the testcontainers reaper (ryuk) connection; it lives for
-		// the whole test binary, not per test.
+
 		goleak.IgnoreAnyFunction("github.com/testcontainers/testcontainers-go.(*Reaper).connect.func1"),
 	)
 }
 
-// replaceDatabaseInURL returns baseURL pointing at dbName. Mutating
 // pgx.ConnConfig.Database and calling ConnString() does NOT work: ConnString
-// returns the original string passed to ParseConfig, ignoring mutations.
-func replaceDatabaseInURL(t *testing.T, baseURL, dbName string) string {
+
+func replaceDatabaseInUrl(t *testing.T, baseUrl, dbName string) string {
 	t.Helper()
-	u, err := url.Parse(baseURL)
+	u, err := url.Parse(baseUrl)
 	require.NoError(t, err)
 	u.Path = "/" + dbName
 	return u.String()
@@ -212,7 +204,7 @@ func replaceDatabaseInURL(t *testing.T, baseURL, dbName string) string {
 
 func testDatabaseName(testName string) string {
 	name := invalidDatabaseNameChars.ReplaceAllString(testName, "_")
-	suffix := "_" + strconv.Itoa(os.Getpid()) + "_" + strconv.FormatUint(testDatabaseID.Add(1), 10)
+	suffix := "_" + strconv.Itoa(os.Getpid()) + "_" + strconv.FormatUint(testDatabaseId.Add(1), 10)
 	const maxPostgresIdentifierLength = 63
 	maxNameLength := maxPostgresIdentifierLength - len("dbos_test_") - len(suffix)
 	if len(name) > maxNameLength {
@@ -221,22 +213,20 @@ func testDatabaseName(testName string) string {
 	return "dbos_test_" + name + suffix
 }
 
-/* Test database reset */
-func resetTestDatabase(t *testing.T, databaseURL string) {
+func resetTestDatabase(t *testing.T, databaseUrl string) {
 	t.Helper()
 
-	// Clean up the test database
-	parsedURL, err := pgx.ParseConfig(databaseURL)
+	parsedUrl, err := pgx.ParseConfig(databaseUrl)
 	require.NoError(t, err)
 
-	dbName := parsedURL.Database
+	dbName := parsedUrl.Database
 	if dbName == "" {
 		t.Skip("DBOS_SYSTEM_DATABASE_URL does not specify a database name, skipping integration test")
 	}
 
-	postgresURL := parsedURL.Copy()
-	postgresURL.Database = "postgres"
-	conn, err := pgx.ConnectConfig(context.Background(), postgresURL)
+	postgresUrl := parsedUrl.Copy()
+	postgresUrl.Database = "postgres"
+	conn, err := pgx.ConnectConfig(context.Background(), postgresUrl)
 	require.NoError(t, err)
 	defer conn.Close(context.Background())
 
@@ -244,40 +234,38 @@ func resetTestDatabase(t *testing.T, databaseURL string) {
 	require.NoError(t, err)
 }
 
-type setupDBOSOptions struct {
+type setupDbosOptions struct {
 	dropDB                   bool
 	checkLeaks               bool
 	serializer               Serializer[any]
 	schedulerPollingInterval time.Duration
 }
 
-/* Test database setup */
-func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
+func setupDbos(t *testing.T, opts setupDbosOptions) DbosContext {
 	t.Helper()
 
-	databaseURL := backendDatabaseURL(t)
+	databaseUrl := backendDatabaseUrl(t)
 	_, databaseWasUsed := usedTestDBs.Load(t)
 	if opts.dropDB && databaseWasUsed {
-		resetTestDatabase(t, databaseURL)
+		resetTestDatabase(t, databaseUrl)
 	}
 
 	config := Config{
-		DatabaseURL:              databaseURL,
+		DatabaseUrl:              databaseUrl,
 		AppName:                  "test-app",
 		Serializer:               opts.serializer,
 		SchedulerPollingInterval: opts.schedulerPollingInterval,
 	}
 
-	dbosCtx, err := NewDBOSContext(context.Background(), config)
+	dbosCtx, err := NewDbosContext(context.Background(), config)
 	require.NoError(t, err)
 	require.NotNil(t, dbosCtx)
 	usedTestDBs.Store(t, struct{}{})
 
-	// Register cleanup to run after test completes
 	t.Cleanup(func() {
 		dbosCtx.(*dbosContext).logger.Info("Cleaning up DBOS instance...")
 		if dbosCtx != nil {
-			Shutdown(dbosCtx, 30*time.Second) // Wait for workflows to finish and shutdown admin server and system database
+			Shutdown(dbosCtx, 30*time.Second)
 		}
 		dbosCtx = nil
 		if opts.checkLeaks && parallelTestCount.Load() == 0 {
@@ -288,7 +276,6 @@ func setupDBOS(t *testing.T, opts setupDBOSOptions) DBOSContext {
 	return dbosCtx
 }
 
-/* Event struct provides a simple synchronization primitive that can be used to signal between goroutines. */
 type Event struct {
 	mu    sync.Mutex
 	cond  *sync.Cond
@@ -322,21 +309,20 @@ func (e *Event) Clear() {
 	e.IsSet = false
 }
 
-// setWorkflowStatusPending sets the workflow's status to PENDING in the DB (clearing output, error, started_at_epoch_ms).
-func setWorkflowStatusPending(t *testing.T, dbosCtx DBOSContext, workflowID string) {
+func setWorkflowStatusPending(t *testing.T, dbosCtx DbosContext, workflowId string) {
 	t.Helper()
 	c, ok := dbosCtx.(*dbosContext)
-	require.True(t, ok, "expected DBOSContext to be *dbosContext")
+	require.True(t, ok, "expected DbosContext to be *dbosContext")
 	Kernel := c.kernel
 	updateQuery := fmt.Sprintf(`UPDATE %sworkflow_status
 		SET status = $1, output = NULL, error = NULL, started_at_epoch_ms = NULL, updated_at = $2
 		WHERE workflow_uuid = $3`, "")
 	_, err := Kernel.pool.Exec(context.Background(), updateQuery,
-		WorkflowStatusPending, time.Now().UnixMilli(), workflowID)
+		WorkflowStatusPending, time.Now().UnixMilli(), workflowId)
 	require.NoError(t, err, "failed to set workflow status to PENDING")
 }
 
-func queueEntriesAreCleanedUp(ctx DBOSContext) bool {
+func queueEntriesAreCleanedUp(ctx DbosContext) bool {
 	maxTries := 10
 	success := false
 	exec, ok := ctx.(*dbosContext)
@@ -358,7 +344,7 @@ func queueEntriesAreCleanedUp(ctx DBOSContext) bool {
 					AND status IN ('ENQUEUED', 'PENDING')`, "")
 
 		var count int
-		err = tx.QueryRow(ctx, query, _DBOS_INTERNAL_QUEUE_NAME).Scan(&count)
+		err = tx.QueryRow(ctx, query, _dbosInternalQueueName).Scan(&count)
 		tx.Rollback(ctx)
 
 		if err != nil {

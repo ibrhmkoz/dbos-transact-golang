@@ -19,25 +19,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// writeCommand represents a command to write to the WebSocket connection
 type writeCommand struct {
 	messageType int
 	data        []byte
-	response    chan error // Channel to send back the result
+	response    chan error
 }
 
-// mockWebSocketServer provides a controllable WebSocket server for testing
 type mockWebSocketServer struct {
 	server      *httptest.Server
 	upgrader    websocket.Upgrader
-	connMu      sync.Mutex // Only for connection assignment/reassignment
+	connMu      sync.Mutex
 	conn        *websocket.Conn
 	closed      atomic.Bool
 	messages    chan []byte
 	pings       chan struct{}
-	writeCmds   chan writeCommand // Channel for write commands
+	writeCmds   chan writeCommand
 	stopHandler chan struct{}
-	ignorePings atomic.Bool // When true, don't respond with pongs
+	ignorePings atomic.Bool
 }
 
 func newMockWebSocketServer() *mockWebSocketServer {
@@ -54,7 +52,7 @@ func newMockWebSocketServer() *mockWebSocketServer {
 }
 
 func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
-	// Check if we're closed
+
 	if m.closed.Load() {
 		http.Error(w, "Server closed", http.StatusServiceUnavailable)
 		return
@@ -65,16 +63,14 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 		return
 	}
 
-	// Connection assignment - this is the only place we need mutex
 	m.connMu.Lock()
-	// Close any existing connection
+
 	if m.conn != nil {
 		m.conn.Close()
 	}
 	m.conn = conn
 	m.connMu.Unlock()
 
-	// Ensure the connection gets cleared when this handler exits
 	defer func() {
 		m.connMu.Lock()
 		if m.conn == conn {
@@ -84,13 +80,10 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 		conn.Close()
 	}()
 
-	// Handle connection lifecycle - this function owns all I/O on conn
-
 	// We need to handle pings manually since we can't use the ping handler
-	// (it would cause concurrent writes with our main loop)
+
 	pingReceived := make(chan struct{}, 10)
 
-	// Custom ping handler that just signals - no writing
 	conn.SetPingHandler(func(string) error {
 		select {
 		case m.pings <- struct{}{}:
@@ -103,7 +96,6 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 		return nil
 	})
 
-	// Start dedicated read goroutine - reads and forwards messages
 	readDone := make(chan error, 1)
 	go func() {
 		defer close(readDone)
@@ -121,7 +113,6 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 		}
 	}()
 
-	// Main write loop - all writes happen here sequentially
 	for {
 		select {
 		case <-m.stopHandler:
@@ -133,7 +124,7 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 			return
 
 		case writeCmd := <-m.writeCmds:
-			// Handle write command
+
 			err := conn.WriteMessage(writeCmd.messageType, writeCmd.data)
 			if writeCmd.response != nil {
 				select {
@@ -147,7 +138,7 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 			}
 
 		case <-pingReceived:
-			// Handle ping response (send pong)
+
 			if !m.ignorePings.Load() {
 				err := conn.WriteMessage(websocket.PongMessage, nil)
 				if err != nil {
@@ -159,14 +150,13 @@ func (m *mockWebSocketServer) handleWebSocket(w http.ResponseWriter, r *http.Req
 	}
 }
 
-func (m *mockWebSocketServer) getURL() string {
+func (m *mockWebSocketServer) getUrl() string {
 	return "ws" + strings.TrimPrefix(m.server.URL, "http")
 }
 
 func (m *mockWebSocketServer) close() {
 	m.closed.Store(true)
 
-	// Signal handler to stop but don't block
 	select {
 	case m.stopHandler <- struct{}{}:
 	default:
@@ -179,14 +169,14 @@ func (m *mockWebSocketServer) shutdown() {
 }
 
 func (m *mockWebSocketServer) restart() {
-	// Reset for new connections
+
 	m.closed.Store(false)
-	// Drain stop handler channel and write command channel
+
 	select {
 	case <-m.stopHandler:
 	default:
 	}
-	// Drain any pending write commands
+
 drainLoop:
 	for {
 		select {
@@ -217,7 +207,6 @@ func (m *mockWebSocketServer) waitForConnection(timeout time.Duration) bool {
 	return false
 }
 
-// sendTextMessage sends a text WebSocket message to the connected client
 func (m *mockWebSocketServer) sendTextMessage(data []byte) error {
 	m.connMu.Lock()
 	hasConn := m.conn != nil
@@ -247,7 +236,6 @@ func (m *mockWebSocketServer) sendTextMessage(data []byte) error {
 	}
 }
 
-// sendBinaryMessage sends a binary WebSocket message to the connected client
 func (m *mockWebSocketServer) sendBinaryMessage(data []byte) error {
 	// Check if we have a connection without blocking
 	m.connMu.Lock()
@@ -258,7 +246,6 @@ func (m *mockWebSocketServer) sendBinaryMessage(data []byte) error {
 		return fmt.Errorf("no connection")
 	}
 
-	// Send write command via channel
 	response := make(chan error, 1)
 	cmd := writeCommand{
 		messageType: websocket.BinaryMessage,
@@ -268,7 +255,7 @@ func (m *mockWebSocketServer) sendBinaryMessage(data []byte) error {
 
 	select {
 	case m.writeCmds <- cmd:
-		// Wait for response
+
 		select {
 		case err := <-response:
 			return err
@@ -280,7 +267,6 @@ func (m *mockWebSocketServer) sendBinaryMessage(data []byte) error {
 	}
 }
 
-// sendCloseMessage sends a WebSocket close message with specified code and reason
 func (m *mockWebSocketServer) sendCloseMessage(code int, text string) error {
 	// Check if we have a connection without blocking
 	m.connMu.Lock()
@@ -291,10 +277,8 @@ func (m *mockWebSocketServer) sendCloseMessage(code int, text string) error {
 		return fmt.Errorf("no connection")
 	}
 
-	// Format close message
 	message := websocket.FormatCloseMessage(code, text)
 
-	// Send write command via channel
 	response := make(chan error, 1)
 	cmd := writeCommand{
 		messageType: websocket.CloseMessage,
@@ -304,10 +288,10 @@ func (m *mockWebSocketServer) sendCloseMessage(code int, text string) error {
 
 	select {
 	case m.writeCmds <- cmd:
-		// Wait for response
+
 		select {
 		case err := <-response:
-			// After sending close, close the connection from our side too
+
 			m.connMu.Lock()
 			if m.conn != nil {
 				m.conn.Close()
@@ -323,48 +307,38 @@ func (m *mockWebSocketServer) sendCloseMessage(code int, text string) error {
 	}
 }
 
-// TestConductorReconnection tests various reconnection scenarios for the conductor
 func TestConductorReconnection(t *testing.T) {
 	t.Run("ServerRestart", func(t *testing.T) {
 		defer verifyNoLeaks(t)
 
-		// Create and start mock server
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
 
-		// Create conductor config
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
 
-		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Create dbosContext
 		dbosCtx := &dbosContext{
 			ctx:    ctx,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		}
 
-		// Create conductor
 		conductor, err := newConductor(dbosCtx, config)
 		require.NoError(t, err)
 
-		// Speed up intervals for testing
 		conductor.pingInterval = 100 * time.Millisecond
 		conductor.pingTimeout = 200 * time.Millisecond
 		conductor.reconnectWait = 100 * time.Millisecond
 
-		// Launch conductor
 		conductor.launch()
 
-		// Wait for initial connection
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish initial connection")
 
-		// Collect initial pings
 		initialPings := 0
 		timeout := time.After(1 * time.Second)
 	collectInitialPings:
@@ -379,21 +353,16 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, initialPings, 0, "Should receive initial pings")
 		fmt.Printf("Received %d initial pings\n", initialPings)
 
-		// Close the server connection (simulate disconnect)
 		fmt.Println("Closing server connection")
 		mockServer.close()
 
-		// Wait a bit for conductor to notice and start reconnecting
 		time.Sleep(500 * time.Millisecond)
 
-		// Restart the server
 		fmt.Println("Restarting server")
 		mockServer.restart()
 
-		// Wait for reconnection
 		assert.True(t, mockServer.waitForConnection(10*time.Second), "Should reconnect after server restart")
 
-		// Collect pings after reconnection
 		reconnectPings := 0
 		timeout2 := time.After(1 * time.Second)
 	collectReconnectPings:
@@ -408,53 +377,42 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, reconnectPings, 0, "Should receive pings after reconnection")
 		t.Logf("Received %d pings after reconnection", reconnectPings)
 
-		// Cancel the context to trigger shutdown
 		cancel()
 
-		// Give conductor time to clean up
 		time.Sleep(500 * time.Millisecond)
 	})
 
 	t.Run("TestBinaryMessage", func(t *testing.T) {
 		defer verifyNoLeaks(t)
 
-		// Create and start mock server
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
 
-		// Create conductor config
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
 
-		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Create dbosContext
 		dbosCtx := &dbosContext{
 			ctx:    ctx,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		}
 
-		// Create conductor
 		conductor, err := newConductor(dbosCtx, config)
 		require.NoError(t, err)
 
-		// Speed up intervals for testing
 		conductor.pingInterval = 100 * time.Millisecond
 		conductor.pingTimeout = 200 * time.Millisecond
 		conductor.reconnectWait = 100 * time.Millisecond
 
-		// Launch conductor
 		conductor.launch()
 
-		// Wait for initial connection
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish initial connection")
 
-		// Collect initial pings
 		initialPings := 0
 		timeout := time.After(1 * time.Second)
 	collectInitialPings:
@@ -469,18 +427,14 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, initialPings, 0, "Should receive initial pings")
 		fmt.Printf("Received %d initial pings\n", initialPings)
 
-		// Send binary message - conductor should disconnect and reconnect
 		fmt.Println("Sending binary message to trigger disconnect")
 		err = mockServer.sendBinaryMessage([]byte{0xDE, 0xAD, 0xBE, 0xEF})
 		assert.NoError(t, err, "Should send binary message successfully")
 
-		// Wait a bit for conductor to process the message and disconnect
 		time.Sleep(200 * time.Millisecond)
 
-		// Wait for reconnection after binary message
 		assert.True(t, mockServer.waitForConnection(10*time.Second), "Should reconnect after receiving binary message")
 
-		// Collect pings after reconnection
 		reconnectPings := 0
 		timeout2 := time.After(1 * time.Second)
 	collectReconnectPings:
@@ -495,54 +449,42 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, reconnectPings, 0, "Should receive pings after reconnection from binary message")
 		t.Logf("Received %d pings after reconnection from binary message", reconnectPings)
 
-		// Cancel the context to trigger shutdown
 		cancel()
 
-		// Give conductor time to clean up
 		time.Sleep(500 * time.Millisecond)
 	})
 
-	// TestConductorPingTimeout tests that conductor reconnects when server stops responding to pings
 	t.Run("TestConductorPingTimeout", func(t *testing.T) {
 		defer verifyNoLeaks(t)
 
-		// Create and start mock server
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
 
-		// Create conductor config
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
 
-		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Create dbosContext
 		dbosCtx := &dbosContext{
 			ctx:    ctx,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		}
 
-		// Create conductor
 		conductor, err := newConductor(dbosCtx, config)
 		require.NoError(t, err)
 
-		// Speed up intervals for testing
 		conductor.pingInterval = 100 * time.Millisecond
 		conductor.pingTimeout = 200 * time.Millisecond
 		conductor.reconnectWait = 100 * time.Millisecond
 
-		// Launch conductor
 		conductor.launch()
 
-		// Wait for initial connection
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish initial connection")
 
-		// Collect initial pings
 		initialPings := 0
 		timeout := time.After(1 * time.Second)
 	collectInitialPings:
@@ -557,24 +499,16 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, initialPings, 0, "Should receive initial pings")
 		fmt.Printf("Received %d initial pings\n", initialPings)
 
-		// Tell server to stop responding to pings (no pongs)
 		fmt.Println("Server stopping pong responses")
 		mockServer.ignorePings.Store(true)
 
-		// Wait for conductor to detect the dead connection (should timeout after pingTimeout)
-		// Conductor should detect no pong response and close the connection
-		// This will cause the handler to exit when ReadMessage fails
 		time.Sleep(conductor.pingTimeout + 100*time.Millisecond)
 
-		// Resume responding to pings after timeout
-		// This allows the new connection handler to respond properly
 		fmt.Println("Server resuming pong responses")
 		mockServer.ignorePings.Store(false)
 
-		// Wait for reconnection
 		assert.True(t, mockServer.waitForConnection(10*time.Second), "Should reconnect after ping timeout")
 
-		// Collect pings after reconnection
 		reconnectPings := 0
 		timeout2 := time.After(1 * time.Second)
 	collectReconnectPings:
@@ -589,53 +523,42 @@ func TestConductorReconnection(t *testing.T) {
 		assert.Greater(t, reconnectPings, 0, "Should receive pings after reconnection")
 		t.Logf("Received %d pings after reconnection", reconnectPings)
 
-		// Cancel the context to trigger shutdown
 		cancel()
 
-		// Give conductor time to clean up
 		time.Sleep(500 * time.Millisecond)
 	})
 
 	t.Run("CloseMessages", func(t *testing.T) {
 		defer verifyNoLeaks(t)
 
-		// Create and start mock server
 		mockServer := newMockWebSocketServer()
 		defer mockServer.shutdown()
 
-		// Create conductor config
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
 
-		// Create context with timeout
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
-		// Create dbosContext
 		dbosCtx := &dbosContext{
 			ctx:    ctx,
 			logger: slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		}
 
-		// Create conductor
 		conductor, err := newConductor(dbosCtx, config)
 		require.NoError(t, err)
 
-		// Speed up intervals for testing
 		conductor.pingInterval = 100 * time.Millisecond
 		conductor.pingTimeout = 200 * time.Millisecond
 		conductor.reconnectWait = 100 * time.Millisecond
 
-		// Launch conductor
 		conductor.launch()
 
-		// Wait for initial connection
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish initial connection")
 
-		// Test close message codes that should trigger reconnection
 		testCases := []struct {
 			code   int
 			reason string
@@ -648,11 +571,9 @@ func TestConductorReconnection(t *testing.T) {
 		for _, tc := range testCases {
 			t.Logf("Testing %s (code %d)", tc.name, tc.code)
 
-			// Wait for stable connection before testing
 			assert.True(t, mockServer.waitForConnection(5*time.Second), "Should have stable connection before %s", tc.name)
-			time.Sleep(300 * time.Millisecond) // Give time for ping cycle to establish
+			time.Sleep(300 * time.Millisecond)
 
-			// Collect pings before sending close message
 			beforePings := 0
 			timeout := time.After(200 * time.Millisecond)
 		collectBeforePings:
@@ -666,17 +587,13 @@ func TestConductorReconnection(t *testing.T) {
 			}
 			assert.Greater(t, beforePings, 0, "Should receive pings before %s", tc.name)
 
-			// Send close message
 			err = mockServer.sendCloseMessage(tc.code, tc.reason)
 			assert.NoError(t, err, "Should send %s close message successfully", tc.name)
 
-			// Wait for conductor to process and reconnect
 			time.Sleep(300 * time.Millisecond)
 
-			// Wait for reconnection
 			assert.True(t, mockServer.waitForConnection(10*time.Second), "Should reconnect after %s", tc.name)
 
-			// Verify pings after reconnection
 			afterPings := 0
 			timeout2 := time.After(200 * time.Millisecond)
 		collectAfterPings:
@@ -691,10 +608,8 @@ func TestConductorReconnection(t *testing.T) {
 			assert.Greater(t, afterPings, 0, "Should receive pings after reconnection from %s", tc.name)
 		}
 
-		// Cancel the context to trigger shutdown
 		cancel()
 
-		// Give conductor time to clean up
 		time.Sleep(500 * time.Millisecond)
 	})
 }
@@ -707,7 +622,7 @@ func TestConductorExecutorInfo(t *testing.T) {
 		t.Cleanup(mockServer.shutdown)
 
 		config := conductorConfig{
-			url:              mockServer.getURL(),
+			url:              mockServer.getUrl(),
 			apiKey:           "test-key",
 			appName:          "test-app",
 			executorMetadata: metadata,
@@ -720,7 +635,7 @@ func TestConductorExecutorInfo(t *testing.T) {
 			ctx:                ctx,
 			logger:             slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			applicationVersion: "v-test",
-			executorID:         "executor-test",
+			executorId:         "executor-test",
 		}
 
 		cond, err := newConductor(dbosCtx, config)
@@ -756,9 +671,9 @@ func TestConductorExecutorInfo(t *testing.T) {
 			"region":   "us-east-1",
 			"instance": float64(42),
 		})
-		assert.Equal(t, "req-info-1", resp.RequestID)
+		assert.Equal(t, "req-info-1", resp.RequestId)
 		assert.Equal(t, executorInfo, resp.Type)
-		assert.Equal(t, "executor-test", resp.ExecutorID)
+		assert.Equal(t, "executor-test", resp.ExecutorId)
 		assert.Equal(t, "v-test", resp.ApplicationVersion)
 		assert.Equal(t, "go", resp.Language)
 		assert.Equal(t, map[string]any{
@@ -769,8 +684,8 @@ func TestConductorExecutorInfo(t *testing.T) {
 
 	t.Run("WithoutMetadata", func(t *testing.T) {
 		resp := runExecutorInfo(t, nil)
-		assert.Equal(t, "req-info-1", resp.RequestID)
-		assert.Equal(t, "executor-test", resp.ExecutorID)
+		assert.Equal(t, "req-info-1", resp.RequestId)
+		assert.Equal(t, "executor-test", resp.ExecutorId)
 		assert.Nil(t, resp.ExecutorMetadata)
 	})
 }
@@ -783,7 +698,7 @@ func TestConductorAlertHandler(t *testing.T) {
 		defer mockServer.shutdown()
 
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
@@ -791,7 +706,6 @@ func TestConductorAlertHandler(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
-		// Track handler invocations
 		var handlerName, handlerMessage string
 		var handlerMetadata map[string]string
 		handlerCalled := make(chan struct{}, 1)
@@ -816,12 +730,10 @@ func TestConductorAlertHandler(t *testing.T) {
 		cond.launch()
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish connection")
 
-		// Send an alert message
 		alertMsg := `{"type":"alert","request_id":"req-123","name":"test-alert","message":"something happened","metadata":{"key1":"val1","key2":"val2"}}`
 		err = mockServer.sendTextMessage([]byte(alertMsg))
 		require.NoError(t, err)
 
-		// Wait for handler to be called
 		select {
 		case <-handlerCalled:
 		case <-time.After(5 * time.Second):
@@ -832,14 +744,13 @@ func TestConductorAlertHandler(t *testing.T) {
 		assert.Equal(t, "something happened", handlerMessage)
 		assert.Equal(t, map[string]string{"key1": "val1", "key2": "val2"}, handlerMetadata)
 
-		// Read the response sent back by conductor
 		select {
 		case respData := <-mockServer.messages:
 			var resp alertConductorResponse
 			err = json.Unmarshal(respData, &resp)
 			require.NoError(t, err)
 			assert.True(t, resp.Success)
-			assert.Equal(t, "req-123", resp.RequestID)
+			assert.Equal(t, "req-123", resp.RequestId)
 			assert.Equal(t, alertMessage, resp.Type)
 			assert.Nil(t, resp.ErrorMessage)
 		case <-time.After(5 * time.Second):
@@ -857,7 +768,7 @@ func TestConductorAlertHandler(t *testing.T) {
 		defer mockServer.shutdown()
 
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
@@ -879,19 +790,17 @@ func TestConductorAlertHandler(t *testing.T) {
 		cond.launch()
 		assert.True(t, mockServer.waitForConnection(5*time.Second), "Should establish connection")
 
-		// Send an alert with no handler registered
 		alertMsg := `{"type":"alert","request_id":"req-456","name":"unhandled","message":"no handler","metadata":{}}`
 		err = mockServer.sendTextMessage([]byte(alertMsg))
 		require.NoError(t, err)
 
-		// Should still get a success response (alert is logged but not an error)
 		select {
 		case respData := <-mockServer.messages:
 			var resp alertConductorResponse
 			err = json.Unmarshal(respData, &resp)
 			require.NoError(t, err)
 			assert.True(t, resp.Success)
-			assert.Equal(t, "req-456", resp.RequestID)
+			assert.Equal(t, "req-456", resp.RequestId)
 		case <-time.After(5 * time.Second):
 			t.Fatal("did not receive alert response")
 		}
@@ -907,7 +816,7 @@ func TestConductorAlertHandler(t *testing.T) {
 		defer mockServer.shutdown()
 
 		config := conductorConfig{
-			url:     mockServer.getURL(),
+			url:     mockServer.getUrl(),
 			apiKey:  "test-key",
 			appName: "test-app",
 		}
@@ -936,14 +845,13 @@ func TestConductorAlertHandler(t *testing.T) {
 		err = mockServer.sendTextMessage([]byte(alertMsg))
 		require.NoError(t, err)
 
-		// Should get a failure response with error message
 		select {
 		case respData := <-mockServer.messages:
 			var resp alertConductorResponse
 			err = json.Unmarshal(respData, &resp)
 			require.NoError(t, err)
 			assert.False(t, resp.Success)
-			assert.Equal(t, "req-789", resp.RequestID)
+			assert.Equal(t, "req-789", resp.RequestId)
 			assert.NotNil(t, resp.ErrorMessage)
 			assert.Contains(t, *resp.ErrorMessage, "panic in alert handler")
 		case <-time.After(5 * time.Second):
@@ -955,10 +863,8 @@ func TestConductorAlertHandler(t *testing.T) {
 	})
 }
 
-// TestConductorScheduleHandlers covers the happy path for each schedule
-// message type the conductor can route to a DBOS node.
 func TestConductorScheduleHandlers(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, schedulerPollingInterval: 100 * time.Millisecond})
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
 	require.NoError(t, dbosCtx.Launch())
 
@@ -972,7 +878,7 @@ func TestConductorScheduleHandlers(t *testing.T) {
 	t.Cleanup(mockServer.shutdown)
 
 	cond, err := newConductor(dbosCtx.(*dbosContext), conductorConfig{
-		url:     mockServer.getURL(),
+		url:     mockServer.getUrl(),
 		apiKey:  "test-key",
 		appName: "test-app",
 	})
@@ -984,7 +890,6 @@ func TestConductorScheduleHandlers(t *testing.T) {
 	t.Cleanup(func() { cond.shutdown(2 * time.Second) })
 	require.True(t, mockServer.waitForConnection(5*time.Second))
 
-	// expect waits for a response of the expected type, returning the raw bytes.
 	expect := func(t *testing.T, wantType messageType) []byte {
 		t.Helper()
 		deadline := time.After(5 * time.Second)
@@ -995,7 +900,7 @@ func TestConductorScheduleHandlers(t *testing.T) {
 				if err := json.Unmarshal(raw, &base); err == nil && base.Type == wantType {
 					return raw
 				}
-				// Drop unrelated traffic (e.g. executor_info on connect).
+
 			case <-deadline:
 				t.Fatalf("timed out waiting for response of type %s", wantType)
 			}
@@ -1006,7 +911,7 @@ func TestConductorScheduleHandlers(t *testing.T) {
 		require.NoError(t, mockServer.sendTextMessage([]byte(`{"type":"list_schedules","request_id":"r1","body":{}}`)))
 		var resp listSchedulesConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, listSchedulesMessage), &resp))
-		require.Equal(t, "r1", resp.RequestID)
+		require.Equal(t, "r1", resp.RequestId)
 		require.Nil(t, resp.ErrorMessage)
 		require.Equal(t, 1, len(resp.Output))
 		require.Equal(t, baseSchedule, resp.Output[0].ScheduleName)
@@ -1061,7 +966,7 @@ func TestConductorScheduleHandlers(t *testing.T) {
 	})
 
 	t.Run("backfill_schedule", func(t *testing.T) {
-		// Create a fast-cron schedule so backfill produces multiple ticks.
+
 		const fastSchedule = "cond-backfill-schedule"
 		require.NoError(t, CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 			ScheduleName: fastSchedule,
@@ -1077,7 +982,7 @@ func TestConductorScheduleHandlers(t *testing.T) {
 		var resp backfillScheduleConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, backfillScheduleMessage), &resp))
 		require.Nil(t, resp.ErrorMessage)
-		require.NotEmpty(t, resp.WorkflowIDs)
+		require.NotEmpty(t, resp.WorkflowIds)
 	})
 
 	t.Run("trigger_schedule", func(t *testing.T) {
@@ -1086,30 +991,28 @@ func TestConductorScheduleHandlers(t *testing.T) {
 		var resp triggerScheduleConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, triggerScheduleMessage), &resp))
 		require.Nil(t, resp.ErrorMessage)
-		require.NotNil(t, resp.WorkflowID)
-		require.Contains(t, *resp.WorkflowID, baseSchedule)
+		require.NotNil(t, resp.WorkflowId)
+		require.Contains(t, *resp.WorkflowId, baseSchedule)
 	})
 
 	t.Run("trigger_schedule_missing", func(t *testing.T) {
 		require.NoError(t, mockServer.sendTextMessage([]byte(`{"type":"trigger_schedule","request_id":"r9","schedule_name":"missing"}`)))
 		var resp triggerScheduleConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, triggerScheduleMessage), &resp))
-		require.Nil(t, resp.WorkflowID)
+		require.Nil(t, resp.WorkflowId)
 		require.NotNil(t, resp.ErrorMessage)
 	})
 }
 
-// conductorAggregatesWorkflow is a no-op workflow used by TestConductorWorkflowAggregatesHandler.
-func conductorAggregatesWorkflow(_ DBOSContext, in string) (string, error) {
+func conductorAggregatesWorkflow(_ DbosContext, in string) (string, error) {
 	return in, nil
 }
 
 func TestConductorWorkflowAggregatesHandler(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 	conductorAggregatesWF := NewWorkflow(dbosCtx, conductorAggregatesWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
-	// Produce three successful workflows to be counted.
 	for i := 0; i < 3; i++ {
 		h, err := conductorAggregatesWF(dbosCtx, fmt.Sprintf("ok-%d", i))
 		require.NoError(t, err)
@@ -1121,7 +1024,7 @@ func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 	t.Cleanup(mockServer.shutdown)
 
 	cond, err := newConductor(dbosCtx.(*dbosContext), conductorConfig{
-		url:     mockServer.getURL(),
+		url:     mockServer.getUrl(),
 		apiKey:  "test-key",
 		appName: "test-app",
 	})
@@ -1143,7 +1046,7 @@ func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 				if err := json.Unmarshal(raw, &base); err == nil && base.Type == wantType {
 					return raw
 				}
-				// Drop unrelated traffic (e.g. executor_info on connect).
+
 			case <-deadline:
 				t.Fatalf("timed out waiting for response of type %s", wantType)
 			}
@@ -1154,7 +1057,7 @@ func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 		require.NoError(t, mockServer.sendTextMessage([]byte(`{"type":"get_workflow_aggregates","request_id":"agg1","body":{"group_by_status":true}}`)))
 		var resp getWorkflowAggregatesConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, getWorkflowAggregatesMessage), &resp))
-		require.Equal(t, "agg1", resp.RequestID)
+		require.Equal(t, "agg1", resp.RequestId)
 		require.Nil(t, resp.ErrorMessage)
 		require.NotEmpty(t, resp.Output)
 		var successCount int64
@@ -1175,13 +1078,12 @@ func TestConductorWorkflowAggregatesHandler(t *testing.T) {
 	})
 }
 
-// conductorStepAggWorkflow runs a single named step for the conductor handler test.
-func conductorStepAggWorkflow(ctx DBOSContext, _ string) (string, error) {
+func conductorStepAggWorkflow(ctx DbosContext, _ string) (string, error) {
 	return Run(ctx, stepAggOK, WithStepName("condAggStep"))
 }
 
 func TestConductorStepAggregatesHandler(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 	conductorStepAggWF := NewWorkflow(dbosCtx, conductorStepAggWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
@@ -1196,7 +1098,7 @@ func TestConductorStepAggregatesHandler(t *testing.T) {
 	t.Cleanup(mockServer.shutdown)
 
 	cond, err := newConductor(dbosCtx.(*dbosContext), conductorConfig{
-		url:     mockServer.getURL(),
+		url:     mockServer.getUrl(),
 		apiKey:  "test-key",
 		appName: "test-app",
 	})
@@ -1228,7 +1130,7 @@ func TestConductorStepAggregatesHandler(t *testing.T) {
 		require.NoError(t, mockServer.sendTextMessage([]byte(`{"type":"get_step_aggregates","request_id":"sa1","body":{"group_by_function_name":true,"select_count":true}}`)))
 		var resp getStepAggregatesConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, getStepAggregatesMessage), &resp))
-		require.Equal(t, "sa1", resp.RequestID)
+		require.Equal(t, "sa1", resp.RequestId)
 		require.Nil(t, resp.ErrorMessage)
 		var stepCount int64
 		for _, r := range resp.Output {
@@ -1249,23 +1151,18 @@ func TestConductorStepAggregatesHandler(t *testing.T) {
 	})
 }
 
-// conductorPrivateModeStep is a step used by TestConductorPrivateMode.
 func conductorPrivateModeStep(_ context.Context, in string) (string, error) {
 	return "step-" + in, nil
 }
 
-// conductorPrivateModeWorkflow runs a single step and returns its output.
-func conductorPrivateModeWorkflow(ctx DBOSContext, in string) (string, error) {
+func conductorPrivateModeWorkflow(ctx DbosContext, in string) (string, error) {
 	return Run(ctx, func(c context.Context) (string, error) {
 		return conductorPrivateModeStep(c, in)
 	})
 }
 
-// TestConductorPrivateMode verifies that the conductor's load_input/load_output
-// flags ("private mode") control whether workflow and step input/output are
-// returned by the get_workflow and list_steps handlers.
 func TestConductorPrivateMode(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 	conductorPrivateModeWF := NewWorkflow(dbosCtx, conductorPrivateModeWorkflow)
 	require.NoError(t, dbosCtx.Launch())
 
@@ -1273,13 +1170,13 @@ func TestConductorPrivateMode(t *testing.T) {
 	require.NoError(t, err)
 	_, err = h.GetResult()
 	require.NoError(t, err)
-	wfID := h.GetWorkflowID()
+	wfId := h.GetWorkflowId()
 
 	mockServer := newMockWebSocketServer()
 	t.Cleanup(mockServer.shutdown)
 
 	cond, err := newConductor(dbosCtx.(*dbosContext), conductorConfig{
-		url:     mockServer.getURL(),
+		url:     mockServer.getUrl(),
 		apiKey:  "test-key",
 		appName: "test-app",
 	})
@@ -1308,7 +1205,7 @@ func TestConductorPrivateMode(t *testing.T) {
 	}
 
 	t.Run("get_workflow_loads_io", func(t *testing.T) {
-		msg := fmt.Sprintf(`{"type":"get_workflow","request_id":"g1","workflow_id":%q,"load_input":true,"load_output":true}`, wfID)
+		msg := fmt.Sprintf(`{"type":"get_workflow","request_id":"g1","workflow_id":%q,"load_input":true,"load_output":true}`, wfId)
 		require.NoError(t, mockServer.sendTextMessage([]byte(msg)))
 		var resp getWorkflowConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, getWorkflowMessage), &resp))
@@ -1319,7 +1216,7 @@ func TestConductorPrivateMode(t *testing.T) {
 	})
 
 	t.Run("get_workflow_private", func(t *testing.T) {
-		msg := fmt.Sprintf(`{"type":"get_workflow","request_id":"g2","workflow_id":%q,"load_input":false,"load_output":false}`, wfID)
+		msg := fmt.Sprintf(`{"type":"get_workflow","request_id":"g2","workflow_id":%q,"load_input":false,"load_output":false}`, wfId)
 		require.NoError(t, mockServer.sendTextMessage([]byte(msg)))
 		var resp getWorkflowConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, getWorkflowMessage), &resp))
@@ -1330,7 +1227,7 @@ func TestConductorPrivateMode(t *testing.T) {
 	})
 
 	t.Run("list_steps_loads_output", func(t *testing.T) {
-		msg := fmt.Sprintf(`{"type":"list_steps","request_id":"s1","workflow_id":%q,"load_output":true}`, wfID)
+		msg := fmt.Sprintf(`{"type":"list_steps","request_id":"s1","workflow_id":%q,"load_output":true}`, wfId)
 		require.NoError(t, mockServer.sendTextMessage([]byte(msg)))
 		var resp listStepsConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, listStepsMessage), &resp))
@@ -1341,7 +1238,7 @@ func TestConductorPrivateMode(t *testing.T) {
 	})
 
 	t.Run("list_steps_private", func(t *testing.T) {
-		msg := fmt.Sprintf(`{"type":"list_steps","request_id":"s2","workflow_id":%q,"load_output":false}`, wfID)
+		msg := fmt.Sprintf(`{"type":"list_steps","request_id":"s2","workflow_id":%q,"load_output":false}`, wfId)
 		require.NoError(t, mockServer.sendTextMessage([]byte(msg)))
 		var resp listStepsConductorResponse
 		require.NoError(t, json.Unmarshal(expect(t, listStepsMessage), &resp))

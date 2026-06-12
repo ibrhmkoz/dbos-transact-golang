@@ -13,36 +13,32 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// DBOSAdminConfig configures the DBOS control plane.
-type DBOSAdminConfig struct {
-	DatabaseURL    string          // PostgreSQL connection string.
-	SystemDBPool   *pgxpool.Pool   // Custom PostgreSQL pool.
-	Kernel         *Kernel         // Shared system database. When set, DBOSAdmin does not own its lifecycle.
-	DatabaseSchema string          // Database schema name (defaults to "dbos")
-	Logger         *slog.Logger    // Optional custom logger
-	Serializer     Serializer[any] // Optional custom serializer (defaults to JSON)
+type DbosAdminConfig struct {
+	DatabaseUrl    string
+	SystemDBPool   *pgxpool.Pool
+	Kernel         *Kernel // Shared system database. When set, DbosAdmin does not own its lifecycle.
+	DatabaseSchema string
+	Logger         *slog.Logger
+	Serializer     Serializer[any]
 }
 
-// DBOSAdmin is the control-plane interface for managing workflows, schedules,
-// and application versions outside workflow execution.
-type DBOSAdmin interface {
+type DbosAdmin interface {
 	Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error)
 	ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error)
-	Send(destinationID string, message any, topic string, opts ...SendOption) error
-	GetEvent(targetWorkflowID, key string, timeout time.Duration) (any, error)
-	RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error)
-	CancelWorkflow(workflowID string) error
-	CancelWorkflows(workflowIDs []string) error
-	SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error
-	DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error
-	ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)
-	ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error)
+	Send(destinationId string, message any, topic string, opts ...SendOption) error
+	GetEvent(targetWorkflowId, key string, timeout time.Duration) (any, error)
+	RetrieveWorkflow(workflowId string) (*WorkflowHandle[any], error)
+	CancelWorkflow(workflowId string) error
+	CancelWorkflows(workflowIds []string) error
+	SetWorkflowDelay(workflowId string, opts ...SetWorkflowDelayOption) error
+	DeleteWorkflows(workflowIds []string, opts ...DeleteWorkflowOption) error
+	ResumeWorkflow(workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error)
+	ResumeWorkflows(workflowIds []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error)
 	ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error)
-	GetWorkflowSteps(workflowID string) ([]StepInfo, error)
-	ReadStream(workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error)
-	ReadStreamAsync(workflowID string, key string) (<-chan StreamValue[any], error)
+	GetWorkflowSteps(workflowId string) ([]StepInfo, error)
+	ReadStream(workflowId string, key string, opts ...ReadStreamOption) ([]any, bool, error)
+	ReadStreamAsync(workflowId string, key string) (<-chan StreamValue[any], error)
 
-	// Schedule management
 	CreateSchedule(input AdminScheduleInput) error
 	ApplySchedules(schedules []AdminScheduleInput) error
 	GetSchedule(scheduleName string) (*WorkflowSchedule, error)
@@ -53,32 +49,20 @@ type DBOSAdmin interface {
 	BackfillSchedule(scheduleName string, start, end time.Time) ([]string, error)
 	TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error)
 
-	// Application version management
 	ListApplicationVersions() ([]VersionInfo, error)
 	GetLatestApplicationVersion() (*VersionInfo, error)
 	SetLatestApplicationVersion(versionName string) error
 
-	Shutdown(timeout time.Duration) // Simply close the system DB connection pool
+	Shutdown(timeout time.Duration)
 }
 
 type dbosAdmin struct {
 	dbosCtx *dbosContext
 }
 
-// NewDBOSAdmin creates a DBOS control-plane client.
-//
-// Example:
-//
-//	config := dbos.DBOSAdminConfig{
-//	    DatabaseURL: "postgres://user:pass@localhost:5432/dbname",
-//	}
-//	dbosAdmin, err := dbos.NewDBOSAdmin(context.Background(), config)
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-func NewDBOSAdmin(ctx context.Context, config DBOSAdminConfig) (DBOSAdmin, error) {
-	dbosCtx, err := NewDBOSContext(ctx, Config{
-		DatabaseURL:    config.DatabaseURL,
+func NewDbosAdmin(ctx context.Context, config DbosAdminConfig) (DbosAdmin, error) {
+	dbosCtx, err := NewDbosContext(ctx, Config{
+		DatabaseUrl:    config.DatabaseUrl,
 		DatabaseSchema: config.DatabaseSchema,
 		AppName:        "dbos-admin",
 		Logger:         config.Logger,
@@ -90,103 +74,87 @@ func NewDBOSAdmin(ctx context.Context, config DBOSAdminConfig) (DBOSAdmin, error
 		return nil, err
 	}
 
-	asDBOSCtx := dbosCtx.(*dbosContext)
-	if asDBOSCtx.ownsSystemDB {
-		asDBOSCtx.kernel.launch(asDBOSCtx)
+	asDbosCtx := dbosCtx.(*dbosContext)
+	if asDbosCtx.ownsSystemDB {
+		asDbosCtx.kernel.launch(asDbosCtx)
 	}
 
-	return &dbosAdmin{dbosCtx: asDBOSCtx}, nil
+	return &dbosAdmin{dbosCtx: asDbosCtx}, nil
 }
 
-// EnqueueOption is a functional option for configuring workflow enqueue parameters.
 type EnqueueOption func(*enqueueOptions)
 
 // WithEnqueueWorkflowID sets a custom workflow ID instead of generating one automatically.
-func WithEnqueueWorkflowID(id string) EnqueueOption {
+func WithEnqueueWorkflowId(id string) EnqueueOption {
 	return func(opts *enqueueOptions) {
-		opts.workflowID = id
+		opts.workflowId = id
 	}
 }
 
-// WithEnqueueApplicationVersion overrides the application version for the enqueued workflow.
 func WithEnqueueApplicationVersion(version string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.applicationVersion = version
 	}
 }
 
-// WithEnqueueDeduplicationID sets a deduplication ID for the enqueued workflow.
-func WithEnqueueDeduplicationID(id string) EnqueueOption {
+func WithEnqueueDeduplicationId(id string) EnqueueOption {
 	return func(opts *enqueueOptions) {
-		opts.deduplicationID = id
+		opts.deduplicationId = id
 	}
 }
 
-// WithEnqueuePriority sets the execution priority for the enqueued workflow.
 func WithEnqueuePriority(priority uint) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.priority = priority
 	}
 }
 
-// WithEnqueueTimeout sets the maximum execution time for the enqueued workflow.
 func WithEnqueueTimeout(timeout time.Duration) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.workflowTimeout = timeout
 	}
 }
 
-// WithEnqueueQueuePartitionKey sets the queue partition key for partitioned queues.
-// When a queue is partitioned, workflows with the same partition key are processed
-// with separate concurrency limits per partition.
 func WithEnqueueQueuePartitionKey(partitionKey string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.queuePartitionKey = partitionKey
 	}
 }
 
-// WithEnqueueClassName sets the class/namespace name for the enqueued workflow.
 // This is required when enqueueing to Python, TypeScript, or Java targets, which
-// dispatch workflows by (class_name, workflow_name) pair.
+
 func WithEnqueueClassName(className string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.className = className
 	}
 }
 
-// WithEnqueueConfigName sets the config/instance name for the enqueued workflow.
 // This is required when enqueueing to Python, TypeScript, or Java targets that
-// register workflows on class instances (e.g. DBOSConfiguredInstance / ConfiguredInstance).
-// Pass an empty string ("") to target the default (unnamed) instance.
+
 func WithEnqueueConfigName(configName string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.configName = &configName
 	}
 }
 
-// WithEnqueueDelay delays execution of the enqueued workflow by the specified duration.
-// The workflow starts in the DELAYED status and transitions to ENQUEUED after the delay expires.
 func WithEnqueueDelay(delay time.Duration) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.delayDuration = delay
 	}
 }
 
-// WithEnqueueAuthenticatedUser sets the authenticated user for the enqueued workflow.
 func WithEnqueueAuthenticatedUser(user string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.authenticatedUser = user
 	}
 }
 
-// WithEnqueueAssumedRole sets the assumed role for the enqueued workflow.
 func WithEnqueueAssumedRole(role string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.assumedRole = role
 	}
 }
 
-// WithEnqueueAuthenticatedRoles sets the authenticated roles for the enqueued workflow.
 func WithEnqueueAuthenticatedRoles(roles []string) EnqueueOption {
 	return func(opts *enqueueOptions) {
 		opts.authenticatedRoles = roles
@@ -195,9 +163,9 @@ func WithEnqueueAuthenticatedRoles(roles []string) EnqueueOption {
 
 type enqueueOptions struct {
 	workflowName       string
-	workflowID         string
+	workflowId         string
 	applicationVersion string
-	deduplicationID    string
+	deduplicationId    string
 	priority           uint
 	workflowTimeout    time.Duration
 	workflowInput      any
@@ -210,12 +178,10 @@ type enqueueOptions struct {
 	authenticatedRoles []string
 }
 
-// EnqueueWorkflow enqueues a workflow to a named queue for deferred execution.
 func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...EnqueueOption) (*WorkflowHandle[any], error) {
-	// Get the concrete dbosContext to access internal fields
+
 	dbosCtx := c.dbosCtx
 
-	// Process options
 	params := &enqueueOptions{
 		workflowName:       workflowName,
 		applicationVersion: dbosCtx.GetApplicationVersion(),
@@ -233,14 +199,13 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 		return nil, fmt.Errorf("workflow name is required")
 	}
 
-	// Validate partition key and deduplication ID are not both provided (they are incompatible)
-	if len(params.queuePartitionKey) > 0 && len(params.deduplicationID) > 0 {
+	if len(params.queuePartitionKey) > 0 && len(params.deduplicationId) > 0 {
 		return nil, fmt.Errorf("partition key and deduplication ID cannot be used together")
 	}
 
-	workflowID := params.workflowID
-	if workflowID == "" {
-		workflowID = uuid.New().String()
+	workflowId := params.workflowId
+	if workflowId == "" {
+		workflowId = uuid.New().String()
 	}
 
 	var deadline time.Time
@@ -252,7 +217,6 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 		return nil, fmt.Errorf("priority %d exceeds maximum allowed value %d", params.priority, math.MaxInt)
 	}
 
-	// Encode input and determine serialization format
 	var encodedInput *string
 	var serialization string
 	if _, ok := input.(PortableWorkflowArgs); ok {
@@ -286,13 +250,13 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 		Name:               params.workflowName,
 		ApplicationVersion: params.applicationVersion,
 		Status:             wfStatus,
-		ID:                 workflowID,
+		Id:                 workflowId,
 		CreatedAt:          time.Now(),
 		Deadline:           deadline,
 		Timeout:            params.workflowTimeout,
 		Input:              encodedInput,
 		QueueName:          queueName,
-		DeduplicationID:    params.deduplicationID,
+		DeduplicationId:    params.deduplicationId,
 		Priority:           int(params.priority),
 		QueuePartitionKey:  params.queuePartitionKey,
 		ClassName:          params.className,
@@ -308,10 +272,9 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 	for {
 		tx, err := dbosCtx.kernel.pool.BeginTx(uncancellableCtx, TxOptions{})
 		if err != nil {
-			return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("failed to begin transaction: %v", err))
+			return nil, newWorkflowExecutionError(workflowId, fmt.Errorf("failed to begin transaction: %v", err))
 		}
 
-		// Insert workflow status with transaction
 		insertInput := insertWorkflowStatusDBInput{
 			status: status,
 			tx:     tx,
@@ -319,211 +282,116 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 		_, err = dbosCtx.kernel.insertWorkflowStatus(uncancellableCtx, insertInput)
 		if err != nil {
 			if rbErr := tx.Rollback(uncancellableCtx); rbErr != nil {
-				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowID)
+				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowId)
 			}
 			if errors.Is(err, errDeduplicationCollision) {
-				existingID, lookupErr := dbosCtx.kernel.getDeduplicatedWorkflow(uncancellableCtx, workflowName, params.deduplicationID)
+				existingId, lookupErr := dbosCtx.kernel.getDeduplicatedWorkflow(uncancellableCtx, workflowName, params.deduplicationId)
 				if lookupErr != nil {
-					return nil, newWorkflowExecutionError(workflowID, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
+					return nil, newWorkflowExecutionError(workflowId, fmt.Errorf("looking up deduplicated workflow: %w", lookupErr))
 				}
-				if existingID != nil {
-					return newWorkflowHandle[any](uncancellableCtx, *existingID), nil
+				if existingId != nil {
+					return newWorkflowHandle[any](uncancellableCtx, *existingId), nil
 				}
-				// Try again if the deduplication record was not found. Means that the dedup slot was freed.
+
 				continue
 			}
-			dbosCtx.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowID)
+			dbosCtx.logger.Error("failed to insert workflow status", "error", err, "workflow_id", workflowId)
 			return nil, err
 		}
 
 		if err := tx.Commit(uncancellableCtx); err != nil {
 			if rbErr := tx.Rollback(uncancellableCtx); rbErr != nil {
-				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowID)
+				dbosCtx.logger.Warn("failed to roll back transaction", "error", rbErr, "workflow_id", workflowId)
 			}
 			return nil, fmt.Errorf("failed to commit transaction: %w", err)
 		}
 
-		return newWorkflowHandle[any](uncancellableCtx, workflowID), nil
+		return newWorkflowHandle[any](uncancellableCtx, workflowId), nil
 	}
 }
 
-// Enqueue adds a workflow to a named queue for later execution with type safety.
-// The workflow will be persisted with ENQUEUED status until picked up by a DBOS process.
-// This provides asynchronous workflow execution with durability guarantees.
-//
-// Parameters:
-//   - c: DBOSAdmin instance for the operation
-//   - queueName: Name of the queue to enqueue the workflow to
-//   - workflowName: Name of the registered workflow function to execute
-//   - input: Input parameters to pass to the workflow (type P)
-//   - opts: Optional configuration options
-//
-// Available options:
-//   - WithEnqueueWorkflowID: Custom workflow ID (auto-generated if not provided)
-//   - WithEnqueueApplicationVersion: Application version override
-//   - WithEnqueueDeduplicationID: Deduplication identifier for idempotent enqueuing
-//   - WithEnqueuePriority: Execution priority
-//   - WithEnqueueTimeout: Maximum execution time for the workflow
-//   - WithEnqueueQueuePartitionKey: Queue partition key for partitioned queues
-//
-// Returns a typed workflow handle that can be used to check status and retrieve results.
-// The handle uses polling to check workflow completion since the execution is asynchronous.
-//
-// Example usage:
-//
-//	// Enqueue a workflow with string input and int output
-//	handle, err := dbos.Enqueue[string, int](dbosAdmin, "data-processing", "ProcessDataWorkflow", "input data",
-//	    dbos.WithEnqueueTimeout(30 * time.Minute))
-//	if err != nil {
-//	    log.Fatal(err)
-//	}
-//
-//	// Check status
-//	status, err := handle.GetStatus()
-//	if err != nil {
-//	    log.Printf("Failed to get status: %v", err)
-//	}
-//
-//	// Wait for completion and get result
-//	result, err := handle.GetResult()
-//	if err != nil {
-//	    log.Printf("Workflow failed: %v", err)
-//	} else {
-//	    log.Printf("Result: %d", result)
-//	}
-//
-//	// Enqueue with deduplication and custom workflow ID
-//	handle, err := dbos.Enqueue[MyInputType, MyOutputType](dbosAdmin, "my-queue", "MyWorkflow", MyInputType{Field: "value"},
-//	    dbos.WithEnqueueWorkflowID("custom-workflow-id"),
-//	    dbos.WithEnqueueDeduplicationID("unique-operation-id"))
-//
-// To enqueue a workflow for a DBOS application in another language (e.g., Python),
-// pass a [PortableWorkflowArgs] as the input. This automatically uses portable JSON
-// serialization, encoding the envelope with positional and named arguments:
-//
-//	args := dbos.PortableWorkflowArgs{
-//	    PositionalArgs: []any{"hello", 42},
-//	    NamedArgs:      map[string]any{"key": "value"},
-//	}
-//	handle, err := dbos.Enqueue[dbos.PortableWorkflowArgs, any](dbosAdmin, "queue", "py_workflow", args)
-func Enqueue[P any, R any](c DBOSAdmin, queueName, workflowName string, input P, opts ...EnqueueOption) (*WorkflowHandle[R], error) {
+func Enqueue[P any, R any](c DbosAdmin, queueName, workflowName string, input P, opts ...EnqueueOption) (*WorkflowHandle[R], error) {
 	if c == nil {
 		return nil, errors.New("dbosAdmin cannot be nil")
 	}
 
-	// Call the interface method — encoding happens there
 	handle, err := c.Enqueue(queueName, workflowName, input, opts...)
 	if err != nil {
 		return nil, err
 	}
 
-	return newWorkflowHandle[R](c.(*dbosAdmin).dbosCtx, handle.GetWorkflowID()), nil
+	return newWorkflowHandle[R](c.(*dbosAdmin).dbosCtx, handle.GetWorkflowId()), nil
 }
 
-// ListWorkflows retrieves a list of workflows based on the provided filters.
 func (c *dbosAdmin) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStatus, error) {
 	return c.dbosCtx.ListWorkflows(opts...)
 }
 
-// Send sends a message to another workflow.
-func (c *dbosAdmin) Send(destinationID string, message any, topic string, opts ...SendOption) error {
-	return c.dbosCtx.Send(destinationID, message, topic, opts...)
+func (c *dbosAdmin) Send(destinationId string, message any, topic string, opts ...SendOption) error {
+	return c.dbosCtx.Send(destinationId, message, topic, opts...)
 }
 
-// GetEvent retrieves a key-value event from a target workflow.
-func (c *dbosAdmin) GetEvent(targetWorkflowID, key string, timeout time.Duration) (any, error) {
-	result, err := c.dbosCtx.GetEvent(targetWorkflowID, key, timeout)
+func (c *dbosAdmin) GetEvent(targetWorkflowId, key string, timeout time.Duration) (any, error) {
+	result, err := c.dbosCtx.GetEvent(targetWorkflowId, key, timeout)
 	if err != nil {
 		return nil, err
 	}
-	// Unwrap the internal result type for the public API
+
 	if evtResult, ok := result.(*getEventResult); ok {
 		return evtResult.value, nil
 	}
 	return result, nil
 }
 
-// RetrieveWorkflow returns a handle to an existing workflow.
-func (c *dbosAdmin) RetrieveWorkflow(workflowID string) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.RetrieveWorkflow(workflowID)
+func (c *dbosAdmin) RetrieveWorkflow(workflowId string) (*WorkflowHandle[any], error) {
+	return c.dbosCtx.RetrieveWorkflow(workflowId)
 }
 
-// CancelWorkflow cancels a running or enqueued workflow.
-func (c *dbosAdmin) CancelWorkflow(workflowID string) error {
-	return c.dbosCtx.CancelWorkflow(workflowID)
+func (c *dbosAdmin) CancelWorkflow(workflowId string) error {
+	return c.dbosCtx.CancelWorkflow(workflowId)
 }
 
-// CancelWorkflows cancels multiple workflows in a single database round-trip.
-// Workflows that are missing or already in a terminal state are silently skipped.
-func (c *dbosAdmin) CancelWorkflows(workflowIDs []string) error {
-	return c.dbosCtx.CancelWorkflows(workflowIDs)
+func (c *dbosAdmin) CancelWorkflows(workflowIds []string) error {
+	return c.dbosCtx.CancelWorkflows(workflowIds)
 }
 
-// SetWorkflowDelay sets or updates the delay on a DELAYED workflow.
-func (c *dbosAdmin) SetWorkflowDelay(workflowID string, opts ...SetWorkflowDelayOption) error {
-	return c.dbosCtx.SetWorkflowDelay(workflowID, opts...)
+func (c *dbosAdmin) SetWorkflowDelay(workflowId string, opts ...SetWorkflowDelayOption) error {
+	return c.dbosCtx.SetWorkflowDelay(workflowId, opts...)
 }
 
-// DeleteWorkflows permanently deletes workflows and all their associated data.
-func (c *dbosAdmin) DeleteWorkflows(workflowIDs []string, opts ...DeleteWorkflowOption) error {
-	return c.dbosCtx.DeleteWorkflows(workflowIDs, opts...)
+func (c *dbosAdmin) DeleteWorkflows(workflowIds []string, opts ...DeleteWorkflowOption) error {
+	return c.dbosCtx.DeleteWorkflows(workflowIds, opts...)
 }
 
-// ResumeWorkflow resumes a workflow from its last completed step.
-func (c *dbosAdmin) ResumeWorkflow(workflowID string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error) {
-	return c.dbosCtx.ResumeWorkflow(workflowID, opts...)
+func (c *dbosAdmin) ResumeWorkflow(workflowId string, opts ...ResumeWorkflowOption) (*WorkflowHandle[any], error) {
+	return c.dbosCtx.ResumeWorkflow(workflowId, opts...)
 }
 
-// ResumeWorkflows resumes multiple workflows in a single database round-trip.
-func (c *dbosAdmin) ResumeWorkflows(workflowIDs []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) {
-	return c.dbosCtx.ResumeWorkflows(workflowIDs, opts...)
+func (c *dbosAdmin) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkflowOption) ([]*WorkflowHandle[any], error) {
+	return c.dbosCtx.ResumeWorkflows(workflowIds, opts...)
 }
 
-// ForkWorkflow creates a new workflow instance by copying an existing workflow from a specific step.
 func (c *dbosAdmin) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.ForkWorkflow(input)
 }
 
-// GetWorkflowSteps retrieves the execution steps of a workflow.
-func (c *dbosAdmin) GetWorkflowSteps(workflowID string) ([]StepInfo, error) {
-	return c.dbosCtx.GetWorkflowSteps(workflowID)
+func (c *dbosAdmin) GetWorkflowSteps(workflowId string) ([]StepInfo, error) {
+	return c.dbosCtx.GetWorkflowSteps(workflowId)
 }
 
-// ReadStream reads values from a durable stream.
-// This method blocks until one of the following conditions is met:
-//   - The workflow becomes inactive (status is not PENDING or ENQUEUED)
-//   - The stream is closed (sentinel value is found)
-//
-// Returns the values, whether the stream is closed, and any error.
-func (c *dbosAdmin) ReadStream(workflowID string, key string, opts ...ReadStreamOption) ([]any, bool, error) {
-	return c.dbosCtx.ReadStream(workflowID, key, opts...)
+func (c *dbosAdmin) ReadStream(workflowId string, key string, opts ...ReadStreamOption) ([]any, bool, error) {
+	return c.dbosCtx.ReadStream(workflowId, key, opts...)
 }
 
-// AdminReadStream reads values from a durable stream with type safety.
-// This method blocks until the stream is closed or an error occurs.
-// The stream is considered close when the sentinel value is found or the workflow becomes inactive (status is not PENDING or ENQUEUED)
-//
-// Returns the typed values, whether the stream is closed, and any error.
-//
-// Example:
-//
-//	values, closed, err := dbos.AdminReadStream[string](dbosAdmin, "workflow-id", "my-stream")
-//	if err != nil {
-//	    return err
-//	}
-//	for _, value := range values {
-//	    log.Printf("Stream value: %s", value)
-//	}
-func AdminReadStream[R any](c DBOSAdmin, workflowID string, key string, opts ...ReadStreamOption) ([]R, bool, error) {
+func AdminReadStream[R any](c DbosAdmin, workflowId string, key string, opts ...ReadStreamOption) ([]R, bool, error) {
 	if c == nil {
 		return nil, false, errors.New("dbosAdmin cannot be nil")
 	}
-	values, closed, err := c.ReadStream(workflowID, key, opts...)
+	values, closed, err := c.ReadStream(workflowId, key, opts...)
 	if err != nil {
 		return nil, false, err
 	}
 
-	// Decode each value using the serialization stored with that stream entry.
 	customSer := c.(*dbosAdmin).dbosCtx.serializer
 	typedValues := make([]R, len(values))
 	for i, val := range values {
@@ -545,42 +413,16 @@ func AdminReadStream[R any](c DBOSAdmin, workflowID string, key string, opts ...
 	return typedValues, closed, nil
 }
 
-// AdminReadStreamAsync reads values from a durable stream asynchronously.
-// Returns a channel that will receive StreamValue items as they're read.
-func (c *dbosAdmin) ReadStreamAsync(workflowID string, key string) (<-chan StreamValue[any], error) {
-	return c.dbosCtx.ReadStreamAsync(workflowID, key)
+func (c *dbosAdmin) ReadStreamAsync(workflowId string, key string) (<-chan StreamValue[any], error) {
+	return c.dbosCtx.ReadStreamAsync(workflowId, key)
 }
 
-// AdminReadStreamAsync reads values from a durable stream asynchronously with type safety.
-// Returns a channel that will receive StreamValue items as they're read.
-//
-// This method returns immediately with a channel. Values will be sent to the channel
-// as they're read from the stream. The channel will be closed when the stream is closed or an error occurs.
-// The stream is considered close when the sentinel value is found or the workflow becomes inactive (status is not PENDING or ENQUEUED)
-//
-// Example:
-//
-//	ch, err := dbos.AdminReadStreamAsync[string](dbosAdmin, "workflow-id", "my-stream")
-//	if err != nil {
-//	    return err
-//	}
-//	for streamValue := range ch {
-//	    if streamValue.Err != nil {
-//	        log.Printf("Error: %v", streamValue.Err)
-//	        break
-//	    }
-//	    if streamValue.Closed {
-//	        log.Println("Stream closed")
-//	        break
-//	    }
-//	    log.Printf("Received value: %s", streamValue.Value)
-//	}
-func AdminReadStreamAsync[R any](c DBOSAdmin, workflowID string, key string) (<-chan StreamValue[R], error) {
+func AdminReadStreamAsync[R any](c DbosAdmin, workflowId string, key string) (<-chan StreamValue[R], error) {
 	if c == nil {
 		return nil, errors.New("dbosAdmin cannot be nil")
 	}
 
-	anyCh, err := c.ReadStreamAsync(workflowID, key)
+	anyCh, err := c.ReadStreamAsync(workflowId, key)
 	if err != nil {
 		return nil, err
 	}
@@ -591,8 +433,6 @@ func AdminReadStreamAsync[R any](c DBOSAdmin, workflowID string, key string) (<-
 	go func() {
 		defer close(typedCh)
 
-		// send delivers v to ch, returning false if the dbosAdmin context is cancelled first.
-		// This prevents the goroutine from leaking even after the dbosAdmin is closed.
 		send := func(v StreamValue[R]) bool {
 			select {
 			case typedCh <- v:
@@ -653,17 +493,6 @@ type AdminScheduleInput struct {
 	QueueName         string
 }
 
-// CreateSchedule creates a new schedule for a workflow using the dbosAdmin.
-// This is used by external applications to create schedules.
-//
-// Example:
-//
-//	err := dbosAdmin.CreateSchedule(dbos.AdminScheduleInput{
-//	    ScheduleName: "my-schedule",
-//	    WorkflowName: "myWorkflow",
-//	    Schedule:     "*/5 * * * *",
-//	    Context:      "my context",
-//	})
 func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
 	if input.ScheduleName == "" {
 		return errors.New("schedule_name is required")
@@ -677,19 +506,19 @@ func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
 
 	dbosCtx := c.dbosCtx
 
-	scheduleID := uuid.New().String()
-	contextJSON, err := json.Marshal(input.Context)
+	scheduleId := uuid.New().String()
+	contextJson, err := json.Marshal(input.Context)
 	if err != nil {
 		return fmt.Errorf("failed to serialize context: %w", err)
 	}
 
 	return dbosCtx.kernel.createSchedule(dbosCtx, createScheduleDBInput{
-		ScheduleID:        scheduleID,
+		ScheduleId:        scheduleId,
 		ScheduleName:      input.ScheduleName,
 		WorkflowName:      input.WorkflowName,
 		WorkflowClassName: input.WorkflowClassName,
 		Schedule:          input.Schedule,
-		Context:           string(contextJSON),
+		Context:           string(contextJson),
 		Status:            ScheduleStatusActive,
 		AutomaticBackfill: input.AutomaticBackfill,
 		CronTimezone:      input.CronTimezone,
@@ -697,16 +526,6 @@ func (c *dbosAdmin) CreateSchedule(input AdminScheduleInput) error {
 	})
 }
 
-// ApplySchedules atomically creates or replaces the given schedules. Each entry
-// is validated, any existing schedule with the same name is deleted, and the
-// new schedule is inserted — all within a single transaction.
-//
-// Example:
-//
-//	err := dbosAdmin.ApplySchedules([]dbos.AdminScheduleInput{
-//	    {ScheduleName: "a", WorkflowName: "myWorkflow", Schedule: "*/5 * * * *"},
-//	    {ScheduleName: "b", WorkflowName: "pyWorkflow", WorkflowClassName: "MyClass", Schedule: "0 * * * *"},
-//	})
 func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 	if len(schedules) == 0 {
 		return nil
@@ -733,14 +552,14 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 	defer tx.Rollback(dbosCtx)
 
 	for _, req := range schedules {
-		contextJSON, err := json.Marshal(req.Context)
+		contextJson, err := json.Marshal(req.Context)
 		if err != nil {
 			return fmt.Errorf("failed to serialize context: %w", err)
 		}
 
 		queueName := req.QueueName
 		if queueName == "" {
-			queueName = _DBOS_INTERNAL_QUEUE_NAME
+			queueName = _dbosInternalQueueName
 		}
 
 		if err := dbosCtx.kernel.deleteSchedule(dbosCtx, deleteScheduleDBInput{
@@ -751,12 +570,12 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 		}
 
 		if err := dbosCtx.kernel.createSchedule(dbosCtx, createScheduleDBInput{
-			ScheduleID:        uuid.New().String(),
+			ScheduleId:        uuid.New().String(),
 			ScheduleName:      req.ScheduleName,
 			WorkflowName:      req.WorkflowName,
 			WorkflowClassName: req.WorkflowClassName,
 			Schedule:          req.Schedule,
-			Context:           string(contextJSON),
+			Context:           string(contextJson),
 			Status:            ScheduleStatusActive,
 			AutomaticBackfill: req.AutomaticBackfill,
 			CronTimezone:      req.CronTimezone,
@@ -773,69 +592,50 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 	return nil
 }
 
-// GetSchedule gets a schedule by name using the dbosAdmin.
 func (c *dbosAdmin) GetSchedule(scheduleName string) (*WorkflowSchedule, error) {
 	return c.dbosCtx.GetSchedule(scheduleName)
 }
 
-// ListSchedules lists schedules, optionally filtered by the supplied options.
 func (c *dbosAdmin) ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSchedule, error) {
 	return c.dbosCtx.ListSchedules(opts...)
 }
 
-// PauseSchedule pauses a schedule using the dbosAdmin.
 func (c *dbosAdmin) PauseSchedule(scheduleName string) error {
 	return c.dbosCtx.PauseSchedule(scheduleName)
 }
 
-// ResumeSchedule resumes a paused schedule using the dbosAdmin.
 func (c *dbosAdmin) ResumeSchedule(scheduleName string) error {
 	return c.dbosCtx.ResumeSchedule(scheduleName)
 }
 
-// DeleteSchedule deletes a schedule using the dbosAdmin.
 func (c *dbosAdmin) DeleteSchedule(scheduleName string) error {
 	return c.dbosCtx.DeleteSchedule(scheduleName)
 }
 
-// BackfillSchedule enqueues all executions of the named schedule that would
-// have run between start and end. Already-executed times are skipped. Returns
-// the IDs of the workflows enqueued for the backfilled time slots.
 func (c *dbosAdmin) BackfillSchedule(scheduleName string, start, end time.Time) ([]string, error) {
 	return c.dbosCtx.BackfillSchedule(scheduleName, start, end)
 }
 
-// TriggerSchedule immediately enqueues the named schedule's workflow on its
-// configured queue (falling back to the internal queue) and returns a handle
-// to the enqueued workflow.
 func (c *dbosAdmin) TriggerSchedule(scheduleName string) (*WorkflowHandle[any], error) {
 	return c.dbosCtx.TriggerSchedule(scheduleName)
 }
 
-// ListApplicationVersions returns every registered application version ordered
-// by timestamp (newest first).
 func (c *dbosAdmin) ListApplicationVersions() ([]VersionInfo, error) {
 	return c.dbosCtx.ListApplicationVersions()
 }
 
-// GetLatestApplicationVersion returns the application version with the most
-// recent timestamp.
 func (c *dbosAdmin) GetLatestApplicationVersion() (*VersionInfo, error) {
 	return c.dbosCtx.GetLatestApplicationVersion()
 }
 
-// SetLatestApplicationVersion marks the named application version as latest by
-// updating its timestamp to the current time.
 func (c *dbosAdmin) SetLatestApplicationVersion(versionName string) error {
 	return c.dbosCtx.SetLatestApplicationVersion(versionName)
 }
 
-// Shutdown gracefully shuts down the dbosAdmin and closes the system database connection.
 func (c *dbosAdmin) Shutdown(timeout time.Duration) {
-	// Get the concrete dbosContext to access internal fields
+
 	dbosCtx := c.dbosCtx
 
-	// Cancel the context to signal dbosAdmin resources to stop.
 	dbosCtx.ctxCancelFunc(errors.New("dbosAdmin shutdown initiated"))
 
 	// Close the system database only when this dbosAdmin created it.

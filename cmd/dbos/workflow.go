@@ -63,7 +63,7 @@ var workflowDeleteCmd = &cobra.Command{
 }
 
 func init() {
-	// Add subcommands to workflow
+
 	workflowCmd.AddCommand(workflowListCmd)
 	workflowCmd.AddCommand(workflowGetCmd)
 	workflowCmd.AddCommand(workflowStepsCmd)
@@ -72,10 +72,8 @@ func init() {
 	workflowCmd.AddCommand(workflowForkCmd)
 	workflowCmd.AddCommand(workflowDeleteCmd)
 
-	// Delete command flags
 	workflowDeleteCmd.Flags().BoolP("children", "c", false, "Also delete all child workflows recursively")
 
-	// List command flags
 	workflowListCmd.Flags().IntP("limit", "l", 10, "Limit the results returned")
 	workflowListCmd.Flags().StringP("user", "u", "", "Retrieve workflows run by this user")
 	workflowListCmd.Flags().StringP("start-time", "s", "", "Retrieve workflows starting after this timestamp (ISO 8601 format)")
@@ -86,28 +84,25 @@ func init() {
 	workflowListCmd.Flags().BoolP("sort-desc", "d", false, "Sort the results in descending order (older first)")
 	workflowListCmd.Flags().IntP("offset", "o", 0, "Offset for pagination")
 
-	// Fork command flags
 	workflowForkCmd.Flags().IntP("step", "s", 1, "Restart from this step")
 	workflowForkCmd.Flags().StringP("application-version", "a", "", "Application version for the forked workflow")
 	workflowForkCmd.Flags().StringP("forked-workflow-id", "f", "", "Custom workflow ID for the forked workflow")
 }
 
 func runWorkflowList(cmd *cobra.Command, args []string) error {
-	// Get database URL
-	dbURL, err := getDBURL()
+
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Build options from flags
 	var opts []dbos.ListWorkflowsOption
 
 	if limit, _ := cmd.Flags().GetInt("limit"); limit > 0 {
@@ -171,44 +166,37 @@ func runWorkflowList(cmd *cobra.Command, args []string) error {
 		opts = append(opts, dbos.WithEndTime(t))
 	}
 
-	// Do not retrieve input and output
 	opts = append(opts, dbos.WithLoadInput(false), dbos.WithLoadOutput(false))
 
-	// List workflows
 	workflows, err := admin.ListWorkflows(opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list workflows: %w", err)
 	}
 
-	// Ensure we have a non-nil slice for JSON output
 	if workflows == nil {
 		workflows = []dbos.WorkflowStatus{}
 	}
 
-	// Output results as JSON
-	return outputJSON(workflows)
+	return outputJson(workflows)
 }
 
 func runWorkflowGet(cmd *cobra.Command, args []string) error {
-	workflowID := args[0]
+	workflowId := args[0]
 
-	// Get database URL
-	dbURL, err := getDBURL()
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Retrieve workflow
 	workflows, err := admin.ListWorkflows(
-		dbos.WithWorkflowIDs([]string{workflowID}),
+		dbos.WithWorkflowIds([]string{workflowId}),
 		dbos.WithLoadInput(false),
 		dbos.WithLoadOutput(false),
 	)
@@ -217,171 +205,148 @@ func runWorkflowGet(cmd *cobra.Command, args []string) error {
 	}
 
 	if len(workflows) == 0 {
-		return fmt.Errorf("workflow not found: %s", workflowID)
+		return fmt.Errorf("workflow not found: %s", workflowId)
 	}
 
-	return outputJSON(workflows[0])
+	return outputJson(workflows[0])
 }
 
 func runWorkflowSteps(cmd *cobra.Command, args []string) error {
-	workflowID := args[0]
+	workflowId := args[0]
 
-	// Get database URL
-	dbURL, err := getDBURL()
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Get workflow steps
-	steps, err := admin.GetWorkflowSteps(workflowID)
+	steps, err := admin.GetWorkflowSteps(workflowId)
 	if err != nil {
 		return fmt.Errorf("failed to get workflow steps: %w", err)
 	}
 
-	// Ensure we have a non-nil slice for JSON output
 	if steps == nil {
 		steps = []dbos.StepInfo{}
 	}
 
-	// Output results as JSON
-	return outputJSON(steps)
+	return outputJson(steps)
 }
 
 func runWorkflowCancel(cmd *cobra.Command, args []string) error {
-	workflowID := args[0]
+	workflowId := args[0]
 
-	// Get database URL
-	dbURL, err := getDBURL()
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Cancel workflow
-	err = admin.CancelWorkflow(workflowID)
+	err = admin.CancelWorkflow(workflowId)
 	if err != nil {
 		return err
 	}
-	logger.Info("Successfully cancelled workflow", "id", workflowID)
+	logger.Info("Successfully cancelled workflow", "id", workflowId)
 	return nil
 }
 
 func runWorkflowResume(cmd *cobra.Command, args []string) error {
-	workflowID := args[0]
+	workflowId := args[0]
 
-	// Get database URL
-	dbURL, err := getDBURL()
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
 
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Resume workflow
-	handle, err := admin.ResumeWorkflow(workflowID)
+	handle, err := admin.ResumeWorkflow(workflowId)
 	if err != nil {
 		return err
 	}
 
-	// Get status
 	status, err := handle.GetStatus()
 	if err != nil {
 		return fmt.Errorf("failed to get workflow status: %w", err)
 	}
 
-	// Output results as JSON
-	return outputJSON(status)
+	return outputJson(status)
 }
 
 func runWorkflowFork(cmd *cobra.Command, args []string) error {
-	workflowID := args[0]
+	workflowId := args[0]
 
-	// Get database URL
-	dbURL, err := getDBURL()
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
 
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}
 	defer admin.Shutdown(5 * time.Second)
 
-	// Get step flag
 	step, _ := cmd.Flags().GetInt("step")
 	if step < 1 {
 		step = 1
 	}
 
-	// Build ForkWorkflowInput
 	input := dbos.ForkWorkflowInput{
-		OriginalWorkflowID: workflowID,
+		OriginalWorkflowId: workflowId,
 		StartStep:          uint(step),
 	}
 
-	// Get application version flag if provided
 	if appVersion, _ := cmd.Flags().GetString("application-version"); appVersion != "" {
 		input.ApplicationVersion = appVersion
 	}
 
-	// Get forked workflow ID flag if provided
-	if forkedID, _ := cmd.Flags().GetString("forked-workflow-id"); forkedID != "" {
-		input.ForkedWorkflowID = forkedID
+	if forkedId, _ := cmd.Flags().GetString("forked-workflow-id"); forkedId != "" {
+		input.ForkedWorkflowId = forkedId
 	}
 
-	// Fork workflow
 	handle, err := admin.ForkWorkflow(input)
 	if err != nil {
 		return err
 	}
 
-	// Get status of forked workflow
 	status, err := handle.GetStatus()
 	if err != nil {
 		return fmt.Errorf("failed to get forked workflow status: %w", err)
 	}
 
-	// Output results as JSON
-	return outputJSON(status)
+	return outputJson(status)
 }
 
 func runWorkflowDelete(cmd *cobra.Command, args []string) error {
-	// Get database URL
-	dbURL, err := getDBURL()
+
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
 
-	user_ctx := context.Background()
+	userCtx := context.Background()
 
-	// Create DBOS context
-	admin, err := createDBOSAdmin(user_ctx, dbURL)
+	admin, err := createDbosAdmin(userCtx, dbUrl)
 	if err != nil {
 		return err
 	}

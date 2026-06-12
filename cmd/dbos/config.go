@@ -1,9 +1,8 @@
 package main
 
-// Config represents the dbos-config.yaml structure
 type Config struct {
 	Name          string        `mapstructure:"name"`
-	DatabaseURL   string        `mapstructure:"database_url"`
+	DatabaseUrl   string        `mapstructure:"database_url"`
 	RuntimeConfig RuntimeConfig `mapstructure:"runtimeConfig"`
 	Database      Database      `mapstructure:"database"`
 }

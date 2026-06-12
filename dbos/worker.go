@@ -12,25 +12,22 @@ import (
 )
 
 const (
-	_DBOS_INTERNAL_QUEUE_NAME        = "_dbos_internal_queue"
-	_DEFAULT_MAX_TASKS_PER_ITERATION = 100
-	_DEFAULT_BASE_POLLING_INTERVAL   = 1 * time.Second
-	_DEFAULT_MAX_POLLING_INTERVAL    = 120 * time.Second
+	_dbosInternalQueueName       = "_dbos_internal_queue"
+	_defaultMaxTasksPerIteration = 100
+	_defaultBasePollingInterval  = 1 * time.Second
+	_defaultMaxPollingInterval   = 120 * time.Second
 )
 
 type worker struct {
 	logger *slog.Logger
 
-	// Claim-loop iteration parameters
 	backoffFactor   float64
 	scalebackFactor float64
 	jitterMin       float64
 	jitterMax       float64
 
-	// WaitGroup to track policy claim loops.
 	policyGoroutinesWg sync.WaitGroup
 
-	// Channel to signal completion back to the DBOS context
 	completionChan chan struct{}
 }
 
@@ -45,7 +42,6 @@ func newWorker(logger *slog.Logger) *worker {
 	}
 }
 
-// run starts one claim loop per worker-dispatched workflow.
 func (w *worker) run(ctx *dbosContext) {
 	for _, entry := range ctx.workflowRegistry.List(false) {
 		w.policyGoroutinesWg.Add(1)
@@ -61,12 +57,12 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 	defer w.policyGoroutinesWg.Done()
 
 	workerLogger := w.logger.With("workflow_name", workflowName)
-	// Current polling interval starts at the base interval and adjusts based on errors
-	currentPollingInterval := _DEFAULT_BASE_POLLING_INTERVAL
+
+	currentPollingInterval := _defaultBasePollingInterval
 
 	for {
 		hasBackoffError := false
-		// Transition any DELAYED workflows whose delay has expired to ENQUEUED.
+
 		if err := ctx.kernel.transitionDelayedWorkflows(ctx); err != nil {
 			workerLogger.Warn("Exception transitioning delayed workflows", "error", err)
 		}
@@ -83,46 +79,40 @@ func (w *worker) runWorkflow(ctx *dbosContext, workflowName string) {
 				continue
 			}
 
-			// Pass encoded input directly - decoding will happen in workflow wrapper when we know the target type
-			_, err := registeredWorkflow.wrappedFunction(ctx, workflow.input, workflow.serialization, withWorkflowID(workflow.id), withIsDequeue())
+			_, err := registeredWorkflow.wrappedFunction(ctx, workflow.input, workflow.serialization, withWorkflowId(workflow.id), withIsDequeue())
 			if err != nil {
 				workerLogger.Error("Error running claimed workflow", "error", err)
 			}
 		}
 
-		// Adjust polling interval for this policy based on errors
 		if hasBackoffError {
-			// Increase polling interval using exponential backoff, but never exceed maxPollingInterval
+
 			newInterval := time.Duration(float64(currentPollingInterval) * w.backoffFactor)
-			currentPollingInterval = min(newInterval, _DEFAULT_MAX_POLLING_INTERVAL)
+			currentPollingInterval = min(newInterval, _defaultMaxPollingInterval)
 		} else {
-			// Scale back polling interval on successful iteration, but never go below base interval
+
 			newInterval := time.Duration(float64(currentPollingInterval) * w.scalebackFactor)
-			currentPollingInterval = max(newInterval, _DEFAULT_BASE_POLLING_INTERVAL)
+			currentPollingInterval = max(newInterval, _defaultBasePollingInterval)
 		}
 
-		// Apply jitter to this policy's polling interval
-		jitter := w.jitterMin + rand.Float64()*(w.jitterMax-w.jitterMin) // #nosec G404 -- non-crypto jitter; acceptable
+		jitter := w.jitterMin + rand.Float64()*(w.jitterMax-w.jitterMin)
 		sleepDuration := time.Duration(float64(currentPollingInterval) * jitter)
 
-		// Sleep with jittered interval, but allow early exit on context cancellation
 		select {
 		case <-ctx.Done():
 			workerLogger.Debug("Worker claim loop stopping due to context cancellation", "cause", context.Cause(ctx))
 			return
 		case <-time.After(sleepDuration):
-			// Continue to next iteration
+
 		}
 	}
 }
 
-// dequeueWorkflows dequeues workflows from a specific partition and handles errors.
-// Returns the dequeued workflows and a boolean indicating whether to continue to the next iteration.
 func (w *worker) dequeueWorkflows(ctx *dbosContext, workflowName string, hasBackoffError *bool) ([]dequeuedWorkflow, bool) {
 	dequeuedWorkflows, err := retryWithResult(ctx, func() ([]dequeuedWorkflow, error) {
 		return ctx.kernel.dequeueWorkflows(ctx, dequeueWorkflowsInput{
 			workflowName:       workflowName,
-			executorID:         ctx.executorID,
+			executorId:         ctx.executorId,
 			applicationVersion: ctx.applicationVersion,
 		})
 	}, withRetrierLogger(w.logger))
@@ -136,8 +126,8 @@ func (w *worker) dequeueWorkflows(ctx *dbosContext, workflowName string, hasBack
 		} else {
 			w.logger.Error("Error claiming workflows", "workflow_name", workflowName, "error", err)
 		}
-		return nil, true // Indicate to continue to next iteration
+		return nil, true
 	}
 
-	return dequeuedWorkflows, false // Success, don't continue
+	return dequeuedWorkflows, false
 }

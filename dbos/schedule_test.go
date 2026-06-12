@@ -10,33 +10,29 @@ import (
 )
 
 func TestApplySchedulesInvalidSignature(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	require.NoError(t, dbosCtx.Launch())
 
-	// Second argument is not ScheduledWorkflowInput.
-	badInputType := func(ctx DBOSContext, input string) (any, error) { return nil, nil }
+	badInputType := func(ctx DbosContext, input string) (any, error) { return nil, nil }
 	err := ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "bad-input", WorkflowFn: badInputType, Schedule: "0 0 * * * *"},
 	})
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "ScheduledWorkflowInput")
 
-	// Not a function at all.
 	err = ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "not-a-func", WorkflowFn: "not a function", Schedule: "0 0 * * * *"},
 	})
 	require.Error(t, err)
 
-	// Too few parameters.
-	tooFewParams := func(ctx DBOSContext) (any, error) { return nil, nil }
+	tooFewParams := func(ctx DbosContext) (any, error) { return nil, nil }
 	err = ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "too-few", WorkflowFn: tooFewParams, Schedule: "0 0 * * * *"},
 	})
 	require.Error(t, err)
 
-	// None of the above schedules should have been persisted.
 	for _, name := range []string{"bad-input", "not-a-func", "too-few"} {
 		s, err := GetSchedule(dbosCtx, name)
 		require.NoError(t, err)
@@ -45,13 +41,12 @@ func TestApplySchedulesInvalidSignature(t *testing.T) {
 }
 
 func TestScheduleCronValidation(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
 	require.NoError(t, dbosCtx.Launch())
 
-	// CreateSchedule rejects a garbage cron expression up-front.
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 		ScheduleName: "bad-cron-create",
 		Schedule:     "not a cron",
@@ -62,7 +57,6 @@ func TestScheduleCronValidation(t *testing.T) {
 	require.NoError(t, err)
 	require.Nil(t, got, "invalid-cron schedule must not be persisted")
 
-	// ApplySchedules rejects invalid cron before writing any row (atomicity).
 	err = ApplySchedules(dbosCtx, []ApplySchedulesRequest{
 		{ScheduleName: "apply-good", WorkflowFn: testWorkflowForSchedule, Schedule: "0 0 * * * *"},
 		{ScheduleName: "apply-bad", WorkflowFn: testWorkflowForSchedule, Schedule: "garbage"},
@@ -75,7 +69,6 @@ func TestScheduleCronValidation(t *testing.T) {
 		require.Nil(t, s, "schedule %s should not have been created", name)
 	}
 
-	// Invalid timezone also surfaces at validate time.
 	err = CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 		ScheduleName: "bad-tz",
 		Schedule:     "0 0 * * * *",
@@ -85,41 +78,35 @@ func TestScheduleCronValidation(t *testing.T) {
 }
 
 func TestBackfillSchedule(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
 
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 		ScheduleName: "backfill-schedule",
-		Schedule:     "*/1 * * * * *", // Every second for testing
+		Schedule:     "*/1 * * * * *",
 	})
 	require.NoError(t, err)
 
-	// Backfill last minute
 	start := time.Now().Add(-1 * time.Minute)
 	end := time.Now()
 
 	ids, err := BackfillSchedule(dbosCtx, "backfill-schedule", start, end)
 	require.NoError(t, err)
 
-	// A `*/1 * * * * *` schedule over a one-minute window should enqueue
-	// roughly 60 workflows; allow some slack for clock alignment.
 	require.GreaterOrEqual(t, len(ids), 50, "backfill should have returned ~60 IDs, got %d", len(ids))
-	backfilled, err := ListWorkflows(dbosCtx, WithWorkflowIDPrefix("sched-backfill-schedule-"))
+	backfilled, err := ListWorkflows(dbosCtx, WithWorkflowIdPrefix("sched-backfill-schedule-"))
 	require.NoError(t, err)
 	require.Equal(t, len(ids), len(backfilled), "returned IDs should match enqueued workflows")
 	for _, wf := range backfilled {
 		require.Equal(t, WorkflowStatusEnqueued, wf.Status)
 	}
 
-	// Idempotency: re-running the same backfill should not create duplicate rows
-	// or bump recovery_attempts on the existing ones. Returned IDs should still
-	// match the existing rows so callers can poll them.
 	idsAgain, err := BackfillSchedule(dbosCtx, "backfill-schedule", start, end)
 	require.NoError(t, err)
 	require.Equal(t, len(ids), len(idsAgain), "second backfill must return the same IDs")
-	again, err := ListWorkflows(dbosCtx, WithWorkflowIDPrefix("sched-backfill-schedule-"))
+	again, err := ListWorkflows(dbosCtx, WithWorkflowIdPrefix("sched-backfill-schedule-"))
 	require.NoError(t, err)
 	require.Equal(t, len(backfilled), len(again), "second backfill must not enqueue duplicates")
 	for _, wf := range again {
@@ -127,12 +114,10 @@ func TestBackfillSchedule(t *testing.T) {
 	}
 }
 
-// TestBackfillScheduleRecovery exercises the path where a backfilled workflow
-// row is flipped to PENDING (simulating an executor crash mid-run) and then
 // recovered via recoverPendingWorkflows. The recovered workflow must decode
-// the ScheduledWorkflowInput written at backfill time and run it correctly.
+
 func TestBackfillScheduleRecovery(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	scheduledInputCapture = sync.Map{}
@@ -144,11 +129,10 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 	const scheduleName = "backfill-recovery-schedule"
 	err := CreateSchedule(dbosCtx, testCapturingScheduledWorkflow, CreateScheduleRequest{
 		ScheduleName: scheduleName,
-		Schedule:     "0 0 0 1 1 *", // Once a year
+		Schedule:     "0 0 0 1 1 *",
 	}, WithScheduleContext(ctxValue))
 	require.NoError(t, err)
 
-	// Backfill a 5-second window of every-second ticks.
 	start := time.Now().Add(-5 * time.Second).Truncate(time.Second)
 	end := time.Now()
 	c := dbosCtx.(*dbosContext)
@@ -163,7 +147,7 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 
 	target := ids[0]
 	require.Eventually(t, func() bool {
-		statuses, err := ListWorkflows(dbosCtx, WithWorkflowIDs([]string{target}))
+		statuses, err := ListWorkflows(dbosCtx, WithWorkflowIds([]string{target}))
 		return err == nil && len(statuses) == 1 && statuses[0].Status == WorkflowStatusSuccess
 	}, 10*time.Second, 50*time.Millisecond, "queue runner should run the backfilled workflow before recovery")
 
@@ -176,7 +160,7 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 	require.NoError(t, err)
 	var recovered *WorkflowHandle[any]
 	for _, h := range handles {
-		if h.GetWorkflowID() == target {
+		if h.GetWorkflowId() == target {
 			recovered = h
 			break
 		}
@@ -202,7 +186,7 @@ func TestBackfillScheduleRecovery(t *testing.T) {
 }
 
 func TestTriggerSchedule(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	scheduledInputCapture = sync.Map{}
@@ -222,15 +206,15 @@ func TestTriggerSchedule(t *testing.T) {
 	afterTrigger := time.Now()
 	require.NoError(t, err)
 	require.NotNil(t, handle)
-	workflowID := handle.GetWorkflowID()
-	require.NotEmpty(t, workflowID)
-	require.Contains(t, workflowID, "trigger-schedule")
+	workflowId := handle.GetWorkflowId()
+	require.NotEmpty(t, workflowId)
+	require.Contains(t, workflowId, "trigger-schedule")
 
 	result, err := handle.GetResult()
 	require.NoError(t, err)
 	require.Equal(t, "completed", result)
 
-	captured, ok := scheduledInputCapture.Load(workflowID)
+	captured, ok := scheduledInputCapture.Load(workflowId)
 	require.True(t, ok, "workflow should have captured its input")
 	got := captured.(ScheduledWorkflowInput)
 	require.Equal(t, ctxValue, got.Context, "Context should match the schedule's configured context")
@@ -239,10 +223,9 @@ func TestTriggerSchedule(t *testing.T) {
 }
 
 func TestScheduleWithOptions(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
-	// First register the workflow
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
 
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
@@ -261,23 +244,22 @@ func TestScheduleWithOptions(t *testing.T) {
 	require.Equal(t, "America/New_York", schedule.CronTimezone)
 }
 
-func testWorkflowForSchedule(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForSchedule(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
 	return "completed", nil
 }
 
-func testWorkflowForScheduleCustomName(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForScheduleCustomName(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
 	return "completed", nil
 }
 
 var scheduledInputCapture sync.Map
 
-func testCapturingScheduledWorkflow(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
-	wfID, _ := GetWorkflowID(ctx)
-	scheduledInputCapture.Store(wfID, input)
-	// CreateSchedule is wrapped as a step via runAsTxn when called inside a
-	// workflow. The inner cron never fires during tests.
+func testCapturingScheduledWorkflow(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+	wfId, _ := GetWorkflowId(ctx)
+	scheduledInputCapture.Store(wfId, input)
+
 	if err := CreateSchedule(ctx, testCapturingScheduledWorkflow, CreateScheduleRequest{
-		ScheduleName: wfID + "-inner",
+		ScheduleName: wfId + "-inner",
 		Schedule:     "0 0 0 1 1 *",
 	}); err != nil {
 		return nil, err
@@ -287,7 +269,7 @@ func testCapturingScheduledWorkflow(ctx DBOSContext, input ScheduledWorkflowInpu
 
 var backfillRestartFiredEvent *Event
 
-func testWorkflowForBackfillRestart(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
+func testWorkflowForBackfillRestart(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
 	if backfillRestartFiredEvent != nil {
 		backfillRestartFiredEvent.Set()
 	}
@@ -297,7 +279,7 @@ func testWorkflowForBackfillRestart(ctx DBOSContext, input ScheduledWorkflowInpu
 func TestAutomaticBackfillOnRestart(t *testing.T) {
 	backfillRestartFiredEvent = NewEvent()
 
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 
 	NewWorkflow(dbosCtx, testWorkflowForBackfillRestart)
 	require.NoError(t, dbosCtx.Launch())
@@ -307,14 +289,12 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 
 	err := CreateSchedule(dbosCtx, testWorkflowForBackfillRestart, CreateScheduleRequest{
 		ScheduleName: scheduleName,
-		Schedule:     "*/1 * * * * *", // Every second
+		Schedule:     "*/1 * * * * *",
 	}, WithAutomaticBackfill(true))
 	require.NoError(t, err)
 
-	// Wait for the schedule to fire at least once so LastFiredAt is set.
 	backfillRestartFiredEvent.Wait()
 
-	// Snapshot how many runs have succeeded before the restart.
 	var before []WorkflowStatus
 	require.Eventually(t, func() bool {
 		before, err = ListWorkflows(dbosCtx,
@@ -326,22 +306,18 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 
 	dbosCtx.Shutdown(5 * time.Second)
 
-	// Reset the event so the next Wait only returns after a post-restart fire.
 	backfillRestartFiredEvent.Clear()
 
-	// Simulate missed schedules while the context is down.
 	time.Sleep(2 * time.Second)
 
-	dbosCtx2 := setupDBOS(t, setupDBOSOptions{dropDB: false, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx2 := setupDbos(t, setupDbosOptions{dropDB: false, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx2.Shutdown(5 * time.Second)
 
 	NewWorkflow(dbosCtx2, testWorkflowForBackfillRestart)
 	require.NoError(t, dbosCtx2.Launch())
 
-	// Launch should backfill the missed runs; wait for one to execute.
 	backfillRestartFiredEvent.Wait()
 
-	// After backfill, the success count should have grown by more than one.
 	require.Eventually(t, func() bool {
 		after, err := ListWorkflows(dbosCtx2,
 			WithName(wfFQN),
@@ -351,7 +327,7 @@ func TestAutomaticBackfillOnRestart(t *testing.T) {
 	}, 5*time.Second, 100*time.Millisecond, "expected backfill to produce more than one additional successful workflow")
 }
 
-func testWorkflowExpectingApplySchedulesError(ctx DBOSContext, _ string) (string, error) {
+func testWorkflowExpectingApplySchedulesError(ctx DbosContext, _ string) (string, error) {
 	err := ApplySchedules(ctx, []ApplySchedulesRequest{
 		{ScheduleName: "x", WorkflowFn: testWorkflowForSchedule, Schedule: "0 0 * * * *"},
 	})
@@ -361,7 +337,7 @@ func testWorkflowExpectingApplySchedulesError(ctx DBOSContext, _ string) (string
 	return err.Error(), nil
 }
 
-func testWorkflowExpectingBackfillScheduleError(ctx DBOSContext, _ string) (string, error) {
+func testWorkflowExpectingBackfillScheduleError(ctx DbosContext, _ string) (string, error) {
 	_, err := BackfillSchedule(ctx, "any", time.Now().Add(-time.Minute), time.Now())
 	if err == nil {
 		return "", nil
@@ -369,7 +345,7 @@ func testWorkflowExpectingBackfillScheduleError(ctx DBOSContext, _ string) (stri
 	return err.Error(), nil
 }
 
-func testWorkflowExpectingTriggerScheduleError(ctx DBOSContext, _ string) (string, error) {
+func testWorkflowExpectingTriggerScheduleError(ctx DbosContext, _ string) (string, error) {
 	_, err := TriggerSchedule(ctx, "any")
 	if err == nil {
 		return "", nil
@@ -377,10 +353,8 @@ func testWorkflowExpectingTriggerScheduleError(ctx DBOSContext, _ string) (strin
 	return err.Error(), nil
 }
 
-// TestScheduleWorkflowInternalRejections checks that ApplySchedules,
-// BackfillSchedule, and TriggerSchedule reject calls from within a workflow.
 func TestScheduleWorkflowInternalRejections(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(10 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
@@ -409,11 +383,8 @@ func TestScheduleWorkflowInternalRejections(t *testing.T) {
 	}
 }
 
-// TestScheduleCronTimezone verifies that a non-empty CronTimezone is applied
-// to the installed cron entry via the CRON_TZ= prefix: Next() from a known
-// wall-clock reference should fall at the configured hour in that tz.
 func TestScheduleCronTimezone(t *testing.T) {
-	dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
+	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, schedulerPollingInterval: 100 * time.Millisecond})
 	defer dbosCtx.Shutdown(5 * time.Second)
 
 	NewWorkflow(dbosCtx, testWorkflowForSchedule)
@@ -422,14 +393,14 @@ func TestScheduleCronTimezone(t *testing.T) {
 	const scheduleName = "tz-schedule"
 	err := CreateSchedule(dbosCtx, testWorkflowForSchedule, CreateScheduleRequest{
 		ScheduleName: scheduleName,
-		Schedule:     "0 0 9 * * *", // 09:00:00 every day
+		Schedule:     "0 0 9 * * *",
 	}, WithCronTimezone("America/New_York"))
 	require.NoError(t, err)
 
 	c := dbosCtx.(*dbosContext)
 	var entry cron.Entry
 	require.Eventually(t, func() bool {
-		id, ok := c.installedScheduleEntryID(scheduleName)
+		id, ok := c.installedScheduleEntryId(scheduleName)
 		if !ok {
 			return false
 		}
@@ -440,8 +411,6 @@ func TestScheduleCronTimezone(t *testing.T) {
 	loc, err := time.LoadLocation("America/New_York")
 	require.NoError(t, err)
 
-	// 06:00 NY → next fire should be 09:00 NY the same day, regardless of
-	// where the test host's local time sits.
 	ref := time.Date(2025, 1, 15, 6, 0, 0, 0, loc)
 	next := entry.Schedule.Next(ref).In(loc)
 	require.Equal(t, 9, next.Hour(), "next fire should be 09:00 NY, got %v", next)

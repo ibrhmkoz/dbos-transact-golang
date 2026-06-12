@@ -13,14 +13,14 @@ import (
 
 const STEPS_EVENT = "steps_event"
 
-var dbosCtx dbos.DBOSContext
+var dbosCtx dbos.DbosContext
 
 /*****************************/
 /**** WORKFLOWS AND STEPS ****/
 /*****************************/
 
-func ExampleWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
-	_, err := dbos.RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+func ExampleWorkflow(ctx dbos.DbosContext, _ string) (string, error) {
+	_, err := dbos.Run(ctx, func(stepCtx context.Context) (string, error) {
 		return stepOne(stepCtx)
 	})
 	if err != nil {
@@ -30,7 +30,7 @@ func ExampleWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, err = dbos.RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+	_, err = dbos.Run(ctx, func(stepCtx context.Context) (string, error) {
 		return stepTwo(stepCtx)
 	})
 	if err != nil {
@@ -40,7 +40,7 @@ func ExampleWorkflow(ctx dbos.DBOSContext, _ string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	_, err = dbos.RunAsStep(ctx, func(stepCtx context.Context) (string, error) {
+	_, err = dbos.Run(ctx, func(stepCtx context.Context) (string, error) {
 		return stepThree(stepCtx)
 	})
 	if err != nil {
@@ -78,9 +78,9 @@ func stepThree(ctx context.Context) (string, error) {
 func main() {
 	// Create DBOS context
 	var err error
-	dbosCtx, err = dbos.NewDBOSContext(context.Background(), dbos.Config{
-		DatabaseURL: os.Getenv("DBOS_SYSTEM_DATABASE_URL"),
-		AppName: "{{.ProjectName}}",
+	dbosCtx, err = dbos.NewDbosContext(context.Background(), dbos.Config{
+		DatabaseUrl: os.Getenv("DBOS_SYSTEM_DATABASE_URL"),
+		AppName:     "{{.ProjectName}}",
 		AdminServer: true,
 	})
 	if err != nil {
@@ -118,14 +118,14 @@ func main() {
 /*****************************/
 
 func workflowHandler(c *gin.Context) {
-	taskID := c.Param("taskid")
+	taskId := c.Param("taskid")
 
-	if taskID == "" {
+	if taskId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Task ID is required"})
 		return
 	}
 
-	_, err := dbos.RunWorkflow(dbosCtx, ExampleWorkflow, "", dbos.WithWorkflowID(taskID))
+	_, err := dbos.RunWorkflow(dbosCtx, ExampleWorkflow, "", dbos.WithWorkflowId(taskId))
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -133,14 +133,14 @@ func workflowHandler(c *gin.Context) {
 }
 
 func lastStepHandler(c *gin.Context) {
-	taskID := c.Param("taskid")
+	taskId := c.Param("taskid")
 
-	if taskID == "" {
+	if taskId == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "Task ID is required"})
 		return
 	}
 
-	step, err := dbos.GetEvent[int](dbosCtx, taskID, STEPS_EVENT, 0)
+	step, err := dbos.GetEvent[int](dbosCtx, taskId, STEPS_EVENT, 0)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return

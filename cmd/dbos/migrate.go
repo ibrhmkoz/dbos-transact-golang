@@ -28,34 +28,30 @@ func init() {
 }
 
 func runMigrate(cmd *cobra.Command, args []string) error {
-	// Get database URL
-	dbURL, err := getDBURL()
+
+	dbUrl, err := getDBUrl()
 	if err != nil {
 		return err
 	}
 
 	ctx := context.Background()
 
-	// Create DBOS context which will run migrations automatically for the system DB
-	_, err = createDBOSContext(ctx, dbURL)
+	_, err = createDbosContext(ctx, dbUrl)
 	if err != nil {
 		return err
 	}
 
-	// Determine the schema to use (from flag or default)
 	dbSchema := "dbos"
 	if schema != "" {
 		dbSchema = schema
 	}
 
-	// Grant permissions to application role if specified
 	if applicationRole != "" {
-		if err := grantDBOSSchemaPermissions(dbURL, applicationRole, dbSchema); err != nil {
+		if err := grantDbosSchemaPermissions(dbUrl, applicationRole, dbSchema); err != nil {
 			return err
 		}
 	}
 
-	// Run custom migration commands from config if present
 	if config != nil && len(config.Database.Migrate) > 0 {
 		logger.Info("Executing migration commands from 'dbos-config.yaml'")
 		for _, command := range config.Database.Migrate {
@@ -81,10 +77,10 @@ func runMigrate(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
-func grantDBOSSchemaPermissions(databaseURL, roleName, schemaName string) error {
+func grantDbosSchemaPermissions(databaseUrl, roleName, schemaName string) error {
 	logger.Info("Granting permissions for schema", "role", roleName, "schema", schemaName)
 
-	db, err := sql.Open("pgx", databaseURL)
+	db, err := sql.Open("pgx", databaseUrl)
 	if err != nil {
 		return fmt.Errorf("failed to connect to database: %w", err)
 	}
@@ -93,18 +89,17 @@ func grantDBOSSchemaPermissions(databaseURL, roleName, schemaName string) error 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	// Grant usage on the specified schema
-	schemaSQL := pgx.Identifier{schemaName}.Sanitize()
-	roleSQL := pgx.Identifier{roleName}.Sanitize()
+	schemaSql := pgx.Identifier{schemaName}.Sanitize()
+	roleSql := pgx.Identifier{roleName}.Sanitize()
 
 	queries := []string{
-		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %s TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON TABLES TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON SEQUENCES TO %s`, schemaSQL, roleSQL),
-		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT EXECUTE ON FUNCTIONS TO %s`, schemaSQL, roleSQL),
+		fmt.Sprintf(`GRANT USAGE ON SCHEMA %s TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA %s TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA %s TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`GRANT EXECUTE ON ALL FUNCTIONS IN SCHEMA %s TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON TABLES TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT ALL ON SEQUENCES TO %s`, schemaSql, roleSql),
+		fmt.Sprintf(`ALTER DEFAULT PRIVILEGES IN SCHEMA %s GRANT EXECUTE ON FUNCTIONS TO %s`, schemaSql, roleSql),
 	}
 
 	for _, query := range queries {

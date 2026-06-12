@@ -15,21 +15,14 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// testAllSerializationPaths tests workflow recovery and verifies all read paths.
-// This is the unified test function that exercises:
-// 1. WorkflowFn recovery: starts a workflow, blocks it, recovers it, then verifies completion
-// 2. All read paths: HandleGetResult, GetWorkflowSteps, ListWorkflows, RetrieveWorkflow
-// This ensures recovery paths exercise all encoding/decoding scenarios that normal workflows do.
-// If input is nil, the test expects the output to be nil too.
 func testAllSerializationPaths[T any](
 	t *testing.T,
-	executor DBOSContext,
+	executor DbosContext,
 	recoveryWorkflow Workflow[T, T],
 	input T,
 ) {
 	t.Helper()
 
-	// Check if input is nil (for pointer types, slice, map, etc.)
 	val := reflect.ValueOf(input)
 	isNilExpected := false
 	if !val.IsValid() {
@@ -41,43 +34,35 @@ func testAllSerializationPaths[T any](
 		}
 	}
 
-	// Setup events for recovery
 	startEvent := NewEvent()
 	blockingEvent := NewEvent()
 
-	// Start the blocking workflow; register its events under the runtime-assigned ID
 	handle, err := recoveryWorkflow(executor, input)
 	require.NoError(t, err, "failed to start blocking workflow")
-	workflowID := handle.GetWorkflowID()
-	recoveryEventRegistry.Store(workflowID, recoveryEvents{startEvent, blockingEvent})
-	defer recoveryEventRegistry.Delete(workflowID)
+	workflowId := handle.GetWorkflowId()
+	recoveryEventRegistry.Store(workflowId, recoveryEvents{startEvent, blockingEvent})
+	defer recoveryEventRegistry.Delete(workflowId)
 
-	// Wait for the workflow to reach the blocking step
 	startEvent.Wait()
 
-	// Recover the pending workflow
 	dbosCtx, ok := executor.(*dbosContext)
 	require.True(t, ok, "expected dbosContext")
 	recoveredHandles, err := recoverPendingWorkflows(dbosCtx, []string{"local"})
 	require.NoError(t, err, "failed to recover pending workflows")
 
-	// Find our workflow in the recovered handles
 	var recoveredHandle *WorkflowHandle[any]
 	for _, h := range recoveredHandles {
-		if h.GetWorkflowID() == handle.GetWorkflowID() {
+		if h.GetWorkflowId() == handle.GetWorkflowId() {
 			recoveredHandle = h
 			break
 		}
 	}
 	require.NotNil(t, recoveredHandle, "expected to find recovered handle")
 
-	// Unblock the workflow
 	blockingEvent.Set()
 
-	// Expected output - workflow returns input, so output equals input
 	expectedOutput := input
 
-	// Test read paths after completion
 	t.Run("HandleGetResult", func(t *testing.T) {
 		output, err := handle.GetResult()
 		require.NoError(t, err)
@@ -89,7 +74,7 @@ func testAllSerializationPaths[T any](
 	})
 
 	t.Run("RetrieveWorkflow", func(t *testing.T) {
-		h2, err := RetrieveWorkflow[T](executor, handle.GetWorkflowID())
+		h2, err := RetrieveWorkflow[T](executor, handle.GetWorkflowId())
 		require.NoError(t, err)
 		output, err := h2.GetResult()
 		require.NoError(t, err)
@@ -100,10 +85,9 @@ func testAllSerializationPaths[T any](
 		}
 	})
 
-	// Check the last step output (the workflow result)
 	customSer := getCustomSerializerFromCtx(executor)
 	t.Run("GetWorkflowSteps", func(t *testing.T) {
-		steps, err := GetWorkflowSteps(executor, handle.GetWorkflowID())
+		steps, err := GetWorkflowSteps(executor, handle.GetWorkflowId())
 		require.NoError(t, err)
 		require.GreaterOrEqual(t, len(steps), 1, "Should have at least one step")
 		if len(steps) > 0 {
@@ -113,10 +97,10 @@ func testAllSerializationPaths[T any](
 			} else {
 				require.NotNil(t, lastStep.Output)
 				if customSer != nil {
-					// Custom serializer: output is already decoded to concrete type
+
 					assert.Equal(t, expectedOutput, lastStep.Output, "Step output should match expected output")
 				} else {
-					// Default JSON: output is a base64-decoded JSON string
+
 					strValue, ok := lastStep.Output.(string)
 					require.True(t, ok, "Step output should be a string")
 					if strValue == "" {
@@ -134,10 +118,9 @@ func testAllSerializationPaths[T any](
 		}
 	})
 
-	// Verify final state via ListWorkflows
 	t.Run("ListWorkflows", func(t *testing.T) {
 		wfs, err := ListWorkflows(executor,
-			WithWorkflowIDs([]string{handle.GetWorkflowID()}),
+			WithWorkflowIds([]string{handle.GetWorkflowId()}),
 			WithLoadInput(true), WithLoadOutput(true))
 		require.NoError(t, err)
 		require.Len(t, wfs, 1)
@@ -150,11 +133,11 @@ func testAllSerializationPaths[T any](
 			require.NotNil(t, wf.Output)
 
 			if customSer != nil {
-				// Custom serializer: input/output are already decoded to concrete types
+
 				assert.Equal(t, input, wf.Input, "Workflow input should match input")
 				assert.Equal(t, expectedOutput, wf.Output, "Workflow output should match expected output")
 			} else {
-				// Default JSON: input/output are base64-decoded JSON strings
+
 				inputStr, ok := wf.Input.(string)
 				require.True(t, ok, "Workflow input should be a string")
 				outputStr, ok := wf.Output.(string)
@@ -183,34 +166,30 @@ func testAllSerializationPaths[T any](
 		}
 	})
 
-	// If nil is expected, verify the nil marker is stored in the database
 	if isNilExpected {
 		t.Run("DatabaseNilMarker", func(t *testing.T) {
-			// Get the database pool to query directly
+
 			dbosCtx, ok := executor.(*dbosContext)
 			require.True(t, ok, "expected dbosContext")
 			Kernel := dbosCtx.kernel
 
-			// Query the database directly to check for the marker
 			ctx := context.Background()
 			schemaPrefix := ""
-			query := Kernel.renderSQL(`SELECT inputs, output FROM %sworkflow_status WHERE workflow_uuid = $1`, schemaPrefix)
+			query := Kernel.renderSql(`SELECT inputs, output FROM %sworkflow_status WHERE workflow_uuid = $1`, schemaPrefix)
 
 			var inputString, outputString *string
-			err := Kernel.pool.QueryRow(ctx, query, workflowID).Scan(&inputString, &outputString)
+			err := Kernel.pool.QueryRow(ctx, query, workflowId).Scan(&inputString, &outputString)
 			require.NoError(t, err, "failed to query workflow status")
 
-			// Both input and output should be the nil marker
 			require.NotNil(t, inputString, "input should not be NULL in database")
 			assert.Equal(t, nilMarker, *inputString, "input should be the nil marker")
 
 			require.NotNil(t, outputString, "output should not be NULL in database")
 			assert.Equal(t, nilMarker, *outputString, "output should be the nil marker")
 
-			// Also check the step output in operation_outputs
-			stepQuery := Kernel.renderSQL(`SELECT output FROM %soperation_outputs WHERE workflow_uuid = $1 ORDER BY function_id LIMIT 1`, schemaPrefix)
+			stepQuery := Kernel.renderSql(`SELECT output FROM %soperation_outputs WHERE workflow_uuid = $1 ORDER BY function_id LIMIT 1`, schemaPrefix)
 			var stepOutputString *string
-			err = Kernel.pool.QueryRow(ctx, stepQuery, workflowID).Scan(&stepOutputString)
+			err = Kernel.pool.QueryRow(ctx, stepQuery, workflowId).Scan(&stepOutputString)
 			require.NoError(t, err, "failed to query step output")
 			require.NotNil(t, stepOutputString, "step output should not be NULL in database")
 			assert.Equal(t, nilMarker, *stepOutputString, "step output should be the nil marker")
@@ -218,66 +197,54 @@ func testAllSerializationPaths[T any](
 	}
 }
 
-// Helper function to test Send/Recv communication
 func testSendRecv[T any](
 	t *testing.T,
-	executor DBOSContext,
+	executor DbosContext,
 	senderWorkflow Workflow[T, T],
 	receiverWorkflow Workflow[T, T],
 	input T,
 ) {
 	t.Helper()
 
-	// Start receiver workflow first (it will wait for the message)
 	receiverHandle, err := receiverWorkflow(executor, input)
 	require.NoError(t, err, "Receiver workflow execution failed")
 
-	// Start sender workflow and tell it where to send the message
 	senderHandle, err := senderWorkflow(executor, input)
 	require.NoError(t, err, "Sender workflow execution failed")
-	senderDestRegistry.Store(senderHandle.GetWorkflowID(), receiverHandle.GetWorkflowID())
-	defer senderDestRegistry.Delete(senderHandle.GetWorkflowID())
+	senderDestRegistry.Store(senderHandle.GetWorkflowId(), receiverHandle.GetWorkflowId())
+	defer senderDestRegistry.Delete(senderHandle.GetWorkflowId())
 
-	// Get sender result
 	senderResult, err := senderHandle.GetResult()
 	require.NoError(t, err, "Sender workflow should complete")
 
-	// Get receiver result
 	receiverResult, err := receiverHandle.GetResult()
 	require.NoError(t, err, "Receiver workflow should complete")
 
-	// Verify the received data matches what was sent
 	assert.Equal(t, input, senderResult, "Sender result should match input")
 	assert.Equal(t, input, receiverResult, "Received data should match sent data")
 }
 
-// Helper function to test SetEvent/GetEvent communication
 func testSetGetEvent[T any](
 	t *testing.T,
-	executor DBOSContext,
+	executor DbosContext,
 	setEventWorkflow Workflow[T, T],
 	getEventWorkflow Workflow[string, T],
 	input T,
 ) {
 	t.Helper()
 
-	// Start setEvent workflow
 	setEventHandle, err := setEventWorkflow(executor, input)
 	require.NoError(t, err, "SetEvent workflow execution failed")
 
-	// Wait for setEvent to complete
 	setResult, err := setEventHandle.GetResult()
 	require.NoError(t, err, "SetEvent workflow should complete")
 
-	// Start getEvent workflow (will retrieve the event)
-	getEventHandle, err := getEventWorkflow(executor, setEventHandle.GetWorkflowID())
+	getEventHandle, err := getEventWorkflow(executor, setEventHandle.GetWorkflowId())
 	require.NoError(t, err, "GetEvent workflow execution failed")
 
-	// Get the event result
 	getResult, err := getEventHandle.GetResult()
 	require.NoError(t, err, "GetEvent workflow should complete")
 
-	// Verify the event data matches what was set
 	assert.Equal(t, input, setResult, "SetEvent result should match input")
 	assert.Equal(t, input, getResult, "GetEvent data should match what was set")
 }
@@ -298,7 +265,7 @@ type NestedTestData struct {
 }
 
 type TestWorkflowData struct {
-	ID           string
+	Id           string
 	Message      string
 	Value        int
 	Active       bool
@@ -310,7 +277,6 @@ type TestWorkflowData struct {
 	StringPtrPtr **string
 }
 
-// Typed workflow functions for testing concrete signatures
 var (
 	serializerWorkflow             = makeTestWorkflow[TestWorkflowData]()
 	recoveryStructPtrWorkflow      = makeRecoveryWorkflow[*TestWorkflowData]()
@@ -327,7 +293,7 @@ var (
 	recoveryMyStringWorkflow       = makeRecoveryWorkflow[MyString]()
 	recoveryMyStringSliceWorkflow  = makeRecoveryWorkflow[[]MyString]()
 	recoveryStringMyIntMapWorkflow = makeRecoveryWorkflow[map[string]MyInt]()
-	// Additional types: empty struct, nested collections, slices of pointers
+
 	recoveryEmptyStructWorkflow   = makeRecoveryWorkflow[struct{}]()
 	recoveryIntSliceSliceWorkflow = makeRecoveryWorkflow[IntSliceSlice]()
 	recoveryNestedMapWorkflow     = makeRecoveryWorkflow[map[string]map[string]int]()
@@ -335,7 +301,6 @@ var (
 	recoveryAnyWorkflow           = makeRecoveryWorkflow[any]()
 )
 
-// Typed Send/Recv workflows for various types
 var (
 	serializerSenderWorkflow         = makeSenderWorkflow[TestWorkflowData]()
 	serializerReceiverWorkflow       = makeReceiverWorkflow[TestWorkflowData]()
@@ -347,7 +312,6 @@ var (
 	serializerMyIntReceiverWorkflow  = makeReceiverWorkflow[MyInt]()
 )
 
-// Typed SetEvent/GetEvent workflows for various types
 var (
 	serializerSetEventWorkflow       = makeSetEventWorkflow[TestWorkflowData]()
 	serializerGetEventWorkflow       = makeGetEventWorkflow[TestWorkflowData]()
@@ -359,11 +323,10 @@ var (
 	serializerMyIntGetEventWorkflow  = makeGetEventWorkflow[MyInt]()
 )
 
-// Stream workflows
 var serializerStreamWorkflow = makeStreamWorkflow[TestWorkflowData]()
 
 func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, input T) (T, error) {
+	return func(ctx DbosContext, input T) (T, error) {
 		if err := WriteStream(ctx, "test-stream", input); err != nil {
 			return *new(T), fmt.Errorf("write stream failed: %w", err)
 		}
@@ -374,27 +337,23 @@ func makeStreamWorkflow[T any]() WorkflowFn[T, T] {
 	}
 }
 
-// senderDestRegistry maps a sender workflow ID to its receiver workflow ID.
-// Workflow IDs are runtime-assigned, so the test stores the mapping right
-// after starting the sender; the sender polls until it appears.
 var senderDestRegistry sync.Map
 
-// makeSenderWorkflow creates a generic sender workflow that sends a message to a receiver workflow.
 func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, input T) (T, error) {
-		myID, err := GetWorkflowID(ctx)
+	return func(ctx DbosContext, input T) (T, error) {
+		myId, err := GetWorkflowId(ctx)
 		if err != nil {
 			return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
 		}
-		var destID string
+		var destId string
 		for {
-			if v, ok := senderDestRegistry.Load(myID); ok {
-				destID = v.(string)
+			if v, ok := senderDestRegistry.Load(myId); ok {
+				destId = v.(string)
 				break
 			}
 			time.Sleep(5 * time.Millisecond)
 		}
-		err = Send(ctx, destID, input, "test-topic")
+		err = Send(ctx, destId, input, "test-topic")
 		if err != nil {
 			return *new(T), fmt.Errorf("send failed: %w", err)
 		}
@@ -402,9 +361,8 @@ func makeSenderWorkflow[T any]() WorkflowFn[T, T] {
 	}
 }
 
-// makeReceiverWorkflow creates a generic receiver workflow that receives a message.
 func makeReceiverWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, _ T) (T, error) {
+	return func(ctx DbosContext, _ T) (T, error) {
 		received, err := Recv[T](ctx, "test-topic", 10*time.Second)
 		if err != nil {
 			return *new(T), fmt.Errorf("recv failed: %w", err)
@@ -413,9 +371,8 @@ func makeReceiverWorkflow[T any]() WorkflowFn[T, T] {
 	}
 }
 
-// makeSetEventWorkflow creates a generic workflow that sets an event.
 func makeSetEventWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, input T) (T, error) {
+	return func(ctx DbosContext, input T) (T, error) {
 		err := SetEvent(ctx, "test-key", input)
 		if err != nil {
 			return *new(T), fmt.Errorf("set event failed: %w", err)
@@ -424,10 +381,9 @@ func makeSetEventWorkflow[T any]() WorkflowFn[T, T] {
 	}
 }
 
-// makeGetEventWorkflow creates a generic workflow that gets an event.
 func makeGetEventWorkflow[T any]() WorkflowFn[string, T] {
-	return func(ctx DBOSContext, targetWorkflowID string) (T, error) {
-		event, err := GetEvent[T](ctx, targetWorkflowID, "test-key", 10*time.Second)
+	return func(ctx DbosContext, targetWorkflowId string) (T, error) {
+		event, err := GetEvent[T](ctx, targetWorkflowId, "test-key", 10*time.Second)
 		if err != nil {
 			return *new(T), fmt.Errorf("get event failed: %w", err)
 		}
@@ -435,9 +391,8 @@ func makeGetEventWorkflow[T any]() WorkflowFn[string, T] {
 	}
 }
 
-// makeTestWorkflow creates a generic workflow that simply returns the input.
 func makeTestWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, input T) (T, error) {
+	return func(ctx DbosContext, input T) (T, error) {
 		return Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
 		})
@@ -448,15 +403,12 @@ func serializerErrorStep(_ context.Context, _ TestWorkflowData) (TestWorkflowDat
 	return TestWorkflowData{}, fmt.Errorf("step error")
 }
 
-func serializerErrorWorkflow(ctx DBOSContext, input TestWorkflowData) (TestWorkflowData, error) {
+func serializerErrorWorkflow(ctx DbosContext, input TestWorkflowData) (TestWorkflowData, error) {
 	return Run(ctx, func(context context.Context) (TestWorkflowData, error) {
 		return serializerErrorStep(context, input)
 	})
 }
 
-// recoveryEventRegistry stores events for recovery workflows by workflow ID.
-// Workflow IDs are runtime-assigned, so the test registers events right after
-// starting the workflow; the workflow polls until they appear.
 type recoveryEvents struct {
 	startEvent    *Event
 	blockingEvent *Event
@@ -464,13 +416,9 @@ type recoveryEvents struct {
 
 var recoveryEventRegistry sync.Map
 
-// makeRecoveryWorkflow creates a generic recovery workflow that has an initial step
-// and then a blocking step that uses the output of the first step.
-// This is used to test workflow recovery with various types.
-// The workflow looks up events from recoveryEventRegistry using the workflow ID.
 func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
-	return func(ctx DBOSContext, input T) (T, error) {
-		// First step: return the input (tests encoding/decoding of type T)
+	return func(ctx DbosContext, input T) (T, error) {
+
 		firstStepOutput, err := Run(ctx, func(context context.Context) (T, error) {
 			return input, nil
 		}, WithStepName("FirstStep"))
@@ -479,17 +427,14 @@ func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
 			return *new(T), err
 		}
 
-		// Second step: blocking step that uses the first step's output
-		// This tests that the first step's output is correctly decoded
-		// If decoding fails or is incorrect, this step will fail
 		return Run(ctx, func(context context.Context) (T, error) {
-			workflowID, err := GetWorkflowID(ctx)
+			workflowId, err := GetWorkflowId(ctx)
 			if err != nil {
 				return *new(T), fmt.Errorf("failed to get workflow ID: %w", err)
 			}
 			var events recoveryEvents
 			for {
-				if v, ok := recoveryEventRegistry.Load(workflowID); ok {
+				if v, ok := recoveryEventRegistry.Load(workflowId); ok {
 					events = v.(recoveryEvents)
 					break
 				}
@@ -497,50 +442,27 @@ func makeRecoveryWorkflow[T any]() WorkflowFn[T, T] {
 			}
 			events.startEvent.Set()
 			events.blockingEvent.Wait()
-			// Return the first step's output - this verifies correct decoding
-			// If the type was decoded incorrectly, this assignment/return will fail
+
 			return firstStepOutput, nil
 		}, WithStepName("BlockingStep"))
 	}
 }
 
-// TestDataProcessor is an interface for testing workflows with interface signatures
 type TestDataProcessor interface {
 	Process(data string) string
 }
 
-// TestStringProcessor is a concrete implementation of TestDataProcessor
 type TestStringProcessor struct {
 	Prefix string
 }
 
-// Process implements the TestDataProcessor interface
 func (p *TestStringProcessor) Process(data string) string {
 	return p.Prefix + data
 }
 
-// TestSerializer tests that workflows use the configured serializer for input/output.
-//
-// This test suite uses recovery-based testing as the primary approach. All tests exercise
-// workflow recovery paths because:
-//  1. Recovery paths exercise all encoding/decoding scenarios that normal workflows do
-//  2. Recovery paths additionally test decoding from persisted state (database)
-//  3. This ensures that serialization works correctly even when workflows are recovered
-//     after a process restart or failure
-//
-// Each test:
-// - Starts a workflow with a blocking step
-// - Recovers the pending workflow from the database
-// - Verifies all read paths: HandleGetResult, ListWorkflows, GetWorkflowSteps, RetrieveWorkflow
-// - Ensures that both original and recovered handles produce correct results
-//
-// The suite covers: scalars, pointers, nested pointers
-// slices, arrays, byte slices, maps, and custom types. It also tests Send/Recv and
-// SetEvent/GetEvent communication patterns.
 func TestSerializer(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	// Register workflows
 	queuedSerializerWorkflow := NewWorkflow(executor, serializerWorkflow)
 	recoveryStructPtrWorkflowD := NewWorkflow(executor, recoveryStructPtrWorkflow)
 	serializerErrorWorkflowD := NewWorkflow(executor, serializerErrorWorkflow)
@@ -550,7 +472,6 @@ func TestSerializer(t *testing.T) {
 	serializerGetEventWorkflowD := NewWorkflow(executor, serializerGetEventWorkflow)
 	serializerStructWorkflowD := NewWorkflow(executor, serializerStructWorkflow)
 
-	// Register recovery workflows for all types
 	recoveryIntWorkflowD := NewWorkflow(executor, recoveryIntWorkflow)
 	recoveryStringWorkflowD := NewWorkflow(executor, recoveryStringWorkflow)
 	recoveryIntPtrWorkflowD := NewWorkflow(executor, recoveryIntPtrWorkflow)
@@ -563,20 +484,20 @@ func TestSerializer(t *testing.T) {
 	recoveryMyStringWorkflowD := NewWorkflow(executor, recoveryMyStringWorkflow)
 	recoveryMyStringSliceWorkflowD := NewWorkflow(executor, recoveryMyStringSliceWorkflow)
 	recoveryStringMyIntMapWorkflowD := NewWorkflow(executor, recoveryStringMyIntMapWorkflow)
-	// Register additional recovery workflows
+
 	recoveryEmptyStructWorkflowD := NewWorkflow(executor, recoveryEmptyStructWorkflow)
 	recoveryIntSliceSliceWorkflowD := NewWorkflow(executor, recoveryIntSliceSliceWorkflow)
 	recoveryNestedMapWorkflowD := NewWorkflow(executor, recoveryNestedMapWorkflow)
 	recoveryIntPtrSliceWorkflowD := NewWorkflow(executor, recoveryIntPtrSliceWorkflow)
 	recoveryAnyWorkflowD := NewWorkflow(executor, recoveryAnyWorkflow)
-	// Register typed Send/Recv workflows
+
 	serializerIntSenderWorkflowD := NewWorkflow(executor, serializerIntSenderWorkflow)
 	serializerIntReceiverWorkflowD := NewWorkflow(executor, serializerIntReceiverWorkflow)
 	serializerIntPtrSenderWorkflowD := NewWorkflow(executor, serializerIntPtrSenderWorkflow)
 	serializerIntPtrReceiverWorkflowD := NewWorkflow(executor, serializerIntPtrReceiverWorkflow)
 	serializerMyIntSenderWorkflowD := NewWorkflow(executor, serializerMyIntSenderWorkflow)
 	serializerMyIntReceiverWorkflowD := NewWorkflow(executor, serializerMyIntReceiverWorkflow)
-	// Register typed SetEvent/GetEvent workflows
+
 	serializerIntSetEventWorkflowD := NewWorkflow(executor, serializerIntSetEventWorkflow)
 	serializerIntGetEventWorkflowD := NewWorkflow(executor, serializerIntGetEventWorkflow)
 	serializerIntPtrSetEventWorkflowD := NewWorkflow(executor, serializerIntPtrSetEventWorkflow)
@@ -589,12 +510,11 @@ func TestSerializer(t *testing.T) {
 	require.NoError(t, err)
 	defer Shutdown(executor, 10*time.Second)
 
-	// Test workflow with comprehensive data structure
 	t.Run("StructValues", func(t *testing.T) {
 		strPtr := "pointer value"
 		strPtrPtr := &strPtr
 		input := TestWorkflowData{
-			ID:       "test-id",
+			Id:       "test-id",
 			Message:  "test message",
 			Value:    42,
 			Active:   true,
@@ -615,7 +535,6 @@ func TestSerializer(t *testing.T) {
 		testAllSerializationPaths(t, executor, serializerStructWorkflowD, input)
 	})
 
-	// Test nil values with pointer type workflow
 	t.Run("NilStructPointer", func(t *testing.T) {
 		testAllSerializationPaths(t, executor, recoveryStructPtrWorkflowD, (*TestWorkflowData)(nil))
 	})
@@ -628,7 +547,6 @@ func TestSerializer(t *testing.T) {
 		testAllSerializationPaths(t, executor, recoveryStringWorkflowD, "")
 	})
 
-	// Pointer variants (single level only, nested pointers not supported)
 	t.Run("Pointers", func(t *testing.T) {
 		t.Run("NonNil", func(t *testing.T) {
 			v := 123
@@ -721,13 +639,11 @@ func TestSerializer(t *testing.T) {
 		})
 	})
 
-	// Empty struct
 	t.Run("EmptyStruct", func(t *testing.T) {
 		input := struct{}{}
 		testAllSerializationPaths(t, executor, recoveryEmptyStructWorkflowD, input)
 	})
 
-	// Nested collections
 	t.Run("NestedCollections", func(t *testing.T) {
 		t.Run("SliceOfSlices", func(t *testing.T) {
 			input := IntSliceSlice{{1, 2}, {3, 4, 5}}
@@ -743,7 +659,6 @@ func TestSerializer(t *testing.T) {
 		})
 	})
 
-	// Slices of pointers
 	t.Run("SliceOfPointers", func(t *testing.T) {
 		t.Run("NonNil", func(t *testing.T) {
 			v1 := 10
@@ -759,17 +674,15 @@ func TestSerializer(t *testing.T) {
 		})
 	})
 
-	// Test workflow with any signature using testAllSerializationPaths
 	t.Run("Any", func(t *testing.T) {
-		// Test with a string value (avoids JSON number type conversion issues)
+
 		input := any("test-value")
 		testAllSerializationPaths(t, executor, recoveryAnyWorkflowD, input)
 	})
 
-	// Test error values
 	t.Run("ErrorValues", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID:       "error-test-id",
+			Id:       "error-test-id",
 			Message:  "error test",
 			Value:    123,
 			Active:   true,
@@ -788,16 +701,14 @@ func TestSerializer(t *testing.T) {
 		handle, err := serializerErrorWorkflowD(executor, input)
 		require.NoError(t, err, "Error workflow execution failed")
 
-		// 1. Test with handle.GetResult()
 		t.Run("HandleGetResult", func(t *testing.T) {
 			_, err := handle.GetResult()
 			require.Error(t, err, "Should get step error")
 			assert.Contains(t, err.Error(), "step error", "Error message should be preserved")
 		})
 
-		// 2. Test with GetWorkflowSteps
 		t.Run("GetWorkflowSteps", func(t *testing.T) {
-			steps, err := GetWorkflowSteps(executor, handle.GetWorkflowID())
+			steps, err := GetWorkflowSteps(executor, handle.GetWorkflowId())
 			require.NoError(t, err, "Failed to get workflow steps")
 			require.Len(t, steps, 1, "Expected 1 step")
 
@@ -807,12 +718,11 @@ func TestSerializer(t *testing.T) {
 		})
 	})
 
-	// Test Send/Recv with non-basic types
 	t.Run("SendRecv", func(t *testing.T) {
 		strPtr := "sendrecv pointer"
 		strPtrPtr := &strPtr
 		input := TestWorkflowData{
-			ID:       "sendrecv-test-id",
+			Id:       "sendrecv-test-id",
 			Message:  "test message",
 			Value:    99,
 			Active:   true,
@@ -831,12 +741,11 @@ func TestSerializer(t *testing.T) {
 		testSendRecv(t, executor, serializerSenderWorkflowD, serializerReceiverWorkflowD, input)
 	})
 
-	// Test SetEvent/GetEvent with non-basic types
 	t.Run("SetGetEvent", func(t *testing.T) {
 		strPtr := "event pointer"
 		strPtrPtr := &strPtr
 		input := TestWorkflowData{
-			ID:       "event-test-id",
+			Id:       "event-test-id",
 			Message:  "event message",
 			Value:    77,
 			Active:   false,
@@ -857,23 +766,20 @@ func TestSerializer(t *testing.T) {
 		testSetGetEvent(t, executor, serializerSetEventWorkflowD, serializerGetEventWorkflowD, input)
 	})
 
-	// Test typed Send/Recv and SetEvent/GetEvent with various types
 	t.Run("TypedSendRecvAndSetGetEvent", func(t *testing.T) {
-		// Test int (scalar type)
+
 		t.Run("Int", func(t *testing.T) {
 			input := 42
 			testSendRecv(t, executor, serializerIntSenderWorkflowD, serializerIntReceiverWorkflowD, input)
 			testSetGetEvent(t, executor, serializerIntSetEventWorkflowD, serializerIntGetEventWorkflowD, input)
 		})
 
-		// Test MyInt (user defined type)
 		t.Run("MyInt", func(t *testing.T) {
 			input := MyInt(73)
 			testSendRecv(t, executor, serializerMyIntSenderWorkflowD, serializerMyIntReceiverWorkflowD, input)
 			testSetGetEvent(t, executor, serializerMyIntSetEventWorkflowD, serializerMyIntGetEventWorkflowD, input)
 		})
 
-		// Test *int (pointer type, set)
 		t.Run("IntPtrSet", func(t *testing.T) {
 			v := 99
 			input := &v
@@ -882,12 +788,11 @@ func TestSerializer(t *testing.T) {
 		})
 	})
 
-	// Test queued workflow with TestWorkflowData type
 	t.Run("QueuedWorkflow", func(t *testing.T) {
 		strPtr := "queued pointer"
 		strPtrPtr := &strPtr
 		input := TestWorkflowData{
-			ID:       "queued-test-id",
+			Id:       "queued-test-id",
 			Message:  "queued test message",
 			Value:    456,
 			Active:   false,
@@ -906,16 +811,14 @@ func TestSerializer(t *testing.T) {
 		handle, err := queuedSerializerWorkflow(executor, input)
 		require.NoError(t, err, "failed to start queued workflow")
 
-		// Get result from the handle
 		result, err := handle.GetResult()
 		require.NoError(t, err, "queued workflow should complete successfully")
 		assert.Equal(t, input, result, "queued workflow result should match input")
 	})
 
-	// Test WriteStream/ReadStream
 	t.Run("WriteReadStream", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID: "stream-test", Message: "stream data", Value: 111,
+			Id: "stream-test", Message: "stream data", Value: 111,
 			Data:     TestData{Message: "streamed", Value: 222},
 			Metadata: map[string]string{"stream": "json"},
 		}
@@ -926,7 +829,7 @@ func TestSerializer(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowID(), "test-stream")
+		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowId(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
@@ -934,9 +837,6 @@ func TestSerializer(t *testing.T) {
 	})
 }
 
-// ===== Gob Serializer Tests =====
-
-// GobOnlyType is a type that uses GobEncoder/GobDecoder for custom binary encoding.
 // JSON cannot handle this because it has unexported fields and custom encoding logic.
 type GobOnlyType struct {
 	real float64
@@ -972,7 +872,7 @@ func (g *GobOnlyType) GobDecode(data []byte) error {
 }
 
 func init() {
-	// Register types for gob encoding/decoding through any interface
+
 	gob.Register(TestWorkflowData{})
 	gob.Register(TestData{})
 	gob.Register(NestedTestData{})
@@ -1011,9 +911,8 @@ var (
 	gobQueuedWorkflow           = makeTestWorkflow[TestWorkflowData]()
 )
 
-// TestGobSerializer tests the built-in gob serializer through all workflow paths.
 func TestGobSerializer(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true, serializer: NewGobSerializer()})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true, serializer: NewGobSerializer()})
 
 	gobRecoveryStructWorkflowD := NewWorkflow(executor, gobRecoveryStructWorkflow)
 	gobRecoveryIntWorkflowD := NewWorkflow(executor, gobRecoveryIntWorkflow)
@@ -1041,7 +940,7 @@ func TestGobSerializer(t *testing.T) {
 
 	t.Run("Struct", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID:       "gob-test",
+			Id:       "gob-test",
 			Message:  "gob message",
 			Value:    42,
 			Active:   true,
@@ -1075,7 +974,6 @@ func TestGobSerializer(t *testing.T) {
 		testAllSerializationPaths(t, executor, gobRecoveryMyIntWorkflowD, MyInt(7))
 	})
 
-	// Test gob-only type: uses GobEncoder/GobDecoder with unexported fields.
 	// JSON cannot serialize this type. Uses a simple workflow (not recovery-based)
 	// because recovery involves step output re-encoding which differs for GobOnly types.
 	t.Run("GobOnlyType", func(t *testing.T) {
@@ -1087,8 +985,7 @@ func TestGobSerializer(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, input, result, "gob-only type should roundtrip correctly")
 
-		// Verify RetrieveWorkflow also works (reads from DB, decodes with gob)
-		h2, err := RetrieveWorkflow[GobOnlyType](executor, handle.GetWorkflowID())
+		h2, err := RetrieveWorkflow[GobOnlyType](executor, handle.GetWorkflowId())
 		require.NoError(t, err)
 		result2, err := h2.GetResult()
 		require.NoError(t, err)
@@ -1097,7 +994,7 @@ func TestGobSerializer(t *testing.T) {
 
 	t.Run("SendRecv", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID: "gob-sendrecv", Message: "gob msg", Value: 99,
+			Id: "gob-sendrecv", Message: "gob msg", Value: 99,
 			Data:     TestData{Message: "nested", Value: 200},
 			Metadata: map[string]string{"comm": "gob"},
 		}
@@ -1106,29 +1003,26 @@ func TestGobSerializer(t *testing.T) {
 
 	t.Run("SetGetEvent", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID: "gob-event", Message: "gob event", Value: 77,
+			Id: "gob-event", Message: "gob event", Value: 77,
 			Data:     TestData{Message: "event nested", Value: 333},
 			Metadata: map[string]string{"type": "gob-event"},
 		}
 		testSetGetEvent(t, executor, gobSetEventWorkflowD, gobGetEventWorkflowD, input)
 	})
 
-	// Test gob-only type through Send/Recv
 	t.Run("GobOnlySendRecv", func(t *testing.T) {
 		input := GobOnlyType{real: 1.5, imag: 2.5, tag: "sendrecv"}
 		testSendRecv(t, executor, gobGobOnlySenderWorkflowD, gobGobOnlyReceiverWorkflowD, input)
 	})
 
-	// Test gob-only type through SetEvent/GetEvent
 	t.Run("GobOnlySetGetEvent", func(t *testing.T) {
 		input := GobOnlyType{real: 9.8, imag: 6.7, tag: "event"}
 		testSetGetEvent(t, executor, gobGobOnlySetEventWorkflowD, gobGobOnlyGetEventWorkflowD, input)
 	})
 
-	// Test WriteStream/ReadStream with struct
 	t.Run("WriteReadStream", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID: "gob-stream", Message: "stream data", Value: 55,
+			Id: "gob-stream", Message: "stream data", Value: 55,
 			Data:     TestData{Message: "streamed", Value: 555},
 			Metadata: map[string]string{"stream": "gob"},
 		}
@@ -1139,14 +1033,13 @@ func TestGobSerializer(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowID(), "test-stream")
+		values, closed, err := ReadStream[TestWorkflowData](executor, handle.GetWorkflowId(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
 		assert.Equal(t, input, values[0])
 	})
 
-	// Test WriteStream/ReadStream with gob-only type
 	t.Run("GobOnlyWriteReadStream", func(t *testing.T) {
 		input := GobOnlyType{real: 7.7, imag: 8.8, tag: "streamed"}
 		handle, err := gobGobOnlyStreamWorkflowD(executor, input)
@@ -1156,17 +1049,16 @@ func TestGobSerializer(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, input, result)
 
-		values, closed, err := ReadStream[GobOnlyType](executor, handle.GetWorkflowID(), "test-stream")
+		values, closed, err := ReadStream[GobOnlyType](executor, handle.GetWorkflowId(), "test-stream")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
 		assert.Equal(t, input, values[0])
 	})
 
-	// Test queued workflow
 	t.Run("QueuedWorkflow", func(t *testing.T) {
 		input := TestWorkflowData{
-			ID: "gob-queued", Message: "queued msg", Value: 88,
+			Id: "gob-queued", Message: "queued msg", Value: 88,
 			Data:     TestData{Message: "queued", Value: 888},
 			Metadata: map[string]string{"type": "gob-queued"},
 		}
@@ -1178,17 +1070,14 @@ func TestGobSerializer(t *testing.T) {
 		assert.Equal(t, input, result)
 	})
 
-	// Test recovery with gob-only type
 	t.Run("GobOnlyRecovery", func(t *testing.T) {
 		testAllSerializationPaths(t, executor, gobRecoveryGobOnlyWorkflowD, GobOnlyType{real: 5.5, imag: 6.6, tag: "recovered"})
 	})
 }
 
 func TestPortableInterop(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	// InteropInput exercises the full portable JSON value space:
-	// strings, integers, floats, booleans, nulls, arrays, nested objects, RFC3339 timestamps
 	type NestedObj struct {
 		Deep bool `json:"deep"`
 	}
@@ -1198,7 +1087,6 @@ func TestPortableInterop(t *testing.T) {
 		Nested NestedObj `json:"nested"`
 	}
 
-	// The workflow accepts 7 positional args matching the golden JSON below.
 	// Go workflows take a single input param, so we use a struct that mirrors the positional args.
 	type InteropArgs struct {
 		Str       string   `json:"str"`
@@ -1220,10 +1108,8 @@ func TestPortableInterop(t *testing.T) {
 		Nullable:  nil,
 	}
 
-	// Golden JSON matching what Python/TS would produce, including namedArgs (ignored by Go)
-	goldenInputsJSON := `{"positionalArgs":[{"str":"hello-interop","num":42,"timestamp":"2025-06-15T10:30:00.000Z","arr":["alpha","beta","gamma"],"obj":{"key1":"value1","key2":99,"nested":{"deep":true}},"flag":true,"nullable":null}],"namedArgs":{"unused_kwarg":"should_be_ignored","another":123}}`
+	goldenInputsJson := `{"positionalArgs":[{"str":"hello-interop","num":42,"timestamp":"2025-06-15T10:30:00.000Z","arr":["alpha","beta","gamma"],"obj":{"key1":"value1","key2":99,"nested":{"deep":true}},"flag":true,"nullable":null}],"namedArgs":{"unused_kwarg":"should_be_ignored","another":123}}`
 
-	// InteropResult captures intermediate results to prove each encode/decode path works.
 	type InteropResult struct {
 		Input        InteropArgs `json:"input"`
 		StepOutput   InteropArgs `json:"stepOutput"`
@@ -1232,10 +1118,8 @@ func TestPortableInterop(t *testing.T) {
 		StreamOutput InteropArgs `json:"streamOutput"`
 	}
 
-	// A single workflow that exercises all serialization paths:
-	// step output, send/recv, set_event/get_event, and write_stream/read_stream.
-	portableWf := func(ctx DBOSContext, input InteropArgs) (InteropResult, error) {
-		// 1. Step: encode/decode step output
+	portableWf := func(ctx DbosContext, input InteropArgs) (InteropResult, error) {
+
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropArgs, error) {
 			return input, nil
 		})
@@ -1243,12 +1127,11 @@ func TestPortableInterop(t *testing.T) {
 			return InteropResult{}, fmt.Errorf("step failed: %w", err)
 		}
 
-		// 2. Send to self, then Recv
-		wfID, err := GetWorkflowID(ctx)
+		wfId, err := GetWorkflowId(ctx)
 		if err != nil {
 			return InteropResult{}, err
 		}
-		if err := Send(ctx, wfID, input, "test-topic"); err != nil {
+		if err := Send(ctx, wfId, input, "test-topic"); err != nil {
 			return InteropResult{}, fmt.Errorf("send failed: %w", err)
 		}
 		recvOut, err := Recv[InteropArgs](ctx, "test-topic", 10*time.Second)
@@ -1256,23 +1139,21 @@ func TestPortableInterop(t *testing.T) {
 			return InteropResult{}, fmt.Errorf("recv failed: %w", err)
 		}
 
-		// 3. SetEvent then GetEvent (from own workflow)
 		if err := SetEvent(ctx, "test-key", input); err != nil {
 			return InteropResult{}, fmt.Errorf("set event failed: %w", err)
 		}
-		eventOut, err := GetEvent[InteropArgs](ctx, wfID, "test-key", 10*time.Second)
+		eventOut, err := GetEvent[InteropArgs](ctx, wfId, "test-key", 10*time.Second)
 		if err != nil {
 			return InteropResult{}, fmt.Errorf("get event failed: %w", err)
 		}
 
-		// 4. Stream: write, close, then read back
 		if err := WriteStream(ctx, "test-stream", input); err != nil {
 			return InteropResult{}, fmt.Errorf("write stream failed: %w", err)
 		}
 		if err := CloseStream(ctx, "test-stream"); err != nil {
 			return InteropResult{}, fmt.Errorf("close stream failed: %w", err)
 		}
-		streamValues, closed, err := ReadStream[InteropArgs](ctx, wfID, "test-stream")
+		streamValues, closed, err := ReadStream[InteropArgs](ctx, wfId, "test-stream")
 		if err != nil {
 			return InteropResult{}, fmt.Errorf("read stream failed: %w", err)
 		}
@@ -1296,12 +1177,11 @@ func TestPortableInterop(t *testing.T) {
 	require.NoError(t, Launch(executor))
 	defer Shutdown(executor, 10*time.Second)
 
-	// Helper to insert a portable workflow directly into the DB (simulating another language).
-	insertPortableWorkflow := func(t *testing.T, workflowID, status string, queueName *string) {
+	insertPortableWorkflow := func(t *testing.T, workflowId, status string, queueName *string) {
 		t.Helper()
 		c := executor.(*dbosContext)
 		Kernel := c.kernel
-		insertQuery := Kernel.renderSQL(`INSERT INTO %sworkflow_status (
+		insertQuery := Kernel.renderSql(`INSERT INTO %sworkflow_status (
 			workflow_uuid, status, name, inputs, serialization, queue_name,
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
@@ -1309,12 +1189,11 @@ func TestPortableInterop(t *testing.T) {
 			"")
 		now := time.Now().UnixMilli()
 		_, err := Kernel.pool.Exec(context.Background(), insertQuery,
-			workflowID, status, "interop_workflow", goldenInputsJSON, PortableSerializerName, queueName,
+			workflowId, status, "interop_workflow", goldenInputsJson, PortableSerializerName, queueName,
 			now, now, 0, "local", 0, c.applicationVersion, "", "", "", "[]")
 		require.NoError(t, err)
 	}
 
-	// verifyResult checks all intermediate results match expectedArgs.
 	verifyResult := func(t *testing.T, result InteropResult) {
 		t.Helper()
 		assert.Equal(t, expectedArgs, result.Input, "workflow input")
@@ -1324,10 +1203,9 @@ func TestPortableInterop(t *testing.T) {
 		assert.Equal(t, expectedArgs, result.StreamOutput, "stream output")
 	}
 
-	// 1. Recovery path: direct DB insert with status=PENDING, then recover.
 	t.Run("DirectDBInsertRecovery", func(t *testing.T) {
-		workflowID := "interop-recovery-" + t.Name()
-		insertPortableWorkflow(t, workflowID, string(WorkflowStatusPending), nil)
+		workflowId := "interop-recovery-" + t.Name()
+		insertPortableWorkflow(t, workflowId, string(WorkflowStatusPending), nil)
 
 		c := executor.(*dbosContext)
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
@@ -1337,15 +1215,14 @@ func TestPortableInterop(t *testing.T) {
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowID)
+		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowId)
 		require.NoError(t, err)
 		result, err := retrievedHandle.GetResult()
 		require.NoError(t, err)
 		verifyResult(t, result)
 
-		// Verify ListWorkflows returns portable inputs/outputs correctly
 		wfs, err := ListWorkflows(executor,
-			WithWorkflowIDs([]string{workflowID}),
+			WithWorkflowIds([]string{workflowId}),
 			WithLoadInput(true), WithLoadOutput(true))
 		require.NoError(t, err)
 		require.Len(t, wfs, 1)
@@ -1372,23 +1249,21 @@ func TestPortableInterop(t *testing.T) {
 		assert.Contains(t, outputMap, "eventOutput")
 	})
 
-	// 2. Queue path: direct DB insert with status=ENQUEUED + queue_name, let the queue runner dequeue.
 	t.Run("DirectDBInsertQueue", func(t *testing.T) {
-		workflowID := "interop-queue-" + t.Name()
+		workflowId := "interop-queue-" + t.Name()
 		queueName := "portable-interop-queue"
-		insertPortableWorkflow(t, workflowID, string(WorkflowStatusEnqueued), &queueName)
+		insertPortableWorkflow(t, workflowId, string(WorkflowStatusEnqueued), &queueName)
 
-		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowID)
+		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowId)
 		require.NoError(t, err)
 		result, err := retrievedHandle.GetResult()
 		require.NoError(t, err)
 		verifyResult(t, result)
 	})
 
-	// 3. DBOSAdmin enqueue path: Go dbosAdmin with PortableWorkflowArgs.
 	t.Run("ClientEnqueuePortable", func(t *testing.T) {
-		dbosAdmin, err := NewDBOSAdmin(context.Background(), DBOSAdminConfig{
-			DatabaseURL: executor.(*dbosContext).config.DatabaseURL,
+		dbosAdmin, err := NewDbosAdmin(context.Background(), DbosAdminConfig{
+			DatabaseUrl: executor.(*dbosContext).config.DatabaseUrl,
 		})
 		require.NoError(t, err)
 		t.Cleanup(func() { dbosAdmin.Shutdown(5 * time.Second) })
@@ -1399,42 +1274,37 @@ func TestPortableInterop(t *testing.T) {
 		}
 		handle, err := Enqueue[PortableWorkflowArgs, InteropResult](dbosAdmin, "portable-interop-queue", "interop_workflow", portableArgs)
 		require.NoError(t, err)
-		require.NotEmpty(t, handle.GetWorkflowID())
+		require.NotEmpty(t, handle.GetWorkflowId())
 
-		// Verify the DB has portable_json serialization and the correct envelope
 		c := executor.(*dbosContext)
 		Kernel := c.kernel
 		var storedInputs, storedSerialization string
-		selectQuery := Kernel.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		selectQuery := Kernel.renderSql(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		err = Kernel.pool.QueryRow(context.Background(), selectQuery, handle.GetWorkflowID()).Scan(&storedInputs, &storedSerialization)
+		err = Kernel.pool.QueryRow(context.Background(), selectQuery, handle.GetWorkflowId()).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
-		// Verify envelope format — extra positional/named args are preserved in the DB
 		var envelope PortableWorkflowArgs
 		require.NoError(t, json.Unmarshal([]byte(storedInputs), &envelope))
 		assert.Len(t, envelope.PositionalArgs, 3)
 		assert.Len(t, envelope.NamedArgs, 2)
 
-		// Wait for execution and verify all paths
-		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, handle.GetWorkflowID())
+		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, handle.GetWorkflowId())
 		require.NoError(t, err)
 		result, err := retrievedHandle.GetResult()
 		require.NoError(t, err)
 		verifyResult(t, result)
 	})
 
-	// 4. Wrong-type input: enqueue with a string where InteropArgs is expected.
-	// Go's type system catches this during deserialization; the workflow should fail.
 	t.Run("WrongTypeInput", func(t *testing.T) {
-		workflowID := "interop-wrongtype-" + t.Name()
+		workflowId := "interop-wrongtype-" + t.Name()
 		queueName := "portable-interop-queue"
-		badInputsJSON := `{"positionalArgs":["not-an-object"],"namedArgs":{}}`
+		badInputsJson := `{"positionalArgs":["not-an-object"],"namedArgs":{}}`
 
 		c := executor.(*dbosContext)
 		Kernel := c.kernel
-		insertQuery := Kernel.renderSQL(`INSERT INTO %sworkflow_status (
+		insertQuery := Kernel.renderSql(`INSERT INTO %sworkflow_status (
 			workflow_uuid, status, name, inputs, serialization, queue_name,
 			created_at, updated_at, recovery_attempts, executor_id, priority,
 			application_version, application_id, authenticated_user, assumed_role, authenticated_roles
@@ -1442,11 +1312,11 @@ func TestPortableInterop(t *testing.T) {
 			"")
 		now := time.Now().UnixMilli()
 		_, err := Kernel.pool.Exec(context.Background(), insertQuery,
-			workflowID, string(WorkflowStatusEnqueued), "interop_workflow", badInputsJSON, PortableSerializerName, &queueName,
+			workflowId, string(WorkflowStatusEnqueued), "interop_workflow", badInputsJson, PortableSerializerName, &queueName,
 			now, now, 0, "local", 0, c.applicationVersion, "", "", "", "[]")
 		require.NoError(t, err)
 
-		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowID)
+		retrievedHandle, err := RetrieveWorkflow[InteropResult](executor, workflowId)
 		require.NoError(t, err)
 		_, err = retrievedHandle.GetResult()
 		require.Error(t, err)
@@ -1457,11 +1327,8 @@ func TestPortableInterop(t *testing.T) {
 	})
 }
 
-// TestPortablePerOperationOptions verifies that WithPortableSend, WithPortableSetEvent, and
-// WithPortableWriteStream force portable_json serialization for individual operations,
-// even when the calling workflow uses the default serializer.
 func TestPortablePerOperationOptions(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
 	type Payload struct {
 		Name  string `json:"name"`
@@ -1473,34 +1340,30 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	c := executor.(*dbosContext)
 	Kernel := c.kernel
 
-	// Helper: fetch the serialization recorded in operation_outputs for the Recv step of a workflow.
-	// The Recv step stores the serialization of the message it consumed, which reflects what the sender used.
-	recvStepSerialization := func(t *testing.T, workflowID string) string {
+	recvStepSerialization := func(t *testing.T, workflowId string) string {
 		t.Helper()
 		var ser string
-		q := Kernel.renderSQL(`SELECT serialization FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_name = 'DBOS.recv' ORDER BY function_id ASC LIMIT 1`,
+		q := Kernel.renderSql(`SELECT serialization FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_name = 'DBOS.recv' ORDER BY function_id ASC LIMIT 1`,
 			"")
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowId).Scan(&ser))
 		return ser
 	}
 
-	// Helper: fetch the serialization column for a workflow event.
-	eventSerialization := func(t *testing.T, workflowID, key string) string {
+	eventSerialization := func(t *testing.T, workflowId, key string) string {
 		t.Helper()
 		var ser string
-		q := Kernel.renderSQL(`SELECT serialization FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2`,
+		q := Kernel.renderSql(`SELECT serialization FROM %sworkflow_events WHERE workflow_uuid = $1 AND key = $2`,
 			"")
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, key).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowId, key).Scan(&ser))
 		return ser
 	}
 
-	// Helper: fetch the serialization column for the first stream entry (non-sentinel).
-	streamSerialization := func(t *testing.T, workflowID, key string) string {
+	streamSerialization := func(t *testing.T, workflowId, key string) string {
 		t.Helper()
 		var ser string
-		q := Kernel.renderSQL(`SELECT serialization FROM %sstreams WHERE workflow_uuid = $1 AND key = $2 AND value != $3 ORDER BY "offset" LIMIT 1`,
+		q := Kernel.renderSql(`SELECT serialization FROM %sstreams WHERE workflow_uuid = $1 AND key = $2 AND value != $3 ORDER BY "offset" LIMIT 1`,
 			"")
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, key, _DBOS_STREAM_CLOSED_SENTINEL).Scan(&ser))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowId, key, _dbosStreamClosedSentinel).Scan(&ser))
 		return ser
 	}
 
@@ -1513,19 +1376,19 @@ func TestPortablePerOperationOptions(t *testing.T) {
 		portableWriterWf       WorkflowFn[string, string]
 	)
 
-	portableSendSenderWf = func(ctx DBOSContext, receiverID string) (string, error) {
-		return "", Send(ctx, receiverID, payload, "topic", WithPortableSend())
+	portableSendSenderWf = func(ctx DbosContext, receiverId string) (string, error) {
+		return "", Send(ctx, receiverId, payload, "topic", WithPortableSend())
 	}
-	portableSendReceiverWf = func(ctx DBOSContext, _ string) (Payload, error) {
+	portableSendReceiverWf = func(ctx DbosContext, _ string) (Payload, error) {
 		return Recv[Payload](ctx, "topic", 10*time.Second)
 	}
-	portableSetterWf = func(ctx DBOSContext, _ string) (string, error) {
+	portableSetterWf = func(ctx DbosContext, _ string) (string, error) {
 		return "", SetEvent(ctx, "evt-key", payload, WithPortableSetEvent())
 	}
-	portableGetterWf = func(ctx DBOSContext, targetID string) (Payload, error) {
-		return GetEvent[Payload](ctx, targetID, "evt-key", 10*time.Second)
+	portableGetterWf = func(ctx DbosContext, targetId string) (Payload, error) {
+		return GetEvent[Payload](ctx, targetId, "evt-key", 10*time.Second)
 	}
-	portableWriterWf = func(ctx DBOSContext, _ string) (string, error) {
+	portableWriterWf = func(ctx DbosContext, _ string) (string, error) {
 		if err := WriteStream(ctx, "stream-key", payload, WithPortableWriteStream()); err != nil {
 			return "", err
 		}
@@ -1541,55 +1404,47 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	require.NoError(t, Launch(executor))
 	defer Shutdown(executor, 10*time.Second)
 
-	// WithPortableSend: a standard workflow sends with portable serialization; a standard
-	// workflow Recvs it and gets the correct value back. The serialization recorded in the
-	// receiver's Recv step output reflects what the sender used.
 	t.Run("WithPortableSend", func(t *testing.T) {
 		receiverHandle, err := portableSendReceiverWfD(executor, "")
 		require.NoError(t, err)
-		receiverID := receiverHandle.GetWorkflowID()
+		receiverId := receiverHandle.GetWorkflowId()
 
-		_, err = portableSendSenderWfD(executor, receiverID)
+		_, err = portableSendSenderWfD(executor, receiverId)
 		require.NoError(t, err)
 
 		result, err := receiverHandle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
 
-		// The Recv step records the serialization of the consumed message in operation_outputs.
-		assert.Equal(t, PortableSerializerName, recvStepSerialization(t, receiverID))
+		assert.Equal(t, PortableSerializerName, recvStepSerialization(t, receiverId))
 	})
 
-	// WithPortableSetEvent: a standard workflow sets an event with portable serialization;
-	// a standard GetEvent reads it back correctly.
 	t.Run("WithPortableSetEvent", func(t *testing.T) {
 		setHandle, err := portableSetterWfD(executor, "")
 		require.NoError(t, err)
-		setterID := setHandle.GetWorkflowID()
+		setterId := setHandle.GetWorkflowId()
 		_, err = setHandle.GetResult()
 		require.NoError(t, err)
 
-		assert.Equal(t, PortableSerializerName, eventSerialization(t, setterID, "evt-key"))
+		assert.Equal(t, PortableSerializerName, eventSerialization(t, setterId, "evt-key"))
 
-		getHandle, err := portableGetterWfD(executor, setterID)
+		getHandle, err := portableGetterWfD(executor, setterId)
 		require.NoError(t, err)
 		result, err := getHandle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, payload, result)
 	})
 
-	// WithPortableWriteStream: a standard workflow writes with portable serialization;
-	// ReadStream reads it back correctly.
 	t.Run("WithPortableWriteStream", func(t *testing.T) {
 		handle, err := portableWriterWfD(executor, "")
 		require.NoError(t, err)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 		_, err = handle.GetResult()
 		require.NoError(t, err)
 
-		assert.Equal(t, PortableSerializerName, streamSerialization(t, wfID, "stream-key"))
+		assert.Equal(t, PortableSerializerName, streamSerialization(t, wfId, "stream-key"))
 
-		values, closed, err := ReadStream[Payload](executor, wfID, "stream-key")
+		values, closed, err := ReadStream[Payload](executor, wfId, "stream-key")
 		require.NoError(t, err)
 		assert.True(t, closed)
 		require.Len(t, values, 1)
@@ -1597,10 +1452,8 @@ func TestPortablePerOperationOptions(t *testing.T) {
 	})
 }
 
-// TestDirectRunPortableWorkflow tests starting a workflow in portable mode via RunWorkflow,
-// verifying the DB contains the correct portable JSON envelope, then recovering it.
 func TestDirectRunPortableWorkflow(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
 	type InteropInput struct {
 		Name  string `json:"name"`
@@ -1609,8 +1462,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 
 	expectedInput := InteropInput{Name: "direct-portable", Value: 99}
 
-	// Simple workflow that returns its input through a step (exercises encode/decode).
-	portableEchoWf := func(ctx DBOSContext, input InteropInput) (InteropInput, error) {
+	portableEchoWf := func(ctx DbosContext, input InteropInput) (InteropInput, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
@@ -1621,8 +1473,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	}
 	portableEchoWfD := NewWorkflow(executor, portableEchoWf, WithWorkflowName("portable_echo"))
 
-	// Workflow that accepts the full PortableWorkflowArgs envelope directly.
-	portableEnvelopeWf := func(ctx DBOSContext, input PortableWorkflowArgs) (PortableWorkflowArgs, error) {
+	portableEnvelopeWf := func(ctx DbosContext, input PortableWorkflowArgs) (PortableWorkflowArgs, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (PortableWorkflowArgs, error) {
 			return input, nil
 		})
@@ -1633,24 +1484,22 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	}
 	portableEnvelopeWfD := NewWorkflow(executor, portableEnvelopeWf, WithWorkflowName("portable_envelope"))
 
-	// Workflows for primitive input tests (int, string).
-	portableIntEchoWf := func(ctx DBOSContext, input int) (int, error) {
+	portableIntEchoWf := func(ctx DbosContext, input int) (int, error) {
 		return Run(ctx, func(_ context.Context) (int, error) { return input, nil })
 	}
 	portableIntEchoWfD := NewWorkflow(executor, portableIntEchoWf, WithWorkflowName("portable_int_echo"))
 
-	portableStringEchoWf := func(ctx DBOSContext, input string) (string, error) {
+	portableStringEchoWf := func(ctx DbosContext, input string) (string, error) {
 		return Run(ctx, func(_ context.Context) (string, error) { return input, nil })
 	}
 	portableStringEchoWfD := NewWorkflow(executor, portableStringEchoWf, WithWorkflowName("portable_string_echo"))
 
-	// Multi-step workflow for partial recovery test (must register before Launch).
 	type PartialRecoveryResult struct {
 		StepOut  InteropInput `json:"stepOut"`
 		RecvOut  InteropInput `json:"recvOut"`
 		EventOut InteropInput `json:"eventOut"`
 	}
-	multiStepWf := func(ctx DBOSContext, input InteropInput) (PartialRecoveryResult, error) {
+	multiStepWf := func(ctx DbosContext, input InteropInput) (PartialRecoveryResult, error) {
 		stepOut, err := Run(ctx, func(_ context.Context) (InteropInput, error) {
 			return input, nil
 		})
@@ -1658,11 +1507,11 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 			return PartialRecoveryResult{}, fmt.Errorf("step: %w", err)
 		}
 
-		wfID, err := GetWorkflowID(ctx)
+		wfId, err := GetWorkflowId(ctx)
 		if err != nil {
 			return PartialRecoveryResult{}, err
 		}
-		if err := Send(ctx, wfID, input, "partial-topic"); err != nil {
+		if err := Send(ctx, wfId, input, "partial-topic"); err != nil {
 			return PartialRecoveryResult{}, fmt.Errorf("send: %w", err)
 		}
 		recvOut, err := Recv[InteropInput](ctx, "partial-topic", 10*time.Second)
@@ -1673,7 +1522,7 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		if err := SetEvent(ctx, "partial-key", input); err != nil {
 			return PartialRecoveryResult{}, fmt.Errorf("setEvent: %w", err)
 		}
-		eventOut, err := GetEvent[InteropInput](ctx, wfID, "partial-key", 10*time.Second)
+		eventOut, err := GetEvent[InteropInput](ctx, wfId, "partial-key", 10*time.Second)
 		if err != nil {
 			return PartialRecoveryResult{}, fmt.Errorf("getEvent: %w", err)
 		}
@@ -1688,69 +1537,63 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 	c := executor.(*dbosContext)
 	Kernel := c.kernel
 
-	// Helper: read the stored inputs and serialization from the DB.
-	readStoredInputs := func(t *testing.T, workflowID string) (string, string) {
+	readStoredInputs := func(t *testing.T, workflowId string) (string, string) {
 		t.Helper()
 		var storedInputs, storedSerialization string
-		q := Kernel.renderSQL(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		q := Kernel.renderSql(`SELECT inputs, serialization FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		err := Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedInputs, &storedSerialization)
+		err := Kernel.pool.QueryRow(context.Background(), q, workflowId).Scan(&storedInputs, &storedSerialization)
 		require.NoError(t, err)
 		return storedInputs, storedSerialization
 	}
 
-	// Helper: flip a completed workflow back to PENDING for recovery.
-	resetToPending := func(t *testing.T, workflowID string) {
+	resetToPending := func(t *testing.T, workflowId string) {
 		t.Helper()
 		schemaPrefix := ""
-		q := Kernel.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
-		_, err := Kernel.pool.Exec(context.Background(), q, string(WorkflowStatusPending), workflowID)
+		q := Kernel.renderSql(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
+		_, err := Kernel.pool.Exec(context.Background(), q, string(WorkflowStatusPending), workflowId)
 		require.NoError(t, err)
-		// Also clear operation outputs so the workflow re-executes its steps.
-		dq := Kernel.renderSQL(`DELETE FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
-		_, err = Kernel.pool.Exec(context.Background(), dq, workflowID)
+
+		dq := Kernel.renderSql(`DELETE FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
+		_, err = Kernel.pool.Exec(context.Background(), dq, workflowId)
 		require.NoError(t, err)
 	}
 
-	// 1. Normal struct input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("NormalInputPortableMode", func(t *testing.T) {
 		handle, err := portableEchoWfD(executor, expectedInput,
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		workflowID := handle.GetWorkflowID()
+		workflowId := handle.GetWorkflowId()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, expectedInput, result)
 
-		// Verify the DB has portable_json serialization with the correct envelope.
-		storedInputs, storedSerialization := readStoredInputs(t, workflowID)
+		storedInputs, storedSerialization := readStoredInputs(t, workflowId)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
 		var envelope portableArgsRaw
 		require.NoError(t, json.Unmarshal([]byte(storedInputs), &envelope))
 		assert.Len(t, envelope.PositionalArgs, 1, "expected 1 positional arg")
-		// The first positional arg should unmarshal to expectedInput.
+
 		var decoded InteropInput
 		require.NoError(t, json.Unmarshal(envelope.PositionalArgs[0], &decoded))
 		assert.Equal(t, expectedInput, decoded)
 
-		// Reset workflow to PENDING and recover — should re-execute and produce the same result.
-		resetToPending(t, workflowID)
+		resetToPending(t, workflowId)
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
 		require.NoError(t, err)
 		require.Len(t, handles, 1)
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrieved, err := RetrieveWorkflow[InteropInput](executor, workflowID)
+		retrieved, err := RetrieveWorkflow[InteropInput](executor, workflowId)
 		require.NoError(t, err)
 		recoveredResult, err := retrieved.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, expectedInput, recoveredResult)
 	})
 
-	// 2. PortableWorkflowArgs envelope input → WithPortableWorkflow → run, verify, recover.
 	t.Run("EnvelopeInputPortableMode", func(t *testing.T) {
 		envelopeInput := PortableWorkflowArgs{
 			PositionalArgs: []any{expectedInput, "extra", 42},
@@ -1759,16 +1602,15 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		handle, err := portableEnvelopeWfD(executor, envelopeInput,
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		workflowID := handle.GetWorkflowID()
+		workflowId := handle.GetWorkflowId()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
-		// The workflow receives and returns the full envelope.
+
 		assert.Len(t, result.PositionalArgs, 3)
 		assert.Len(t, result.NamedArgs, 2)
 
-		// Verify DB: the stored inputs should be the envelope itself (not double-wrapped).
-		storedInputs, storedSerialization := readStoredInputs(t, workflowID)
+		storedInputs, storedSerialization := readStoredInputs(t, workflowId)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
 		var storedEnvelope PortableWorkflowArgs
@@ -1776,15 +1618,14 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		assert.Len(t, storedEnvelope.PositionalArgs, 3, "envelope should not be double-wrapped")
 		assert.Len(t, storedEnvelope.NamedArgs, 2)
 
-		// Reset and recover.
-		resetToPending(t, workflowID)
+		resetToPending(t, workflowId)
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
 		require.NoError(t, err)
 		require.Len(t, handles, 1)
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrieved, err := RetrieveWorkflow[PortableWorkflowArgs](executor, workflowID)
+		retrieved, err := RetrieveWorkflow[PortableWorkflowArgs](executor, workflowId)
 		require.NoError(t, err)
 		recoveredResult, err := retrieved.GetResult()
 		require.NoError(t, err)
@@ -1792,19 +1633,17 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		assert.Len(t, recoveredResult.NamedArgs, 2)
 	})
 
-	// 3. Primitive int input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("PrimitiveIntInputPortableMode", func(t *testing.T) {
 		handle, err := portableIntEchoWfD(executor, 42,
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		workflowID := handle.GetWorkflowID()
+		workflowId := handle.GetWorkflowId()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, 42, result)
 
-		// Verify DB envelope wraps the primitive as a single positional arg.
-		storedInputs, storedSerialization := readStoredInputs(t, workflowID)
+		storedInputs, storedSerialization := readStoredInputs(t, workflowId)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
 		var envelope portableArgsRaw
@@ -1814,34 +1653,31 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		require.NoError(t, json.Unmarshal(envelope.PositionalArgs[0], &decoded))
 		assert.Equal(t, 42, decoded)
 
-		// Recover.
-		resetToPending(t, workflowID)
+		resetToPending(t, workflowId)
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
 		require.NoError(t, err)
 		require.Len(t, handles, 1)
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrieved, err := RetrieveWorkflow[int](executor, workflowID)
+		retrieved, err := RetrieveWorkflow[int](executor, workflowId)
 		require.NoError(t, err)
 		recoveredResult, err := retrieved.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, 42, recoveredResult)
 	})
 
-	// 4. Primitive string input → WithPortableWorkflow → run, verify DB envelope, recover.
 	t.Run("PrimitiveStringInputPortableMode", func(t *testing.T) {
 		handle, err := portableStringEchoWfD(executor, "hello-portable",
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		workflowID := handle.GetWorkflowID()
+		workflowId := handle.GetWorkflowId()
 
 		result, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, "hello-portable", result)
 
-		// Verify DB envelope wraps the string as a single positional arg.
-		storedInputs, storedSerialization := readStoredInputs(t, workflowID)
+		storedInputs, storedSerialization := readStoredInputs(t, workflowId)
 		assert.Equal(t, PortableSerializerName, storedSerialization)
 
 		var envelope portableArgsRaw
@@ -1851,55 +1687,48 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 		require.NoError(t, json.Unmarshal(envelope.PositionalArgs[0], &decoded))
 		assert.Equal(t, "hello-portable", decoded)
 
-		// Recover.
-		resetToPending(t, workflowID)
+		resetToPending(t, workflowId)
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
 		require.NoError(t, err)
 		require.Len(t, handles, 1)
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrieved, err := RetrieveWorkflow[string](executor, workflowID)
+		retrieved, err := RetrieveWorkflow[string](executor, workflowId)
 		require.NoError(t, err)
 		recoveredResult, err := retrieved.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, "hello-portable", recoveredResult)
 	})
 
-	// 5. Partial recovery: run a multi-step portable workflow, keep operation_outputs,
-	// reset to PENDING. On recovery every step is replayed from stored results using
-	// the serialization column in operation_outputs — NOT re-executed.
 	t.Run("PartialRecoveryFromStoredSteps", func(t *testing.T) {
 		handle, err := multiStepWfD(executor, expectedInput,
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		workflowID := handle.GetWorkflowID()
+		workflowId := handle.GetWorkflowId()
 		firstResult, err := handle.GetResult()
 		require.NoError(t, err)
 		assert.Equal(t, expectedInput, firstResult.StepOut)
 		assert.Equal(t, expectedInput, firstResult.RecvOut)
 		assert.Equal(t, expectedInput, firstResult.EventOut)
 
-		// Verify operation_outputs exist for this workflow.
 		var stepCount int
 		schemaPrefix := ""
-		countQ := Kernel.renderSQL(`SELECT count(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), countQ, workflowID).Scan(&stepCount))
+		countQ := Kernel.renderSql(`SELECT count(*) FROM %soperation_outputs WHERE workflow_uuid = $1`, schemaPrefix)
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), countQ, workflowId).Scan(&stepCount))
 		require.Greater(t, stepCount, 0, "expected operation_outputs rows from first execution")
 
-		// Reset to PENDING but KEEP operation_outputs — steps will be replayed from DB.
-		resetQ := Kernel.renderSQL(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
-		_, err = Kernel.pool.Exec(context.Background(), resetQ, string(WorkflowStatusPending), workflowID)
+		resetQ := Kernel.renderSql(`UPDATE %sworkflow_status SET status = $1, output = NULL, error = NULL WHERE workflow_uuid = $2`, schemaPrefix)
+		_, err = Kernel.pool.Exec(context.Background(), resetQ, string(WorkflowStatusPending), workflowId)
 		require.NoError(t, err)
 
-		// Recover — each step hits checkOperationExecution and decodes from stored serialization.
 		handles, err := recoverPendingWorkflows(c, []string{"local"})
 		require.NoError(t, err)
 		require.Len(t, handles, 1)
 		_, err = handles[0].GetResult()
 		require.NoError(t, err)
 
-		retrieved, err := RetrieveWorkflow[PartialRecoveryResult](executor, workflowID)
+		retrieved, err := RetrieveWorkflow[PartialRecoveryResult](executor, workflowId)
 		require.NoError(t, err)
 		recoveredResult, err := retrieved.GetResult()
 		require.NoError(t, err)
@@ -1910,10 +1739,9 @@ func TestDirectRunPortableWorkflow(t *testing.T) {
 }
 
 func TestPortableWorkflowError(t *testing.T) {
-	executor := setupDBOS(t, setupDBOSOptions{dropDB: true, checkLeaks: true})
+	executor := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
-	// Workflow that runs a step then raises a PortableWorkflowError with all fields set.
-	portableErrWf := func(ctx DBOSContext, input string) (string, error) {
+	portableErrWf := func(ctx DbosContext, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})
@@ -1929,8 +1757,7 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 	portableErrWfD := NewWorkflow(executor, portableErrWf, WithWorkflowName("portable_err_wf"))
 
-	// Workflow that runs a step that itself fails with a PortableWorkflowError.
-	portableStepErrWf := func(ctx DBOSContext, input string) (string, error) {
+	portableStepErrWf := func(ctx DbosContext, input string) (string, error) {
 		return Run(ctx, func(_ context.Context) (string, error) {
 			return "", &PortableWorkflowError{
 				Name:    "StepError",
@@ -1941,8 +1768,7 @@ func TestPortableWorkflowError(t *testing.T) {
 	}
 	portableStepErrWfD := NewWorkflow(executor, portableStepErrWf, WithWorkflowName("portable_step_err_wf"))
 
-	// Workflow that runs a step then raises a plain Go error (triggers best-effort conversion).
-	plainErrWf := func(ctx DBOSContext, input string) (string, error) {
+	plainErrWf := func(ctx DbosContext, input string) (string, error) {
 		_, err := Run(ctx, func(_ context.Context) (string, error) {
 			return input, nil
 		})
@@ -1959,22 +1785,22 @@ func TestPortableWorkflowError(t *testing.T) {
 	c := executor.(*dbosContext)
 	Kernel := c.kernel
 
-	readStoredError := func(t *testing.T, workflowID string) string {
+	readStoredError := func(t *testing.T, workflowId string) string {
 		t.Helper()
 		var storedError *string
-		q := Kernel.renderSQL(`SELECT error FROM %sworkflow_status WHERE workflow_uuid = $1`,
+		q := Kernel.renderSql(`SELECT error FROM %sworkflow_status WHERE workflow_uuid = $1`,
 			"")
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID).Scan(&storedError))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowId).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError
 	}
 
-	readStoredStepError := func(t *testing.T, workflowID string, stepID int) string {
+	readStoredStepError := func(t *testing.T, workflowId string, stepId int) string {
 		t.Helper()
 		var storedError *string
-		q := Kernel.renderSQL(`SELECT error FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_id = $2`,
+		q := Kernel.renderSql(`SELECT error FROM %soperation_outputs WHERE workflow_uuid = $1 AND function_id = $2`,
 			"")
-		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowID, stepID).Scan(&storedError))
+		require.NoError(t, Kernel.pool.QueryRow(context.Background(), q, workflowId, stepId).Scan(&storedError))
 		require.NotNil(t, storedError)
 		return *storedError
 	}
@@ -1983,25 +1809,22 @@ func TestPortableWorkflowError(t *testing.T) {
 		handle, err := portableErrWfD(executor, "test-value",
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
-		// Direct handle returns the raw *PortableWorkflowError from the goroutine.
 		var pe *PortableWorkflowError
 		require.ErrorAs(t, err, &pe)
 		assert.Equal(t, "ValidationError", pe.Name)
 		assert.Equal(t, "invalid input: test-value", pe.Message)
 
-		// Stored in DB as portable JSON.
 		var errData map[string]any
-		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfID)), &errData))
+		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfId)), &errData))
 		assert.Equal(t, "ValidationError", errData["name"])
 		assert.Equal(t, "invalid input: test-value", errData["message"])
 		assert.Equal(t, float64(400), errData["code"])
 
-		// RetrieveWorkflow goes through DB deserialization — returns *PortableWorkflowError.
-		retrieved, err := RetrieveWorkflow[string](executor, wfID)
+		retrieved, err := RetrieveWorkflow[string](executor, wfId)
 		require.NoError(t, err)
 		_, err = retrieved.GetResult()
 		require.Error(t, err)
@@ -2009,7 +1832,7 @@ func TestPortableWorkflowError(t *testing.T) {
 		require.ErrorAs(t, err, &dbPe)
 		assert.Equal(t, "ValidationError", dbPe.Name)
 		assert.Equal(t, "invalid input: test-value", dbPe.Message)
-		assert.Equal(t, float64(400), dbPe.Code) // JSON numbers unmarshal to float64
+		assert.Equal(t, float64(400), dbPe.Code)
 		dbData, ok := dbPe.Data.(map[string]any)
 		require.True(t, ok)
 		assert.Equal(t, "input", dbData["field"])
@@ -2019,24 +1842,21 @@ func TestPortableWorkflowError(t *testing.T) {
 		handle, err := plainErrWfD(executor, "oops",
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
-		// Stored in DB as portable JSON with best-effort name and message.
 		var errData map[string]any
-		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfID)), &errData))
+		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfId)), &errData))
 		assert.Equal(t, "something went wrong: oops", errData["message"])
 		assert.Equal(t, "Portable Error", errData["name"])
 
-		// The stored JSON deserializes directly into *PortableWorkflowError.
 		var storedPe PortableWorkflowError
-		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfID)), &storedPe))
+		require.NoError(t, json.Unmarshal([]byte(readStoredError(t, wfId)), &storedPe))
 		assert.Equal(t, "something went wrong: oops", storedPe.Message)
 		assert.Equal(t, "Portable Error", storedPe.Name)
 
-		// RetrieveWorkflow deserializes the portable JSON back to *PortableWorkflowError.
-		retrieved, err := RetrieveWorkflow[string](executor, wfID)
+		retrieved, err := RetrieveWorkflow[string](executor, wfId)
 		require.NoError(t, err)
 		_, err = retrieved.GetResult()
 		require.Error(t, err)
@@ -2050,19 +1870,17 @@ func TestPortableWorkflowError(t *testing.T) {
 		handle, err := portableStepErrWfD(executor, "step-input",
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
-		// Step error stored as portable JSON in operation_outputs (step 0).
 		var stepErrData map[string]any
-		require.NoError(t, json.Unmarshal([]byte(readStoredStepError(t, wfID, 0)), &stepErrData))
+		require.NoError(t, json.Unmarshal([]byte(readStoredStepError(t, wfId, 0)), &stepErrData))
 		assert.Equal(t, "StepError", stepErrData["name"])
 		assert.Equal(t, "step failed: step-input", stepErrData["message"])
 		assert.Equal(t, float64(500), stepErrData["code"])
 
-		// GetWorkflowSteps deserializes the step error as *PortableWorkflowError.
-		steps, err := GetWorkflowSteps(executor, wfID)
+		steps, err := GetWorkflowSteps(executor, wfId)
 		require.NoError(t, err)
 		require.Len(t, steps, 1)
 		var stepPe *PortableWorkflowError
@@ -2076,12 +1894,11 @@ func TestPortableWorkflowError(t *testing.T) {
 		handle, err := portableErrWfD(executor, "list-test",
 			WithPortableWorkflow())
 		require.NoError(t, err)
-		wfID := handle.GetWorkflowID()
+		wfId := handle.GetWorkflowId()
 		_, err = handle.GetResult()
 		require.Error(t, err)
 
-		// ListWorkflows: error goes through errors.New → .Error() → deserializeWorkflowError.
-		wfs, err := ListWorkflows(executor, WithWorkflowIDs([]string{wfID}))
+		wfs, err := ListWorkflows(executor, WithWorkflowIds([]string{wfId}))
 		require.NoError(t, err)
 		require.Len(t, wfs, 1)
 		var listPe *PortableWorkflowError
@@ -2090,12 +1907,11 @@ func TestPortableWorkflowError(t *testing.T) {
 		assert.Equal(t, "invalid input: list-test", listPe.Message)
 		assert.Equal(t, float64(400), listPe.Code)
 
-		// GetWorkflowSteps: first step succeeds (just echoes input), workflow error is separate.
-		steps, err := GetWorkflowSteps(executor, wfID)
+		steps, err := GetWorkflowSteps(executor, wfId)
 		require.NoError(t, err)
 		require.Len(t, steps, 1)
-		assert.Nil(t, steps[0].Error) // step succeeded; error is on the workflow, not the step
-		// Portable step output is returned as raw JSON string (not base64-decoded).
+		assert.Nil(t, steps[0].Error)
+
 		require.NotNil(t, steps[0].Output)
 		assert.Equal(t, `"list-test"`, steps[0].Output)
 	})

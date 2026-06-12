@@ -28,22 +28,18 @@ func runInit(cmd *cobra.Command, args []string) error {
 		projectName = "dbos-go-starter"
 	}
 
-	// Check if directory already exists
 	if _, err := os.Stat(projectName); err == nil {
 		return fmt.Errorf("directory '%s' already exists", projectName)
 	}
 
-	// Create project directory
 	if err := os.MkdirAll(projectName, 0755); err != nil {
 		return fmt.Errorf("failed to create directory '%s': %w", projectName, err)
 	}
 
-	// Template data
 	data := templateData{
 		ProjectName: projectName,
 	}
 
-	// Process and write each template file
 	templates := map[string]string{
 		"templates/dbos-go-starter/go.mod.tmpl":           "go.mod",
 		"templates/dbos-go-starter/main.go.tmpl":          "main.go",
@@ -52,13 +48,12 @@ func runInit(cmd *cobra.Command, args []string) error {
 	}
 
 	for tmplPath, outputFile := range templates {
-		// Read template from embedded FS
+
 		tmplContent, err := templateFS.ReadFile(tmplPath)
 		if err != nil {
 			return fmt.Errorf("failed to read template %s: %w", tmplPath, err)
 		}
 
-		// Parse and execute template
 		tmpl, err := template.New(outputFile).Parse(string(tmplContent))
 		if err != nil {
 			return fmt.Errorf("failed to parse template %s: %w", tmplPath, err)
@@ -69,7 +64,6 @@ func runInit(cmd *cobra.Command, args []string) error {
 			return fmt.Errorf("failed to execute template %s: %w", tmplPath, err)
 		}
 
-		// Write output file
 		outputPath := filepath.Join(projectName, outputFile)
 		if err := os.MkdirAll(filepath.Dir(outputPath), 0755); err != nil {
 			return fmt.Errorf("failed to create directory for %s: %w", outputFile, err)

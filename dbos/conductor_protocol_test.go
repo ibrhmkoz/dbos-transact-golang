@@ -8,7 +8,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestStringOrList_UnmarshalJSON(t *testing.T) {
+func TestStringOrList_UnmarshalJson(t *testing.T) {
 	t.Run("single string", func(t *testing.T) {
 		var s stringOrList
 		err := json.Unmarshal([]byte(`"foo"`), &s)
@@ -57,14 +57,14 @@ func TestListWorkflowsConductorRequestBody_StringOrListFields(t *testing.T) {
 		var req listWorkflowsConductorRequest
 		err := json.Unmarshal([]byte(`{"type":"list_workflows","request_id":"x","body":{"parent_workflow_id":"parent-123"}}`), &req)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"parent-123"}, req.Body.ParentWorkflowID.toSlice())
+		assert.Equal(t, []string{"parent-123"}, req.Body.ParentWorkflowId.toSlice())
 	})
 
 	t.Run("parent_workflow_id as array", func(t *testing.T) {
 		var req listWorkflowsConductorRequest
 		err := json.Unmarshal([]byte(`{"type":"list_workflows","request_id":"x","body":{"parent_workflow_id":["p1","p2"]}}`), &req)
 		require.NoError(t, err)
-		assert.Equal(t, []string{"p1", "p2"}, req.Body.ParentWorkflowID.toSlice())
+		assert.Equal(t, []string{"p1", "p2"}, req.Body.ParentWorkflowId.toSlice())
 	})
 }
 
@@ -87,7 +87,7 @@ func TestGetWorkflowAggregatesConductorRequestBody_Unmarshal(t *testing.T) {
 		assert.True(t, req.Body.GroupByStatus)
 		assert.True(t, req.Body.GroupByName)
 		assert.True(t, req.Body.GroupByQueueName)
-		assert.True(t, req.Body.GroupByExecutorID)
+		assert.True(t, req.Body.GroupByExecutorId)
 		assert.True(t, req.Body.GroupByApplicationVersion)
 		require.NotNil(t, req.Body.TimeBucketSizeMs)
 		assert.Equal(t, int64(3_600_000), *req.Body.TimeBucketSizeMs)

@@ -17,7 +17,7 @@ import (
 const defaultAdminClientTimeout = 5 * time.Second
 
 type AdminClient struct {
-	baseURL    *url.URL
+	baseUrl    *url.URL
 	httpClient *http.Client
 }
 
@@ -58,7 +58,7 @@ type AdminHealthResponse struct {
 }
 
 type AdminListWorkflowsRequest struct {
-	WorkflowUUIDs      []string           `json:"workflow_uuids,omitempty"`
+	WorkflowUuids      []string           `json:"workflow_uuids,omitempty"`
 	AuthenticatedUser  *string            `json:"authenticated_user,omitempty"`
 	StartTime          *time.Time         `json:"start_time,omitempty"`
 	EndTime            *time.Time         `json:"end_time,omitempty"`
@@ -68,14 +68,14 @@ type AdminListWorkflowsRequest struct {
 	Limit              *int               `json:"limit,omitempty"`
 	Offset             *int               `json:"offset,omitempty"`
 	SortDesc           *bool              `json:"sort_desc,omitempty"`
-	WorkflowIDPrefix   *string            `json:"workflow_id_prefix,omitempty"`
+	WorkflowIdPrefix   *string            `json:"workflow_id_prefix,omitempty"`
 	LoadInput          *bool              `json:"load_input,omitempty"`
 	LoadOutput         *bool              `json:"load_output,omitempty"`
 	QueueName          *string            `json:"queue_name,omitempty"`
 }
 
 type AdminWorkflow struct {
-	WorkflowUUID            string             `json:"WorkflowUUID"`
+	WorkflowUuid            string             `json:"WorkflowUUID"`
 	Status                  WorkflowStatusType `json:"Status"`
 	WorkflowName            string             `json:"WorkflowName"`
 	AuthenticatedUser       string             `json:"AuthenticatedUser"`
@@ -83,13 +83,13 @@ type AdminWorkflow struct {
 	AuthenticatedRoles      []string           `json:"AuthenticatedRoles"`
 	Output                  string             `json:"Output"`
 	Error                   string             `json:"Error"`
-	ExecutorID              string             `json:"ExecutorID"`
+	ExecutorId              string             `json:"ExecutorID"`
 	ApplicationVersion      string             `json:"ApplicationVersion"`
-	ApplicationID           string             `json:"ApplicationID"`
+	ApplicationId           string             `json:"ApplicationID"`
 	Attempts                int                `json:"Attempts"`
 	QueueName               string             `json:"QueueName"`
 	Timeout                 time.Duration      `json:"Timeout"`
-	DeduplicationID         string             `json:"DeduplicationID"`
+	DeduplicationId         string             `json:"DeduplicationID"`
 	Priority                int                `json:"Priority"`
 	QueuePartitionKey       string             `json:"QueuePartitionKey"`
 	Input                   string             `json:"Input"`
@@ -100,7 +100,7 @@ type AdminWorkflow struct {
 }
 
 type AdminWorkflowStep struct {
-	FunctionID         int    `json:"function_id"`
+	FunctionId         int    `json:"function_id"`
 	FunctionName       string `json:"function_name"`
 	StartedAtEpochMS   int64  `json:"started_at_epoch_ms"`
 	CompletedAtEpochMS int64  `json:"completed_at_epoch_ms"`
@@ -110,12 +110,12 @@ type AdminWorkflowStep struct {
 
 type AdminForkWorkflowRequest struct {
 	StartStep          *uint   `json:"start_step,omitempty"`
-	NewWorkflowID      *string `json:"new_workflow_id,omitempty"`
+	NewWorkflowId      *string `json:"new_workflow_id,omitempty"`
 	ApplicationVersion *string `json:"application_version,omitempty"`
 }
 
 type AdminForkWorkflowResponse struct {
-	WorkflowID string `json:"workflow_id"`
+	WorkflowId string `json:"workflow_id"`
 }
 
 type AdminGarbageCollectRequest struct {
@@ -127,20 +127,20 @@ type AdminGlobalTimeoutRequest struct {
 	CutoffEpochTimestampMS int64 `json:"cutoff_epoch_timestamp_ms"`
 }
 
-func NewAdminClient(rawBaseURL string) (*AdminClient, error) {
-	if rawBaseURL == "" {
+func NewAdminClient(rawBaseUrl string) (*AdminClient, error) {
+	if rawBaseUrl == "" {
 		return nil, errors.New("admin client base URL is required")
 	}
-	baseURL, err := url.Parse(rawBaseURL)
+	baseUrl, err := url.Parse(rawBaseUrl)
 	if err != nil {
 		return nil, fmt.Errorf("invalid admin client base URL: %w", err)
 	}
-	if baseURL.Scheme == "" || baseURL.Host == "" {
+	if baseUrl.Scheme == "" || baseUrl.Host == "" {
 		return nil, errors.New("admin client base URL must include scheme and host")
 	}
 
 	return &AdminClient{
-		baseURL:    baseURL,
+		baseUrl:    baseUrl,
 		httpClient: &http.Client{Timeout: defaultAdminClientTimeout},
 	}, nil
 }
@@ -149,8 +149,8 @@ func (c *AdminClient) Health(ctx context.Context) (AdminHealthResponse, error) {
 	return doAdminRequest[AdminHealthResponse](c, ctx, http.MethodGet, "/dbos-healthz", nil)
 }
 
-func (c *AdminClient) RecoverWorkflows(ctx context.Context, executorIDs []string) ([]string, error) {
-	return doAdminRequest[[]string](c, ctx, http.MethodPost, "/dbos-workflow-recovery", executorIDs)
+func (c *AdminClient) RecoverWorkflows(ctx context.Context, executorIds []string) ([]string, error) {
+	return doAdminRequest[[]string](c, ctx, http.MethodPost, "/dbos-workflow-recovery", executorIds)
 }
 
 func (c *AdminClient) GarbageCollect(ctx context.Context, request AdminGarbageCollectRequest) error {
@@ -167,24 +167,24 @@ func (c *AdminClient) ListWorkflows(ctx context.Context, request AdminListWorkfl
 	return doAdminRequest[[]AdminWorkflow](c, ctx, http.MethodPost, "/workflows", request)
 }
 
-func (c *AdminClient) GetWorkflow(ctx context.Context, workflowID string) (AdminWorkflow, error) {
-	return doAdminRequest[AdminWorkflow](c, ctx, http.MethodGet, "/workflows/"+url.PathEscape(workflowID), nil)
+func (c *AdminClient) GetWorkflow(ctx context.Context, workflowId string) (AdminWorkflow, error) {
+	return doAdminRequest[AdminWorkflow](c, ctx, http.MethodGet, "/workflows/"+url.PathEscape(workflowId), nil)
 }
 
-func (c *AdminClient) GetWorkflowSteps(ctx context.Context, workflowID string) ([]AdminWorkflowStep, error) {
-	return doAdminRequest[[]AdminWorkflowStep](c, ctx, http.MethodGet, "/workflows/"+url.PathEscape(workflowID)+"/steps", nil)
+func (c *AdminClient) GetWorkflowSteps(ctx context.Context, workflowId string) ([]AdminWorkflowStep, error) {
+	return doAdminRequest[[]AdminWorkflowStep](c, ctx, http.MethodGet, "/workflows/"+url.PathEscape(workflowId)+"/steps", nil)
 }
 
-func (c *AdminClient) CancelWorkflow(ctx context.Context, workflowID string) error {
-	return doAdminRequestWithoutResponse(c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/cancel", nil)
+func (c *AdminClient) CancelWorkflow(ctx context.Context, workflowId string) error {
+	return doAdminRequestWithoutResponse(c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowId)+"/cancel", nil)
 }
 
-func (c *AdminClient) ResumeWorkflow(ctx context.Context, workflowID string) error {
-	return doAdminRequestWithoutResponse(c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/resume", nil)
+func (c *AdminClient) ResumeWorkflow(ctx context.Context, workflowId string) error {
+	return doAdminRequestWithoutResponse(c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowId)+"/resume", nil)
 }
 
-func (c *AdminClient) ForkWorkflow(ctx context.Context, workflowID string, request AdminForkWorkflowRequest) (AdminForkWorkflowResponse, error) {
-	return doAdminRequest[AdminForkWorkflowResponse](c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowID)+"/fork", request)
+func (c *AdminClient) ForkWorkflow(ctx context.Context, workflowId string, request AdminForkWorkflowRequest) (AdminForkWorkflowResponse, error) {
+	return doAdminRequest[AdminForkWorkflowResponse](c, ctx, http.MethodPost, "/workflows/"+url.PathEscape(workflowId)+"/fork", request)
 }
 
 func (c *AdminClient) Deactivate(ctx context.Context) error {
@@ -222,8 +222,8 @@ func (c *AdminClient) do(ctx context.Context, method, path string, body any) (*h
 		requestBody = bytes.NewReader(encoded)
 	}
 
-	requestURL := c.baseURL.JoinPath(strings.TrimPrefix(path, "/"))
-	request, err := http.NewRequestWithContext(ctx, method, requestURL.String(), requestBody)
+	requestUrl := c.baseUrl.JoinPath(strings.TrimPrefix(path, "/"))
+	request, err := http.NewRequestWithContext(ctx, method, requestUrl.String(), requestBody)
 	if err != nil {
 		return nil, fmt.Errorf("creating admin API request: %w", err)
 	}

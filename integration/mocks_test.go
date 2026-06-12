@@ -12,24 +12,22 @@ func step(ctx context.Context) (int, error) {
 	return 1, nil
 }
 
-func childWorkflow(ctx dbos.DBOSContext, i int) (int, error) {
+func childWorkflow(ctx dbos.DbosContext, i int) (int, error) {
 	return i + 1, nil
 }
 
-// Callables for the workflows, assigned in aRealProgramFunction before launch.
 var (
 	workflowWF      dbos.Workflow[int, int]
 	childWorkflowWF dbos.Workflow[int, int]
 )
 
-func workflow(ctx dbos.DBOSContext, i int) (int, error) {
-	// Test RunAsStep
+func workflow(ctx dbos.DbosContext, i int) (int, error) {
+
 	a, err := dbos.Run(ctx, step)
 	if err != nil {
 		return 0, err
 	}
 
-	// Child wf
 	ch, err := childWorkflowWF(ctx, i)
 	if err != nil {
 		return 0, err
@@ -39,7 +37,6 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 		return 0, err
 	}
 
-	// Test messaging operations
 	c, err := dbos.Recv[int](ctx, "chan1", 1*time.Second)
 	if err != nil {
 		return 0, err
@@ -53,47 +50,43 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 		return 0, err
 	}
 
-	// Test SetEvent
 	err = dbos.SetEvent(ctx, "test_key", "test_value")
 	if err != nil {
 		return 0, err
 	}
 
-	// Test Sleep
 	_, err = dbos.Sleep(ctx, 100*time.Millisecond)
 	if err != nil {
 		return 0, err
 	}
 
-	// Test ID retrieval methods
-	workflowID, err := ctx.GetWorkflowID()
+	workflowId, err := ctx.GetWorkflowId()
 	if err != nil {
 		return 0, err
 	}
-	stepID, err := ctx.GetStepID()
-	if err != nil {
-		return 0, err
-	}
-
-	// Test workflow management
-	_, err = dbos.RetrieveWorkflow[int](ctx, workflowID)
+	stepId, err := ctx.GetStepId()
 	if err != nil {
 		return 0, err
 	}
 
-	err = dbos.CancelWorkflow(ctx, workflowID)
+	_, err = dbos.RetrieveWorkflow[int](ctx, workflowId)
 	if err != nil {
 		return 0, err
 	}
 
-	_, err = dbos.ResumeWorkflow[int](ctx, workflowID)
+	err = dbos.CancelWorkflow(ctx, workflowId)
+	if err != nil {
+		return 0, err
+	}
+
+	_, err = dbos.ResumeWorkflow[int](ctx, workflowId)
 	if err != nil {
 		return 0, err
 	}
 
 	forkInput := dbos.ForkWorkflowInput{
-		OriginalWorkflowID: workflowID,
-		StartStep:          uint(stepID),
+		OriginalWorkflowId: workflowId,
+		StartStep:          uint(stepId),
 	}
 	_, err = dbos.ForkWorkflow[int](ctx, forkInput)
 	if err != nil {
@@ -105,22 +98,20 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 		return 0, err
 	}
 
-	_, err = dbos.GetWorkflowSteps(ctx, workflowID)
+	_, err = dbos.GetWorkflowSteps(ctx, workflowId)
 	if err != nil {
 		return 0, err
 	}
 
-	// Test accessor methods
 	appVersion := ctx.GetApplicationVersion()
-	executorID := ctx.GetExecutorID()
-	appID := ctx.GetApplicationID()
+	executorId := ctx.GetExecutorId()
+	appId := ctx.GetApplicationId()
 
 	// Use some values to avoid compiler warnings
 	_ = appVersion
-	_ = executorID
-	_ = appID
+	_ = executorId
+	_ = appId
 
-	// Test Go and Select methods (using stepAny to match Select signature)
 	stepAny := func(ctx context.Context) (any, error) {
 		return 1, nil
 	}
@@ -129,7 +120,6 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 		return 0, err
 	}
 
-	// Test Select method
 	e, err := dbos.Select(ctx, []<-chan dbos.StepOutcome[any]{outcomeChan})
 	if err != nil {
 		return 0, err
@@ -138,7 +128,7 @@ func workflow(ctx dbos.DBOSContext, i int) (int, error) {
 	return a + b + c + d + e.(int), nil
 }
 
-func aRealProgramFunction(dbosCtx dbos.DBOSContext) error {
+func aRealProgramFunction(dbosCtx dbos.DbosContext) error {
 
 	childWorkflowWF = dbos.NewWorkflow(dbosCtx, childWorkflow)
 	workflowWF = dbos.NewWorkflow(dbosCtx, workflow)
@@ -161,13 +151,11 @@ func aRealProgramFunction(dbosCtx dbos.DBOSContext) error {
 		return fmt.Errorf("unexpected result: %v", res)
 	}
 
-	// Test WithValue
 	valCtx := dbos.WithValue(dbosCtx, "key", "val")
 	if valCtx == nil {
 		return fmt.Errorf("WithValue returned nil")
 	}
 
-	// Test WithCancelCause
 	cancelCtx, cf := dbos.WithCancelCause(dbosCtx)
 	if cancelCtx == nil {
 		return fmt.Errorf("WithCancelCause returned nil context")

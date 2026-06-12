@@ -11,7 +11,7 @@ import (
 func TestApplicationVersions(t *testing.T) {
 	parallelTest(t)
 	t.Run("LaunchRegistersCurrentVersion", func(t *testing.T) {
-		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 		require.NoError(t, dbosCtx.Launch())
 
 		latest, err := GetLatestApplicationVersion(dbosCtx)
@@ -23,11 +23,11 @@ func TestApplicationVersions(t *testing.T) {
 		require.NoError(t, err)
 		require.Len(t, versions, 1)
 		require.Equal(t, latest.Name, versions[0].Name)
-		require.Equal(t, latest.ID, versions[0].ID)
+		require.Equal(t, latest.Id, versions[0].Id)
 	})
 
 	t.Run("CreateIsIdempotent", func(t *testing.T) {
-		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 		require.NoError(t, dbosCtx.Launch())
 
 		c := dbosCtx.(*dbosContext)
@@ -41,11 +41,11 @@ func TestApplicationVersions(t *testing.T) {
 	})
 
 	t.Run("SetLatestUpdatesTimestamp", func(t *testing.T) {
-		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 		require.NoError(t, dbosCtx.Launch())
 
 		c := dbosCtx.(*dbosContext)
-		// Insert an older version directly so it sorts before "current".
+
 		require.NoError(t, c.kernel.createApplicationVersion(c, "older-version"))
 		require.NoError(t, c.kernel.updateApplicationVersionTimestamp(c, "older-version", time.Now().Add(-time.Hour).UnixMilli()))
 
@@ -53,7 +53,6 @@ func TestApplicationVersions(t *testing.T) {
 		require.NoError(t, err)
 		require.Equal(t, dbosCtx.GetApplicationVersion(), latest.Name)
 
-		// Promoting older-version should make it the new latest.
 		require.NoError(t, SetLatestApplicationVersion(dbosCtx, "older-version"))
 
 		latest, err = GetLatestApplicationVersion(dbosCtx)
@@ -67,23 +66,23 @@ func TestApplicationVersions(t *testing.T) {
 	})
 
 	t.Run("GetLatestReturnsErrWhenEmpty", func(t *testing.T) {
-		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
-		// Launch registers the current version; clear the table to simulate empty state.
+		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
+
 		require.NoError(t, dbosCtx.Launch())
 		c := dbosCtx.(*dbosContext)
 		s := c.kernel
-		_, err := s.pool.Exec(c, s.renderSQL("DELETE FROM %sapplication_versions", ""))
+		_, err := s.pool.Exec(c, s.renderSql("DELETE FROM %sapplication_versions", ""))
 		require.NoError(t, err)
 
 		_, err = GetLatestApplicationVersion(dbosCtx)
 		require.Error(t, err)
-		var dbosErr *DBOSError
-		require.True(t, errors.As(err, &dbosErr), "expected *DBOSError, got %T: %v", err, err)
+		var dbosErr *DbosError
+		require.True(t, errors.As(err, &dbosErr), "expected *DbosError, got %T: %v", err, err)
 		require.Equal(t, NoApplicationVersions, dbosErr.Code)
 	})
 
 	t.Run("SetLatestRequiresVersionName", func(t *testing.T) {
-		dbosCtx := setupDBOS(t, setupDBOSOptions{dropDB: true})
+		dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true})
 		require.NoError(t, dbosCtx.Launch())
 
 		err := SetLatestApplicationVersion(dbosCtx, "")

@@ -83,7 +83,6 @@ func startDockerPostgres() error {
 
 	ctx := context.Background()
 
-	// Check if container already exists
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
@@ -99,9 +98,7 @@ func startDockerPostgres() error {
 				logger.Info("Container is already running", "container", containerName)
 				return nil
 			case "exited":
-				// Start the existing container. With AutoRemove=true the
-				// daemon may have already begun removal. Fall through to
-				// the create path after waiting for the removal to finish.
+
 				err := cli.ContainerStart(ctx, c.ID, container.StartOptions{})
 				if err == nil {
 					logger.Info("Container was stopped and has been restarted", "container", containerName)
@@ -115,7 +112,7 @@ func startDockerPostgres() error {
 					return fmt.Errorf("failed waiting for container removal: %w", waitErr)
 				}
 			case "removing", "dead":
-				// Transitional states triggered by AutoRemove. Wait for the
+
 				// container to disappear so we can recreate it cleanly.
 				logger.Info("Existing container is being removed; waiting before recreating", "container", containerName, "state", c.State)
 				if waitErr := waitForContainerRemoved(ctx, cli, c.ID); waitErr != nil {
@@ -150,16 +147,14 @@ func startDockerPostgres() error {
 			return fmt.Errorf("failed to pull image: %w", err)
 		}
 		defer reader.Close()
-		io.Copy(io.Discard, reader) // Wait for pull to complete
+		io.Copy(io.Discard, reader)
 	}
 
-	// Get password from environment or use default
 	password := os.Getenv("PGPASSWORD")
 	if password == "" {
 		password = "dbos"
 	}
 
-	// Create and start container
 	config := &container.Config{
 		Image: imageName,
 		Env: []string{
@@ -201,7 +196,6 @@ func startDockerPostgres() error {
 
 	logger.Info("Created container", "id", resp.ID[:12])
 
-	// Wait for PostgreSQL to be ready
 	if err := waitForPostgres(); err != nil {
 		return err
 	}
@@ -221,7 +215,6 @@ func stopDockerPostgres() error {
 
 	ctx := context.Background()
 
-	// Find the container
 	containers, err := cli.ContainerList(ctx, container.ListOptions{All: true})
 	if err != nil {
 		return fmt.Errorf("failed to list containers: %w", err)
@@ -236,7 +229,7 @@ func stopDockerPostgres() error {
 				if err := cli.ContainerStop(ctx, c.ID, container.StopOptions{}); err != nil {
 					return fmt.Errorf("failed to stop container: %w", err)
 				}
-				// AutoRemove=true: wait for the daemon to finish removing the
+
 				// container so that a subsequent start sees a clean slate.
 				if err := waitForContainerRemoved(ctx, cli, c.ID); err != nil {
 					return fmt.Errorf("failed waiting for container removal: %w", err)
@@ -244,8 +237,7 @@ func stopDockerPostgres() error {
 				logger.Info("Successfully stopped Docker Postgres container", "container", containerName)
 				return nil
 			}
-			// Not running. If the container is being removed, wait for that
-			// to settle before returning so callers can immediately recreate.
+
 			if c.State == "removing" || c.State == "dead" {
 				if err := waitForContainerRemoved(ctx, cli, c.ID); err != nil {
 					return fmt.Errorf("failed waiting for container removal: %w", err)
@@ -260,16 +252,16 @@ func stopDockerPostgres() error {
 	return nil
 }
 
-func waitForContainerRemoved(ctx context.Context, cli *client.Client, containerID string) error {
+func waitForContainerRemoved(ctx context.Context, cli *client.Client, containerId string) error {
 	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
-	statusCh, errCh := cli.ContainerWait(waitCtx, containerID, container.WaitConditionRemoved)
+	statusCh, errCh := cli.ContainerWait(waitCtx, containerId, container.WaitConditionRemoved)
 	select {
 	case <-statusCh:
 		return nil
 	case err := <-errCh:
-		// Already gone is success.
+
 		if err == nil || cerrdefs.IsNotFound(err) {
 			return nil
 		}
@@ -293,7 +285,6 @@ func waitForPostgres() error {
 
 	connStr := fmt.Sprintf("postgres://postgres:%s@localhost:5432/postgres?connect_timeout=2&sslmode=disable", url.QueryEscape(password))
 
-	// Try for up to 30 seconds
 	for i := 0; i < 30; i++ {
 		if i%5 == 0 && i > 0 {
 			logger.Info("Still waiting for Postgres Docker container to start...")

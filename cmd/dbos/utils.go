@@ -14,115 +14,101 @@ import (
 	"github.com/spf13/viper"
 )
 
-// maskPassword replaces the password in a database URL with asterisks
-func maskPassword(dbURL string) (string, error) {
-	parsedURL, err := url.Parse(dbURL)
-	if err == nil && parsedURL.Scheme != "" {
+func maskPassword(dbUrl string) (string, error) {
+	parsedUrl, err := url.Parse(dbUrl)
+	if err == nil && parsedUrl.Scheme != "" {
 
-		// Check if there is user info with a password
-		if parsedURL.User != nil {
-			username := parsedURL.User.Username()
-			_, hasPassword := parsedURL.User.Password()
+		if parsedUrl.User != nil {
+			username := parsedUrl.User.Username()
+			_, hasPassword := parsedUrl.User.Password()
 			if hasPassword {
 				// Manually construct the URL with masked password to avoid encoding
-				maskedURL := parsedURL.Scheme + "://" + username + ":***@" + parsedURL.Host + parsedURL.Path
-				if parsedURL.RawQuery != "" {
-					maskedURL += "?" + parsedURL.RawQuery
+				maskedUrl := parsedUrl.Scheme + "://" + username + ":***@" + parsedUrl.Host + parsedUrl.Path
+				if parsedUrl.RawQuery != "" {
+					maskedUrl += "?" + parsedUrl.RawQuery
 				}
-				if parsedURL.Fragment != "" {
-					maskedURL += "#" + parsedURL.Fragment
+				if parsedUrl.Fragment != "" {
+					maskedUrl += "#" + parsedUrl.Fragment
 				}
-				return maskedURL, nil
+				return maskedUrl, nil
 			}
 		}
 
-		return parsedURL.String(), nil
+		return parsedUrl.String(), nil
 	}
 
-	// If URL parsing failed or no scheme, try key-value format (libpq connection string)
-	return maskPasswordInKeyValueFormat(dbURL), nil
+	return maskPasswordInKeyValueFormat(dbUrl), nil
 }
 
-func createDBOSAdmin(ctx context.Context, dbURL string) (dbos.DBOSAdmin, error) {
-	return dbos.NewDBOSAdmin(ctx, dbos.DBOSAdminConfig{
-		DatabaseURL: dbURL,
+func createDbosAdmin(ctx context.Context, dbUrl string) (dbos.DbosAdmin, error) {
+	return dbos.NewDbosAdmin(ctx, dbos.DbosAdminConfig{
+		DatabaseUrl: dbUrl,
 		Logger:      logger,
 	})
 }
 
-// maskPasswordInKeyValueFormat masks password in libpq-style key-value connection strings
-// Format: "user=foo password=bar database=db host=localhost"
-// Supports all spacing variations: password=value, password =value, password= value, password = value
 func maskPasswordInKeyValueFormat(connStr string) string {
-	// Match password=value (case insensitive, handles spaces around =)
-	// Pattern matches: password (case insensitive), optional spaces, =, optional spaces, then value until next space or end
+
 	re := regexp.MustCompile(`(?i)password\s*=\s*[^\s]+`)
 	return re.ReplaceAllString(connStr, "password=***")
 }
 
-// getDBURL resolves the database URL from flag, config, or environment variable
-func getDBURL() (string, error) {
-	var resolvedURL string
+func getDBUrl() (string, error) {
+	var resolvedUrl string
 	var source string
 
-	// 1. Check flag
-	if dbURL != "" {
-		resolvedURL = dbURL
+	if dbUrl != "" {
+		resolvedUrl = dbUrl
 		source = "flag"
 	} else if viper.IsSet("database_url") {
-		// 2. Check config file
-		resolvedURL = viper.GetString("database_url")
+
+		resolvedUrl = viper.GetString("database_url")
 		source = "DBOS config file"
-	} else if envURL := os.Getenv("DBOS_SYSTEM_DATABASE_URL"); envURL != "" {
-		// 3. Check environment variable (DBOS_SYSTEM_DATABASE_URL)
-		resolvedURL = envURL
+	} else if envUrl := os.Getenv("DBOS_SYSTEM_DATABASE_URL"); envUrl != "" {
+
+		resolvedUrl = envUrl
 		source = "environment variable"
 	} else {
 		return "", fmt.Errorf("missing database URL: please set it using the --db-url flag, your dbos-config.yaml file, or the DBOS_SYSTEM_DATABASE_URL environment variable")
 	}
 
-	// Log the database URL in verbose mode with masked password
-	maskedURL, err := maskPassword(resolvedURL)
+	maskedUrl, err := maskPassword(resolvedUrl)
 	if err != nil {
 		logger.Debug("Failed to mask database URL", "error", err)
-		maskedURL = resolvedURL
+		maskedUrl = resolvedUrl
 	}
-	logger.Debug("Using database URL", "source", source, "url", maskedURL)
+	logger.Debug("Using database URL", "source", source, "url", maskedUrl)
 
-	return resolvedURL, nil
+	return resolvedUrl, nil
 }
 
-// createDBOSContext creates a new DBOS context with the provided database URL
-func createDBOSContext(ctx context.Context, dbURL string) (dbos.DBOSContext, error) {
+func createDbosContext(ctx context.Context, dbUrl string) (dbos.DbosContext, error) {
 	appName := "dbos-cli"
 
 	config := dbos.Config{
-		DatabaseURL: dbURL,
+		DatabaseUrl: dbUrl,
 		AppName:     appName,
 		Logger:      initLogger(slog.LevelError),
 	}
 
-	// Use the global schema flag if it's set
 	if schema != "" {
 		config.DatabaseSchema = schema
 		logger.Debug("Using database schema", "schema", schema)
 	}
 
-	dbosCtx, err := dbos.NewDBOSContext(ctx, config)
+	dbosCtx, err := dbos.NewDbosContext(ctx, config)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DBOS context: %w", err)
 	}
 	return dbosCtx, nil
 }
 
-// outputJSON outputs data as JSON
-func outputJSON(data any) error {
+func outputJson(data any) error {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetIndent("", "  ")
 	return encoder.Encode(data)
 }
 
-// confirmAction prompts the user for confirmation
 func confirmAction(prompt string) bool {
 	fmt.Printf("%s (y/N): ", prompt)
 	var response string
@@ -130,11 +116,10 @@ func confirmAction(prompt string) bool {
 	return response == "y" || response == "Y" || response == "yes" || response == "Yes"
 }
 
-// dropDatabaseIfExists force-drops a PostgreSQL database.
 func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) error {
 	sanitizedDBName := pgx.Identifier{dbName}.Sanitize()
-	dropSQL := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
-	if _, err := conn.Exec(ctx, dropSQL); err != nil {
+	dropSql := fmt.Sprintf("DROP DATABASE IF EXISTS %s WITH (FORCE)", sanitizedDBName)
+	if _, err := conn.Exec(ctx, dropSql); err != nil {
 		return fmt.Errorf("failed to drop database %s: %w", dbName, err)
 	}
 	return nil

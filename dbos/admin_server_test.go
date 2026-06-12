@@ -16,7 +16,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestStepResult is a custom struct for testing step outputs
 type TestStepResult struct {
 	Message string `json:"message"`
 	Count   int    `json:"count"`
@@ -27,26 +26,25 @@ func TestAdminServer(t *testing.T) {
 	defer verifyNoLeaks(t)
 
 	t.Run("Admin server is not started by default", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-app",
 		})
 		require.NoError(t, err)
 
 		err = Launch(ctx)
 		require.NoError(t, err)
-		// Ensure cleanup
+
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
 		}()
 
-		// Verify admin server is not running
 		client := &http.Client{Timeout: 1 * time.Second}
-		_, err = client.Get(fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_HEALTHCHECK_PATTERN, "GET /")))
+		_, err = client.Get(fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_healthcheckPattern, "GET /")))
 		require.Error(t, err, "Expected request to fail when admin server is not started")
 
 		// Verify the DBOS executor doesn't have an admin server instance
@@ -58,31 +56,28 @@ func TestAdminServer(t *testing.T) {
 	})
 
 	t.Run("Admin server endpoints", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		// Launch DBOS with admin server once for all endpoint tests
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl:     databaseUrl,
 			AppName:         "test-app",
 			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
+			AdminServerPort: _defaultAdminServerPort,
 		})
 		require.NoError(t, err)
 
 		err = Launch(ctx)
 		require.NoError(t, err)
 
-		// Ensure cleanup
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
 		}()
 
-		// Give the server a moment to start
 		time.Sleep(100 * time.Millisecond)
 
-		// Verify the DBOS executor has an admin server instance
 		require.NotNil(t, ctx, "Expected DBOS instance to be created")
 
 		exec := ctx.(*dbosContext)
@@ -104,27 +99,27 @@ func TestAdminServer(t *testing.T) {
 			{
 				name:           "Health endpoint responds correctly",
 				method:         "GET",
-				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_HEALTHCHECK_PATTERN, "GET /")),
+				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_healthcheckPattern, "GET /")),
 				expectedStatus: http.StatusOK,
 			},
 			{
 				name:           "Recovery endpoint responds correctly with valid JSON",
 				method:         "POST",
-				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOW_RECOVERY_PATTERN, "POST /")),
+				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_workflowRecoveryPattern, "POST /")),
 				body:           bytes.NewBuffer(mustMarshal([]string{"executor1", "executor2"})),
 				contentType:    "application/json",
 				expectedStatus: http.StatusOK,
 				validateResp: func(t *testing.T, resp *http.Response) {
-					var workflowIDs []string
-					err := json.NewDecoder(resp.Body).Decode(&workflowIDs)
+					var workflowIds []string
+					err := json.NewDecoder(resp.Body).Decode(&workflowIds)
 					require.NoError(t, err, "Failed to decode response as JSON array")
-					assert.NotNil(t, workflowIDs, "Expected non-nil workflow IDs array")
+					assert.NotNil(t, workflowIds, "Expected non-nil workflow IDs array")
 				},
 			},
 			{
 				name:           "Recovery endpoint rejects invalid JSON",
 				method:         "POST",
-				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOW_RECOVERY_PATTERN, "POST /")),
+				endpoint:       fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_workflowRecoveryPattern, "POST /")),
 				body:           strings.NewReader(`{"invalid": json}`),
 				contentType:    "application/json",
 				expectedStatus: http.StatusBadRequest,
@@ -132,7 +127,7 @@ func TestAdminServer(t *testing.T) {
 			{
 				name:     "Workflows endpoint accepts all filters without error",
 				method:   "POST",
-				endpoint: fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOWS_PATTERN, "POST /")),
+				endpoint: fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_workflowsPattern, "POST /")),
 				body: bytes.NewBuffer(mustMarshal(map[string]any{
 					"workflow_uuids":      []string{"test-id-1", "test-id-2"},
 					"authenticated_user":  "test-user",
@@ -155,7 +150,7 @@ func TestAdminServer(t *testing.T) {
 					var workflows []map[string]any
 					err := json.NewDecoder(resp.Body).Decode(&workflows)
 					require.NoError(t, err, "Failed to decode workflows response")
-					// We expect an empty array -- there's no workflow in the db
+
 					assert.NotNil(t, workflows, "Expected non-nil workflows array")
 					assert.Empty(t, workflows, "Expected empty workflows array")
 				},
@@ -163,7 +158,7 @@ func TestAdminServer(t *testing.T) {
 			{
 				name:           "Get single workflow returns 404 for non-existent workflow",
 				method:         "GET",
-				endpoint:       fmt.Sprintf("http://localhost:%d/workflow/non-existent-workflow-id", _DEFAULT_ADMIN_SERVER_PORT),
+				endpoint:       fmt.Sprintf("http://localhost:%d/workflow/non-existent-workflow-id", _defaultAdminServerPort),
 				expectedStatus: http.StatusNotFound,
 			},
 		}
@@ -198,36 +193,32 @@ func TestAdminServer(t *testing.T) {
 	})
 
 	t.Run("List workflows input/output values", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl:     databaseUrl,
 			AppName:         "test-app",
 			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
+			AdminServerPort: _defaultAdminServerPort,
 		})
 		require.NoError(t, err)
 
-		// Define a custom struct for testing
 		type TestStruct struct {
 			Name  string `json:"name"`
 			Value int    `json:"value"`
 		}
 
-		// Test workflow with int input/output
-		intWorkflow := func(dbosCtx DBOSContext, input int) (int, error) {
+		intWorkflow := func(dbosCtx DbosContext, input int) (int, error) {
 			return input * 2, nil
 		}
 		intWF := NewWorkflow(ctx, intWorkflow)
 
-		// Test workflow with empty string input/output
-		emptyStringWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
+		emptyStringWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
 			return "", nil
 		}
 		emptyStringWF := NewWorkflow(ctx, emptyStringWorkflow)
 
-		// Test workflow with struct input/output
-		structWorkflow := func(dbosCtx DBOSContext, input TestStruct) (TestStruct, error) {
+		structWorkflow := func(dbosCtx DbosContext, input TestStruct) (TestStruct, error) {
 			return TestStruct{Name: "output-" + input.Name, Value: input.Value * 2}, nil
 		}
 		structWF := NewWorkflow(ctx, structWorkflow)
@@ -235,35 +226,29 @@ func TestAdminServer(t *testing.T) {
 		err = Launch(ctx)
 		require.NoError(t, err)
 
-		// Ensure cleanup
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
 		}()
 
-		// Give the server a moment to start
 		time.Sleep(100 * time.Millisecond)
 
 		client := &http.Client{Timeout: 5 * time.Second}
-		endpoint := fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_WORKFLOWS_PATTERN, "POST /"))
+		endpoint := fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_workflowsPattern, "POST /"))
 
-		// Create workflows with different input/output types
-		// 1. Integer workflow
 		intHandle, err := intWF(ctx, 42)
 		require.NoError(t, err, "Failed to create int workflow")
 		intResult, err := intHandle.GetResult()
 		require.NoError(t, err, "Failed to get int workflow result")
 		assert.Equal(t, 84, intResult)
 
-		// 2. Empty string workflow
 		emptyStringHandle, err := emptyStringWF(ctx, "")
 		require.NoError(t, err, "Failed to create empty string workflow")
 		emptyStringResult, err := emptyStringHandle.GetResult()
 		require.NoError(t, err, "Failed to get empty string workflow result")
 		assert.Equal(t, "", emptyStringResult)
 
-		// 3. Struct workflow
 		structInput := TestStruct{Name: "test", Value: 10}
 		structHandle, err := structWF(ctx, structInput)
 		require.NoError(t, err, "Failed to create struct workflow")
@@ -271,13 +256,12 @@ func TestAdminServer(t *testing.T) {
 		require.NoError(t, err, "Failed to get struct workflow result")
 		assert.Equal(t, TestStruct{Name: "output-test", Value: 20}, structResult)
 
-		// Query workflows with input/output loading enabled
 		// Filter by the workflow IDs we just created to avoid interference from other tests
 		reqBody := map[string]any{
 			"workflow_uuids": []string{
-				intHandle.GetWorkflowID(),
-				emptyStringHandle.GetWorkflowID(),
-				structHandle.GetWorkflowID(),
+				intHandle.GetWorkflowId(),
+				emptyStringHandle.GetWorkflowId(),
+				structHandle.GetWorkflowId(),
 			},
 			"load_input":  true,
 			"load_output": true,
@@ -297,16 +281,13 @@ func TestAdminServer(t *testing.T) {
 		err = json.NewDecoder(resp.Body).Decode(&workflows)
 		require.NoError(t, err, "Failed to decode workflows response")
 
-		// Should have exactly 3 workflows
 		assert.Equal(t, 3, len(workflows), "Expected exactly 3 workflows")
 
-		// Verify each workflow's input/output marshalling
 		for _, wf := range workflows {
-			wfID := wf["WorkflowUUID"].(string)
+			wfId := wf["WorkflowUUID"].(string)
 
-			// Check input and output fields exist and are strings (JSON marshaled)
-			if wfID == intHandle.GetWorkflowID() {
-				// Integer workflow: input and output should be marshaled as JSON strings
+			if wfId == intHandle.GetWorkflowId() {
+
 				inputStr, ok := wf["Input"].(string)
 				require.True(t, ok, "Int workflow Input should be a string")
 				assert.Equal(t, "42", inputStr, "Int workflow input should be marshaled as '42'")
@@ -315,9 +296,8 @@ func TestAdminServer(t *testing.T) {
 				require.True(t, ok, "Int workflow Output should be a string")
 				assert.Equal(t, "84", outputStr, "Int workflow output should be marshaled as '84'")
 
-			} else if wfID == emptyStringHandle.GetWorkflowID() {
-				// Empty string workflow: both input and output are empty strings
-				// According to the logic, empty strings should not have Input/Output fields
+			} else if wfId == emptyStringHandle.GetWorkflowId() {
+
 				input, hasInput := wf["Input"]
 				require.Equal(t, "\"\"", input)
 				require.True(t, hasInput, "Empty string workflow should have Input field")
@@ -326,8 +306,8 @@ func TestAdminServer(t *testing.T) {
 				require.True(t, hasOutput, "Empty string workflow should have Output field")
 				require.Equal(t, "\"\"", output)
 
-			} else if wfID == structHandle.GetWorkflowID() {
-				// Struct workflow: input and output should be marshaled as JSON strings
+			} else if wfId == structHandle.GetWorkflowId() {
+
 				inputStr, ok := wf["Input"].(string)
 				require.True(t, ok, "Struct workflow Input should be a string")
 				var inputStruct TestStruct
@@ -346,17 +326,17 @@ func TestAdminServer(t *testing.T) {
 	})
 
 	t.Run("List endpoints time filtering", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl:     databaseUrl,
 			AppName:         "test-app",
 			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
+			AdminServerPort: _defaultAdminServerPort,
 		})
 		require.NoError(t, err)
 
-		testWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
+		testWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
 			return "result-" + input, nil
 		}
 		testWF := NewWorkflow(ctx, testWorkflow)
@@ -364,35 +344,34 @@ func TestAdminServer(t *testing.T) {
 		err = Launch(ctx)
 		require.NoError(t, err)
 
-		// Ensure cleanup
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
 		}()
 
-		client, err := NewAdminClient(fmt.Sprintf("http://localhost:%d", _DEFAULT_ADMIN_SERVER_PORT))
+		client, err := NewAdminClient(fmt.Sprintf("http://localhost:%d", _defaultAdminServerPort))
 		require.NoError(t, err)
 
-		workflowIDs := make([]string, 5)
-		for i := range workflowIDs {
+		workflowIds := make([]string, 5)
+		for i := range workflowIds {
 			input := fmt.Sprintf("workflow-%d", i)
 			handle, err := testWF(ctx, input)
 			require.NoError(t, err)
 			result, err := handle.GetResult()
 			require.NoError(t, err)
 			assert.Equal(t, "result-"+input, result)
-			workflowIDs[i] = handle.GetWorkflowID()
-			if i < len(workflowIDs)-1 {
+			workflowIds[i] = handle.GetWorkflowId()
+			if i < len(workflowIds)-1 {
 				time.Sleep(2 * time.Millisecond)
 			}
 		}
 
 		allWorkflows, err := client.ListWorkflows(context.Background(), AdminListWorkflowsRequest{
-			WorkflowUUIDs: workflowIDs,
+			WorkflowUuids: workflowIds,
 		})
 		require.NoError(t, err)
-		require.Len(t, allWorkflows, len(workflowIDs))
+		require.Len(t, allWorkflows, len(workflowIds))
 
 		for i := 1; i < len(allWorkflows); i++ {
 			require.Less(t, allWorkflows[i-1].CreatedAt, allWorkflows[i].CreatedAt)
@@ -402,39 +381,38 @@ func TestAdminServer(t *testing.T) {
 		afterThird := thirdCreatedAt.Add(time.Millisecond)
 
 		firstThree, err := client.ListWorkflows(context.Background(), AdminListWorkflowsRequest{
-			WorkflowUUIDs: workflowIDs,
+			WorkflowUuids: workflowIds,
 			EndTime:       &thirdCreatedAt,
 		})
 		require.NoError(t, err)
 		require.Len(t, firstThree, 3)
 
 		lastTwo, err := client.ListWorkflows(context.Background(), AdminListWorkflowsRequest{
-			WorkflowUUIDs: workflowIDs,
+			WorkflowUuids: workflowIds,
 			StartTime:     &afterThird,
 		})
 		require.NoError(t, err)
 		require.Len(t, lastTwo, 2)
 
-		filteredIDs := make([]string, 0, len(workflowIDs))
+		filteredIds := make([]string, 0, len(workflowIds))
 		for _, workflow := range append(firstThree, lastTwo...) {
-			filteredIDs = append(filteredIDs, workflow.WorkflowUUID)
+			filteredIds = append(filteredIds, workflow.WorkflowUuid)
 		}
-		assert.ElementsMatch(t, workflowIDs, filteredIDs)
+		assert.ElementsMatch(t, workflowIds, filteredIds)
 	})
 
 	t.Run("WorkflowSteps", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL: databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl: databaseUrl,
 			AppName:     "test-app",
 			AdminServer: true,
 		})
 		require.NoError(t, err)
 
-		// Test workflow with multiple steps - simpler version that won't fail on serialization
-		testWorkflow := func(dbosCtx DBOSContext, input string) (string, error) {
-			// Step 1: Return a string
+		testWorkflow := func(dbosCtx DbosContext, input string) (string, error) {
+
 			stepResult1, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "step1-output", nil
 			}, WithStepName("stringStep"))
@@ -442,7 +420,6 @@ func TestAdminServer(t *testing.T) {
 				return "", err
 			}
 
-			// Step 2: Return a user-defined struct
 			stepResult2, err := Run(dbosCtx, func(ctx context.Context) (TestStepResult, error) {
 				return TestStepResult{
 					Message: "structured data",
@@ -454,12 +431,10 @@ func TestAdminServer(t *testing.T) {
 				return "", err
 			}
 
-			// Step 3: Return an error - but we don't abort on error to test error marshaling
 			_, _ = Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "", fmt.Errorf("deliberate error for testing")
 			}, WithStepName("errorStep"))
 
-			// Step 4: Return empty string (to test empty value handling)
 			stepResult4, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
 				return "", nil
 			}, WithStepName("emptyStep"))
@@ -467,7 +442,6 @@ func TestAdminServer(t *testing.T) {
 				return "", err
 			}
 
-			// Combine results
 			return fmt.Sprintf("workflow complete: %s, struct(%s,%d,%v), %s", stepResult1, stepResult2.Message, stepResult2.Count, stepResult2.Success, stepResult4), nil
 		}
 
@@ -476,30 +450,25 @@ func TestAdminServer(t *testing.T) {
 		err = Launch(ctx)
 		require.NoError(t, err)
 
-		// Ensure cleanup
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
 			}
 		}()
 
-		// Give the server a moment to start
 		time.Sleep(100 * time.Millisecond)
 
 		client := &http.Client{Timeout: 5 * time.Second}
 
-		// Create and run the workflow
 		handle, err := testWF(ctx, "test-input")
 		require.NoError(t, err, "Failed to create workflow")
 
-		// Wait for workflow to complete
 		result, err := handle.GetResult()
 		require.NoError(t, err, "Workflow should complete successfully")
 		t.Logf("Workflow result: %s", result)
 
-		// Call the workflow steps endpoint
-		workflowID := handle.GetWorkflowID()
-		endpoint := fmt.Sprintf("http://localhost:%d/workflows/%s/steps", _DEFAULT_ADMIN_SERVER_PORT, workflowID)
+		workflowId := handle.GetWorkflowId()
+		endpoint := fmt.Sprintf("http://localhost:%d/workflows/%s/steps", _defaultAdminServerPort, workflowId)
 		req, err := http.NewRequest("GET", endpoint, nil)
 		require.NoError(t, err, "Failed to create request")
 
@@ -509,20 +478,16 @@ func TestAdminServer(t *testing.T) {
 
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK from steps endpoint")
 
-		// Decode the response
 		var steps []map[string]any
 		err = json.NewDecoder(resp.Body).Decode(&steps)
 		require.NoError(t, err, "Failed to decode steps response")
 
-		// Should have 4 steps
 		assert.Equal(t, 4, len(steps), "Expected exactly 4 steps")
 
-		// Verify each step's output/error is properly marshaled
 		for i, step := range steps {
 			functionName, ok := step["function_name"].(string)
 			require.True(t, ok, "function_name should be a string for step %d", i)
 
-			// Verify timestamps are present
 			_, hasStartedAt := step["started_at_epoch_ms"]
 			assert.True(t, hasStartedAt, "Step %d should have started_at_epoch_ms field", i)
 			_, hasCompletedAt := step["completed_at_epoch_ms"]
@@ -532,7 +497,7 @@ func TestAdminServer(t *testing.T) {
 
 			switch functionName {
 			case "stringStep":
-				// String output should be marshaled as JSON string
+
 				outputStr, ok := step["output"].(string)
 				require.True(t, ok, "String step output should be a JSON string")
 
@@ -544,7 +509,7 @@ func TestAdminServer(t *testing.T) {
 				assert.Nil(t, step["error"], "String step should have no error")
 
 			case "structStep":
-				// Struct output should be marshaled as JSON string
+
 				outputStr, ok := step["output"].(string)
 				require.True(t, ok, "Struct step output should be a JSON string")
 
@@ -560,7 +525,7 @@ func TestAdminServer(t *testing.T) {
 				assert.Nil(t, step["error"], "Struct step should have no error")
 
 			case "errorStep":
-				// Error step should have error marshaled as JSON string
+
 				errorStr, ok := step["error"].(string)
 				require.True(t, ok, "Error step error should be a JSON string")
 
@@ -570,7 +535,7 @@ func TestAdminServer(t *testing.T) {
 				assert.Contains(t, unmarshaledError, "deliberate error for testing", "Error message should be preserved")
 
 			case "emptyStep":
-				// Empty string is returned as an empty JSON string
+
 				output := step["output"]
 				require.Equal(t, "\"\"", output, "Empty step output should be an empty string")
 				assert.Nil(t, step["error"], "Empty step should have no error")
@@ -579,31 +544,28 @@ func TestAdminServer(t *testing.T) {
 	})
 
 	t.Run("TestDeactivate", func(t *testing.T) {
-		databaseURL := backendDatabaseURL(t)
-		resetTestDatabase(t, databaseURL)
-		ctx, err := NewDBOSContext(context.Background(), Config{
-			DatabaseURL:     databaseURL,
+		databaseUrl := backendDatabaseUrl(t)
+		resetTestDatabase(t, databaseUrl)
+		ctx, err := NewDbosContext(context.Background(), Config{
+			DatabaseUrl:     databaseUrl,
 			AppName:         "test-app",
 			AdminServer:     true,
-			AdminServerPort: _DEFAULT_ADMIN_SERVER_PORT,
+			AdminServerPort: _defaultAdminServerPort,
 		})
 		require.NoError(t, err)
 
-		// Track scheduled workflow executions
 		var executionCount atomic.Int32
 
-		// Register a scheduled workflow that runs every second
-		NewWorkflow(ctx, func(dbosCtx DBOSContext, scheduledTime time.Time) (string, error) {
+		NewWorkflow(ctx, func(dbosCtx DbosContext, scheduledTime time.Time) (string, error) {
 			executionCount.Add(1)
 			return fmt.Sprintf("executed at %v", scheduledTime), nil
-		}, WithSchedule("* * * * * *")) // Every second
+		}, WithSchedule("* * * * * *"))
 
 		err = Launch(ctx)
 		require.NoError(t, err)
 
 		client := &http.Client{Timeout: 5 * time.Second}
 
-		// Ensure cleanup
 		defer func() {
 			if ctx != nil {
 				Shutdown(ctx, 1*time.Minute)
@@ -613,13 +575,11 @@ func TestAdminServer(t *testing.T) {
 			}
 		}()
 
-		// Wait for 2-3 executions to verify scheduler is running
 		require.Eventually(t, func() bool {
 			return executionCount.Load() >= 2
 		}, 10*time.Second, 100*time.Millisecond, "Expected at least 2 scheduled workflow executions")
 
-		// Call deactivate endpoint
-		endpoint := fmt.Sprintf("http://localhost:%d/%s", _DEFAULT_ADMIN_SERVER_PORT, strings.TrimPrefix(_DEACTIVATE_PATTERN, "GET /"))
+		endpoint := fmt.Sprintf("http://localhost:%d/%s", _defaultAdminServerPort, strings.TrimPrefix(_deactivatePattern, "GET /"))
 		req, err := http.NewRequest("GET", endpoint, nil)
 		require.NoError(t, err, "Failed to create deactivate request")
 
@@ -627,19 +587,15 @@ func TestAdminServer(t *testing.T) {
 		require.NoError(t, err, "Failed to call deactivate endpoint")
 		defer resp.Body.Close()
 
-		// Verify endpoint returned 200 OK
 		assert.Equal(t, http.StatusOK, resp.StatusCode, "Expected 200 OK from deactivate endpoint")
 
-		// Verify response body
 		body, err := io.ReadAll(resp.Body)
 		require.NoError(t, err, "Failed to read response body")
 		assert.Equal(t, "deactivated", string(body), "Expected 'deactivated' response body")
 
-		// Record count after deactivate and wait
 		countAfterDeactivate := executionCount.Load()
-		time.Sleep(4 * time.Second) // Wait long enough for multiple executions if scheduler was still running
+		time.Sleep(4 * time.Second)
 
-		// Verify no new executions occurred
 		finalCount := executionCount.Load()
 		assert.LessOrEqual(t, finalCount, countAfterDeactivate+1,
 			"Expected no new scheduled workflows after deactivate (had %d before, %d after)",

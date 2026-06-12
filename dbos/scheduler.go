@@ -9,10 +9,6 @@ import (
 	"github.com/robfig/cron/v3"
 )
 
-/*******************************/
-/******* SCHEDULE TYPES ********/
-/*******************************/
-
 type ScheduleStatus string
 
 const (
@@ -21,7 +17,7 @@ const (
 )
 
 type WorkflowSchedule struct {
-	ScheduleID        string         `json:"schedule_id"`
+	ScheduleId        string         `json:"schedule_id"`
 	ScheduleName      string         `json:"schedule_name"`
 	WorkflowName      string         `json:"workflow_name"`
 	WorkflowClassName string         `json:"workflow_class_name,omitempty"`
@@ -34,9 +30,8 @@ type WorkflowSchedule struct {
 	QueueName         string         `json:"queue_name,omitempty"`
 }
 
-// ScheduledWorkflowInput is the input type that DB-backed scheduled workflow
 // functions must accept. ScheduledTime is the cron tick time; Context carries
-// the user-defined value attached to the schedule (nil if none).
+
 type ScheduledWorkflowInput struct {
 	ScheduledTime time.Time `json:"scheduled_time"`
 	Context       any       `json:"context,omitempty"`
@@ -52,8 +47,8 @@ type ApplySchedulesRequest struct {
 }
 
 const (
-	_DEFAULT_SCHEDULE_POLL_INTERVAL = 30 * time.Second
-	_SCHEDULE_MAX_JITTER            = 10 * time.Second
+	_defaultSchedulePollInterval = 30 * time.Second
+	_scheduleMaxJitter           = 10 * time.Second
 )
 
 func newScheduleCronParser() cron.Parser {
@@ -82,43 +77,34 @@ func jitterCap(sched cron.Schedule, scheduledTime time.Time) time.Duration {
 	if interval <= 0 {
 		return 0
 	}
-	return min(interval/10, _SCHEDULE_MAX_JITTER)
+	return min(interval/10, _scheduleMaxJitter)
 }
 
-// ScheduledWorkflowFunc is the signature DB-backed scheduled workflow
 // functions must conform to. Each tick the scheduler invokes the function
-// with a ScheduledWorkflowInput carrying the cron tick time and the
-// user-defined context attached to the schedule.
-type ScheduledWorkflowFunc func(ctx DBOSContext, input ScheduledWorkflowInput) (any, error)
 
-/************************************/
-/******* SCHEDULE MANAGEMENT ********/
-/************************************/
+type ScheduledWorkflowFunc func(ctx DbosContext, input ScheduledWorkflowInput) (any, error)
 
-// manage AddFunc to the cron
 func (c *dbosContext) addScheduleCronEntry(
 	scheduleName, cronSchedule string,
 	fn ScheduledWorkflowFunc,
 	scheduleContext any,
 ) (cron.EntryID, error) {
-	// The closure runs in a cron-managed goroutine after AddFunc returns. Use
+
 	// an atomic to publish the entryID to that goroutine without a data race.
-	var entryIDAtomic atomic.Int64
+	var entryIdAtomic atomic.Int64
 	assigned, err := c.getWorkflowScheduler().AddFunc(cronSchedule, func() {
 		if !c.launched.Load() {
 			return
 		}
-		entry := c.getWorkflowScheduler().Entry(cron.EntryID(entryIDAtomic.Load()))
+		entry := c.getWorkflowScheduler().Entry(cron.EntryID(entryIdAtomic.Load()))
 		scheduledTime := entry.Prev
 		if scheduledTime.IsZero() {
 			scheduledTime = entry.Next
 		}
 
-		// Jitter up to 10% of the interval, capped at _SCHEDULE_MAX_JITTER, to
-		// spread load when many executors share the same schedule.
 		if cap := jitterCap(entry.Schedule, scheduledTime); cap > 0 {
 			select {
-			case <-time.After(rand.N(cap)): // #nosec G404 -- jitter is non-security; weak RNG is fine
+			case <-time.After(rand.N(cap)):
 			case <-c.Done():
 				return
 			}
@@ -132,12 +118,10 @@ func (c *dbosContext) addScheduleCronEntry(
 	if err != nil {
 		return 0, err
 	}
-	entryIDAtomic.Store(int64(assigned))
+	entryIdAtomic.Store(int64(assigned))
 	return assigned, nil
 }
 
-// wraps the registry's type-erased workflow wrapper into a ScheduledWorkflowFunc
-// that also checks if the schedule already fired for this interval
 func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledWorkflowFunc, error) {
 	entry, ok := c.workflowRegistry.Load(schedule.WorkflowName)
 	if !ok {
@@ -145,15 +129,14 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 	}
 	wrappedFn := entry.wrappedFunction
 	scheduleName := schedule.ScheduleName
-	return func(ctx DBOSContext, input ScheduledWorkflowInput) (any, error) {
-		wfID := fmt.Sprintf("sched-%s-%s", scheduleName, input.ScheduledTime.Format(time.RFC3339))
+	return func(ctx DbosContext, input ScheduledWorkflowInput) (any, error) {
+		wfId := fmt.Sprintf("sched-%s-%s", scheduleName, input.ScheduledTime.Format(time.RFC3339))
 
-		// Skip if this tick's workflow already exists. Another executor may have enqueued it.
 		existing, err := retryWithResult(c, func() ([]WorkflowStatus, error) {
-			return c.kernel.listWorkflows(c, listWorkflowsDBInput{workflowIDs: []string{wfID}})
+			return c.kernel.listWorkflows(c, listWorkflowsDBInput{workflowIds: []string{wfId}})
 		}, withRetrierLogger(c.logger))
 		if err != nil {
-			c.logger.Error("failed to check existing scheduled workflow", "schedule", scheduleName, "workflow_id", wfID, "error", err)
+			c.logger.Error("failed to check existing scheduled workflow", "schedule", scheduleName, "workflow_id", wfId, "error", err)
 			return nil, err
 		}
 		if len(existing) > 0 {
@@ -161,7 +144,6 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 			return nil, nil
 		}
 
-		// The registry wrapper expects encoded inputs, so encode the ScheduledWorkflowInput, using the DBOS Context serializer, before invoking it.
 		ser := resolveEncoder(ctx)
 		encodedInput, err := ser.Encode(input)
 		if err != nil {
@@ -169,7 +151,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 		}
 
 		opts := []WorkflowOption{
-			withWorkflowID(wfID),
+			withWorkflowId(wfId),
 			withWorkflowName(entry.FQN),
 		}
 		// Scheduled workflows always run against the latest registered application version, so a stale executor does not pick them up after a new deploy.
@@ -177,7 +159,7 @@ func (c *dbosContext) buildDBScheduleFunc(schedule WorkflowSchedule) (ScheduledW
 			return c.kernel.getLatestApplicationVersion(c)
 		}, withRetrierLogger(c.logger))
 		if err != nil {
-			c.logger.Error("failed to fetch latest application version for scheduled workflow", "schedule", scheduleName, "workflow_id", wfID, "error", err)
+			c.logger.Error("failed to fetch latest application version for scheduled workflow", "schedule", scheduleName, "workflow_id", wfId, "error", err)
 		} else if latest != nil {
 			opts = append(opts, WithApplicationVersion(latest.Name))
 		}
@@ -205,48 +187,46 @@ func (c *dbosContext) addDBScheduleToScheduler(schedule WorkflowSchedule) {
 		spec = "CRON_TZ=" + schedule.CronTimezone + " " + spec
 	}
 
-	entryID, err := c.addScheduleCronEntry(schedule.ScheduleName, spec, fn, schedule.Context)
+	entryId, err := c.addScheduleCronEntry(schedule.ScheduleName, spec, fn, schedule.Context)
 	if err != nil {
 		c.logger.Error("failed to add schedule to scheduler", "schedule", schedule.ScheduleName, "error", err)
 		return
 	}
 
 	c.scheduleMu.Lock()
-	c.scheduleEntryIDs[schedule.ScheduleName] = entryID
-	c.scheduleInstalledIDs[schedule.ScheduleName] = schedule.ScheduleID
+	c.scheduleEntryIds[schedule.ScheduleName] = entryId
+	c.scheduleInstalledIds[schedule.ScheduleName] = schedule.ScheduleId
 	c.scheduleMu.Unlock()
 	c.logger.Info("Added schedule to scheduler", "schedule", schedule.ScheduleName, "workflow", schedule.WorkflowName)
 }
 
-func (c *dbosContext) installedScheduleEntryID(scheduleName string) (cron.EntryID, bool) {
+func (c *dbosContext) installedScheduleEntryId(scheduleName string) (cron.EntryID, bool) {
 	c.scheduleMu.Lock()
 	defer c.scheduleMu.Unlock()
-	id, ok := c.scheduleEntryIDs[scheduleName]
+	id, ok := c.scheduleEntryIds[scheduleName]
 	return id, ok
 }
 
 func (c *dbosContext) removeDBScheduleFromScheduler(scheduleName string) {
 	c.scheduleMu.Lock()
-	entryID, exists := c.scheduleEntryIDs[scheduleName]
+	entryId, exists := c.scheduleEntryIds[scheduleName]
 	if exists {
-		delete(c.scheduleEntryIDs, scheduleName)
-		delete(c.scheduleInstalledIDs, scheduleName)
+		delete(c.scheduleEntryIds, scheduleName)
+		delete(c.scheduleInstalledIds, scheduleName)
 	}
 	c.scheduleMu.Unlock()
 	if !exists {
 		c.logger.Warn("attempted to remove non-existent schedule from scheduler", "schedule", scheduleName)
 		return
 	}
-	c.getWorkflowScheduler().Remove(entryID)
+	c.getWorkflowScheduler().Remove(entryId)
 	c.logger.Info("Removed schedule from scheduler", "schedule", scheduleName)
 }
 
-// Periodically lists schedules from the system database and reconciles the cron scheduler's entries
-// New active schedules are added (with optional automatic backfill), paused or deleted schedules are removed.
 func (c *dbosContext) runScheduleReconciler() {
 	interval := c.config.SchedulerPollingInterval
 	if interval <= 0 {
-		interval = _DEFAULT_SCHEDULE_POLL_INTERVAL
+		interval = _defaultSchedulePollInterval
 	}
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -274,18 +254,16 @@ func (c *dbosContext) reconcileSchedules() {
 		current[schedules[i].ScheduleName] = &schedules[i]
 	}
 
-	// Remove entries that were deleted, paused, or replaced (re-applied with a
-	// new ScheduleID — e.g. a changed cron spec, queue, context, or timezone).
 	// Collect names first to avoid mutating the map while iterating.
 	var toRemove []string
 	c.scheduleMu.Lock()
-	for name := range c.scheduleEntryIDs {
+	for name := range c.scheduleEntryIds {
 		sched, ok := current[name]
 		if !ok || sched.Status != ScheduleStatusActive {
 			toRemove = append(toRemove, name)
 			continue
 		}
-		if c.scheduleInstalledIDs[name] != sched.ScheduleID {
+		if c.scheduleInstalledIds[name] != sched.ScheduleId {
 			toRemove = append(toRemove, name)
 		}
 	}
@@ -294,13 +272,12 @@ func (c *dbosContext) reconcileSchedules() {
 		c.removeDBScheduleFromScheduler(name)
 	}
 
-	// Add new active schedules.
 	for name, sched := range current {
 		if sched.Status != ScheduleStatusActive {
 			continue
 		}
 		c.scheduleMu.Lock()
-		_, exists := c.scheduleEntryIDs[name]
+		_, exists := c.scheduleEntryIds[name]
 		c.scheduleMu.Unlock()
 		if exists {
 			continue
