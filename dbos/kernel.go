@@ -20,7 +20,6 @@ import (
 	"github.com/dbos-inc/dbos-transact-golang/dbos/internal/db"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -372,9 +371,9 @@ func cleanupInvalidIndexes(ctx context.Context, pool *pgxpool.Pool, schema strin
 	return nil
 }
 
-func writeMigrationVersion(ctx context.Context, exec interface {
-	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
-}, schema string, version int64, lastApplied int64) error {
+// exec is either the pool or an open transaction, depending on whether the
+// caller can apply the migration and its version bump atomically.
+func writeMigrationVersion(ctx context.Context, exec db.DBTX, schema string, version int64, lastApplied int64) error {
 	sanitizedSchema := pgx.Identifier{schema}.Sanitize()
 	if lastApplied == 0 {
 		insertQuery := fmt.Sprintf("INSERT INTO %s.%s (version) VALUES ($1)", sanitizedSchema, _dbosMigrationTable)
@@ -1947,9 +1946,6 @@ type getStepAggregatesDBInput struct {
 	tx                  pgx.Tx
 }
 
-// SUCCESS, otherwise ERROR. operation_outputs has no explicit status column.
-const stepStatusExpr = "(CASE WHEN error IS NULL THEN 'SUCCESS' ELSE 'ERROR' END)"
-
 func (k *Kernel) getStepAggregates(ctx context.Context, input getStepAggregatesDBInput) ([]StepAggregateRow, error) {
 	if input.timeBucketSizeMs < 0 {
 		return nil, errors.New("timeBucketSizeMs must be > 0")
@@ -2775,85 +2771,6 @@ func (k *Kernel) readStream(ctx context.Context, input readStreamDBInput) ([]str
 	return entries, closed, nil
 }
 
-type eventRecord struct {
-	Key           string
-	Value         string
-	Serialization string
-}
-
-func (k *Kernel) getAllEvents(ctx context.Context, workflowId string) ([]eventRecord, error) {
-	rows, err := k.queries.GetAllEvents(ctx, workflowId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query workflow events: %w", err)
-	}
-	events := make([]eventRecord, 0, len(rows))
-	for _, r := range rows {
-		rec := eventRecord{Key: r.Key, Value: r.Value}
-		if r.Serialization != nil {
-			rec.Serialization = *r.Serialization
-		}
-		events = append(events, rec)
-	}
-	return events, nil
-}
-
-type notificationRecord struct {
-	Topic            *string
-	Message          string
-	Serialization    string
-	CreatedAtEpochMs int64
-	Consumed         bool
-}
-
-func (k *Kernel) getAllNotifications(ctx context.Context, workflowId string) ([]notificationRecord, error) {
-	rows, err := k.queries.GetAllNotifications(ctx, workflowId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query notifications: %w", err)
-	}
-	results := make([]notificationRecord, 0, len(rows))
-	for _, r := range rows {
-		rec := notificationRecord{
-			Topic:            r.Topic,
-			Message:          r.Message,
-			CreatedAtEpochMs: r.CreatedAtEpochMs,
-			Consumed:         r.Consumed,
-		}
-		if rec.Topic != nil && *rec.Topic == _Dbos_NULL_TOPIC {
-			rec.Topic = nil
-		}
-		if r.Serialization != nil {
-			rec.Serialization = *r.Serialization
-		}
-		results = append(results, rec)
-	}
-	return results, nil
-}
-
-type streamRecord struct {
-	Key           string
-	Value         string
-	Serialization string
-}
-
-func (k *Kernel) getAllStreamEntries(ctx context.Context, workflowId string) ([]streamRecord, error) {
-	rows, err := k.queries.GetAllStreamEntries(ctx, workflowId)
-	if err != nil {
-		return nil, fmt.Errorf("failed to query streams: %w", err)
-	}
-	records := make([]streamRecord, 0, len(rows))
-	for _, r := range rows {
-		if r.Value == _dbosStreamClosedSentinel {
-			continue
-		}
-		rec := streamRecord{Key: r.Key, Value: r.Value}
-		if r.Serialization != nil {
-			rec.Serialization = *r.Serialization
-		}
-		records = append(records, rec)
-	}
-	return records, nil
-}
-
 type setWorkflowDelayDBInput struct {
 	workflowId string
 	delayUntil time.Time
@@ -3565,37 +3482,6 @@ func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) er
 	return nil
 }
 
-func (k *Kernel) resetSystemDB(ctx context.Context) error {
-
-	config := k.pool.Config()
-	if config == nil || config.ConnConfig == nil {
-		return fmt.Errorf("failed to get pool configuration")
-	}
-
-	dbName := config.ConnConfig.Database
-	if dbName == "" {
-		return fmt.Errorf("database name not found in pool configuration")
-	}
-
-	k.pool.Close()
-
-	postgresConfig := config.ConnConfig.Copy()
-	postgresConfig.Database = "postgres"
-
-	conn, err := pgx.ConnectConfig(ctx, postgresConfig)
-	if err != nil {
-		return err
-	}
-	defer conn.Close(ctx)
-
-	err = dropDatabaseIfExists(ctx, conn, dbName)
-	if err != nil {
-		return err
-	}
-
-	return nil
-}
-
 func backoffWithJitter(retryAttempt int) time.Duration {
 	exp := float64(_dbConnectionRetryBaseDelay) * math.Pow(_dbConnectionRetryFactor, float64(retryAttempt))
 
@@ -3655,12 +3541,6 @@ type retryOption func(*retryConfig)
 func withRetrierLogger(logger *slog.Logger) retryOption {
 	return func(c *retryConfig) {
 		c.logger = logger
-	}
-}
-
-func withRetryCondition(fns ...func(error, *slog.Logger) bool) retryOption {
-	return func(c *retryConfig) {
-		c.retryConditionChain = append(c.retryConditionChain, fns...)
 	}
 }
 

@@ -3628,13 +3628,6 @@ func TestWorkflowCancel(t *testing.T) {
 	})
 }
 
-var cancelAllBeforeBlockEvent = NewEvent()
-
-func cancelAllBeforeBlockingWorkflow(ctx Context, input string) (string, error) {
-	cancelAllBeforeBlockEvent.Wait()
-	return input, nil
-}
-
 func gcTestStep(_ context.Context, x int) (int, error) {
 	return x, nil
 }

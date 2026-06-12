@@ -19,9 +19,3 @@ UPDATE notifications
 SET consumed = true
 WHERE message_uuid = (SELECT message_uuid FROM oldest_entry)
 RETURNING message, serialization;
-
--- name: GetAllNotifications :many
-SELECT topic, message, serialization, created_at_epoch_ms, consumed
-FROM notifications
-WHERE destination_uuid = $1
-ORDER BY created_at_epoch_ms;

@@ -28,38 +28,6 @@ func (q *Queries) CheckStreamClosed(ctx context.Context, arg CheckStreamClosedPa
 	return column_1, err
 }
 
-const getAllStreamEntries = `-- name: GetAllStreamEntries :many
-SELECT key, value, serialization FROM streams
-WHERE workflow_uuid = $1
-ORDER BY key, "offset"
-`
-
-type GetAllStreamEntriesRow struct {
-	Key           string
-	Value         string
-	Serialization *string
-}
-
-func (q *Queries) GetAllStreamEntries(ctx context.Context, workflowUuid string) ([]GetAllStreamEntriesRow, error) {
-	rows, err := q.db.Query(ctx, getAllStreamEntries, workflowUuid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAllStreamEntriesRow{}
-	for rows.Next() {
-		var i GetAllStreamEntriesRow
-		if err := rows.Scan(&i.Key, &i.Value, &i.Serialization); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const insertStreamEntry = `-- name: InsertStreamEntry :exec
 INSERT INTO streams (workflow_uuid, key, value, "offset", function_id, serialization)
 SELECT $1, $2, $3::text, COALESCE(

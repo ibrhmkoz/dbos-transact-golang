@@ -9,37 +9,6 @@ import (
 	"context"
 )
 
-const getAllEvents = `-- name: GetAllEvents :many
-SELECT key, value, serialization FROM workflow_events
-WHERE workflow_uuid = $1
-`
-
-type GetAllEventsRow struct {
-	Key           string
-	Value         string
-	Serialization *string
-}
-
-func (q *Queries) GetAllEvents(ctx context.Context, workflowUuid string) ([]GetAllEventsRow, error) {
-	rows, err := q.db.Query(ctx, getAllEvents, workflowUuid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAllEventsRow{}
-	for rows.Next() {
-		var i GetAllEventsRow
-		if err := rows.Scan(&i.Key, &i.Value, &i.Serialization); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const getWorkflowEvent = `-- name: GetWorkflowEvent :one
 SELECT value, serialization FROM workflow_events
 WHERE workflow_uuid = $1 AND key = $2

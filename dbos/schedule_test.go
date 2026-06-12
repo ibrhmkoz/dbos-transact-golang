@@ -248,10 +248,6 @@ func testWorkflowForSchedule(ctx Context, input ScheduledWorkflowInput) (any, er
 	return "completed", nil
 }
 
-func testWorkflowForScheduleCustomName(ctx Context, input ScheduledWorkflowInput) (any, error) {
-	return "completed", nil
-}
-
 var scheduledInputCapture sync.Map
 
 func testCapturingScheduledWorkflow(ctx Context, input ScheduledWorkflowInput) (any, error) {

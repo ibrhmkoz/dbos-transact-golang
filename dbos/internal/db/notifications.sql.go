@@ -39,47 +39,6 @@ func (q *Queries) ConsumeOldestMessage(ctx context.Context, arg ConsumeOldestMes
 	return i, err
 }
 
-const getAllNotifications = `-- name: GetAllNotifications :many
-SELECT topic, message, serialization, created_at_epoch_ms, consumed
-FROM notifications
-WHERE destination_uuid = $1
-ORDER BY created_at_epoch_ms
-`
-
-type GetAllNotificationsRow struct {
-	Topic            *string
-	Message          string
-	Serialization    *string
-	CreatedAtEpochMs int64
-	Consumed         bool
-}
-
-func (q *Queries) GetAllNotifications(ctx context.Context, destinationUuid string) ([]GetAllNotificationsRow, error) {
-	rows, err := q.db.Query(ctx, getAllNotifications, destinationUuid)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	items := []GetAllNotificationsRow{}
-	for rows.Next() {
-		var i GetAllNotificationsRow
-		if err := rows.Scan(
-			&i.Topic,
-			&i.Message,
-			&i.Serialization,
-			&i.CreatedAtEpochMs,
-			&i.Consumed,
-		); err != nil {
-			return nil, err
-		}
-		items = append(items, i)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, err
-	}
-	return items, nil
-}
-
 const hasUnconsumedMessage = `-- name: HasUnconsumedMessage :one
 SELECT EXISTS (
     SELECT 1 FROM notifications

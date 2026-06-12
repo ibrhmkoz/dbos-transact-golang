@@ -13,8 +13,3 @@ SELECT @workflow_uuid, @key, @value::text, COALESCE(
 SELECT value, "offset", serialization FROM streams
 WHERE workflow_uuid = $1 AND key = $2 AND "offset" >= $3
 ORDER BY "offset" ASC;
-
--- name: GetAllStreamEntries :many
-SELECT key, value, serialization FROM streams
-WHERE workflow_uuid = $1
-ORDER BY key, "offset";
