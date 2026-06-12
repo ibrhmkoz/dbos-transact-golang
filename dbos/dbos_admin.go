@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -270,7 +271,7 @@ func (c *dbosAdmin) Enqueue(queueName, workflowName string, input any, opts ...E
 
 	uncancellableCtx := WithoutCancel(dbosCtx)
 	for {
-		tx, err := dbosCtx.kernel.pool.BeginTx(uncancellableCtx, TxOptions{})
+		tx, err := dbosCtx.kernel.pool.BeginTx(uncancellableCtx, pgx.TxOptions{})
 		if err != nil {
 			return nil, newWorkflowExecutionError(workflowId, fmt.Errorf("failed to begin transaction: %v", err))
 		}
@@ -545,7 +546,7 @@ func (c *dbosAdmin) ApplySchedules(schedules []AdminScheduleInput) error {
 
 	dbosCtx := c.dbosCtx
 
-	tx, err := dbosCtx.kernel.pool.BeginTx(dbosCtx, TxOptions{})
+	tx, err := dbosCtx.kernel.pool.BeginTx(dbosCtx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}

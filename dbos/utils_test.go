@@ -332,7 +332,7 @@ func queueEntriesAreCleanedUp(ctx DbosContext) bool {
 	}
 	sdb := exec.kernel
 	for range maxTries {
-		tx, err := sdb.pool.BeginTx(ctx, TxOptions{})
+		tx, err := sdb.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return false
 		}

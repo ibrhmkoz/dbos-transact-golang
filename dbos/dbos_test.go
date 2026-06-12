@@ -166,44 +166,6 @@ func TestConfig(t *testing.T) {
 		})
 	})
 
-	t.Run("ConductorExecutorMetadata", func(t *testing.T) {
-		t.Run("AcceptsJSONSerializable", func(t *testing.T) {
-			ctx, err := NewDbosContext(context.Background(), Config{
-				DatabaseUrl: databaseUrl,
-				AppName:     "test-conductor-metadata-valid",
-				ConductorExecutorMetadata: map[string]any{
-					"region":   "us-east-1",
-					"instance": 42,
-				},
-			})
-			require.NoError(t, err)
-			defer func() {
-				if ctx != nil {
-					Shutdown(ctx, 1*time.Minute)
-				}
-			}()
-
-			dbosCtx, ok := ctx.(*dbosContext)
-			require.True(t, ok)
-			assert.Equal(t, map[string]any{
-				"region":   "us-east-1",
-				"instance": 42,
-			}, dbosCtx.config.ConductorExecutorMetadata)
-		})
-
-		t.Run("RejectsNonSerializable", func(t *testing.T) {
-			_, err := NewDbosContext(context.Background(), Config{
-				DatabaseUrl: databaseUrl,
-				AppName:     "test-conductor-metadata-invalid",
-				ConductorExecutorMetadata: map[string]any{
-					"bad": make(chan int),
-				},
-			})
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), "conductorExecutorMetadata must be JSON-serializable")
-		})
-	})
-
 	t.Run("SystemDBMigration", func(t *testing.T) {
 		t.Setenv("DBOS__APPVERSION", "v1.0.0")
 		t.Setenv("DBOS__APPID", "test-migration")
@@ -374,7 +336,7 @@ func TestConfig(t *testing.T) {
 			require.NoError(t, err)
 			assert.True(t, exists)
 
-			poolConnStr := PgxPool(Kernel.pool).Config().ConnString()
+			poolConnStr := Kernel.pool.Config().ConnString()
 			maskedConnStr, err := maskPassword(poolConnStr)
 			require.NoError(t, err)
 			if actualPassword == "" {
@@ -722,12 +684,12 @@ func TestCustomPool(t *testing.T) {
 		require.True(t, ok)
 
 		Kernel := dbosCtx.kernel
-		assert.Same(t, pool, PgxPool(Kernel.pool), "The pool in dbosContext should be the same as the custom pool provided")
+		assert.Same(t, pool, Kernel.pool, "The pool in dbosContext should be the same as the custom pool provided")
 
-		stats := PgxPool(Kernel.pool).Stat()
+		stats := Kernel.pool.Stat()
 		assert.Equal(t, int32(10), stats.MaxConns(), "MaxConns should match custom pool config")
 
-		sysdbConfig := PgxPool(Kernel.pool).Config()
+		sysdbConfig := Kernel.pool.Config()
 		assert.Equal(t, int32(10), sysdbConfig.MaxConns)
 		assert.Equal(t, int32(5), sysdbConfig.MinConns)
 		assert.Equal(t, 2*time.Hour, sysdbConfig.MaxConnLifetime)
@@ -863,7 +825,7 @@ func TestCustomPool(t *testing.T) {
 		kernel.launch(ctx)
 
 		require.Eventually(t, func() bool {
-			conn, err := PgxPool(kernel.pool).Acquire(ctx)
+			conn, err := kernel.pool.Acquire(ctx)
 			require.NoError(t, err)
 			defer conn.Release()
 			err = conn.Ping(ctx)

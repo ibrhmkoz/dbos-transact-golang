@@ -4,7 +4,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -16,7 +15,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/robfig/cron/v3"
 )
@@ -24,26 +22,22 @@ import (
 const (
 	_defaultAdminServerPort = 3001
 	_defaultSystemDbSchema  = "dbos"
-	_dbosDomain             = "cloud.dbos.dev"
 )
 
 type Config struct {
-	AppName                   string
-	DatabaseUrl               string
-	SystemDBPool              *pgxpool.Pool
-	Kernel                    *Kernel
-	DatabaseSchema            string
-	Logger                    *slog.Logger
-	AdminServer               bool
-	AdminServerPort           int
-	ConductorUrl              string
-	ConductorApiKey           string
-	ConductorExecutorMetadata map[string]any // Metadata associated with this executor that may be used to identify it on the Conductor dashboard. Must be JSON-serializable.
-	ApplicationVersion        string
-	ExecutorId                string
-	EnablePatching            bool
-	Serializer                Serializer[any]
-	SchedulerPollingInterval  time.Duration
+	AppName                  string
+	DatabaseUrl              string
+	SystemDBPool             *pgxpool.Pool
+	Kernel                   *Kernel
+	DatabaseSchema           string
+	Logger                   *slog.Logger
+	AdminServer              bool
+	AdminServerPort          int
+	ApplicationVersion       string
+	ExecutorId               string
+	EnablePatching           bool
+	Serializer               Serializer[any]
+	SchedulerPollingInterval time.Duration
 }
 
 func processConfig(inputConfig *Config) (*Config, error) {
@@ -67,28 +61,19 @@ func processConfig(inputConfig *Config) (*Config, error) {
 	}
 
 	dbosConfig := &Config{
-		DatabaseUrl:               inputConfig.DatabaseUrl,
-		AppName:                   inputConfig.AppName,
-		DatabaseSchema:            inputConfig.DatabaseSchema,
-		Logger:                    inputConfig.Logger,
-		AdminServer:               inputConfig.AdminServer,
-		AdminServerPort:           inputConfig.AdminServerPort,
-		ConductorUrl:              inputConfig.ConductorUrl,
-		ConductorApiKey:           inputConfig.ConductorApiKey,
-		ConductorExecutorMetadata: inputConfig.ConductorExecutorMetadata,
-		ApplicationVersion:        inputConfig.ApplicationVersion,
-		ExecutorId:                inputConfig.ExecutorId,
-		SystemDBPool:              inputConfig.SystemDBPool,
-		Kernel:                    inputConfig.Kernel,
-		EnablePatching:            inputConfig.EnablePatching,
-		Serializer:                inputConfig.Serializer,
-		SchedulerPollingInterval:  inputConfig.SchedulerPollingInterval,
-	}
-
-	if dbosConfig.ConductorExecutorMetadata != nil {
-		if _, err := json.Marshal(dbosConfig.ConductorExecutorMetadata); err != nil {
-			return nil, fmt.Errorf("conductorExecutorMetadata must be JSON-serializable: %w", err)
-		}
+		DatabaseUrl:              inputConfig.DatabaseUrl,
+		AppName:                  inputConfig.AppName,
+		DatabaseSchema:           inputConfig.DatabaseSchema,
+		Logger:                   inputConfig.Logger,
+		AdminServer:              inputConfig.AdminServer,
+		AdminServerPort:          inputConfig.AdminServerPort,
+		ApplicationVersion:       inputConfig.ApplicationVersion,
+		ExecutorId:               inputConfig.ExecutorId,
+		SystemDBPool:             inputConfig.SystemDBPool,
+		Kernel:                   inputConfig.Kernel,
+		EnablePatching:           inputConfig.EnablePatching,
+		Serializer:               inputConfig.Serializer,
+		SchedulerPollingInterval: inputConfig.SchedulerPollingInterval,
 	}
 
 	if dbosConfig.Logger == nil {
@@ -118,8 +103,6 @@ func processConfig(inputConfig *Config) (*Config, error) {
 
 	return dbosConfig, nil
 }
-
-type AlertHandler func(name string, message string, metadata map[string]string)
 
 type DbosContext interface {
 	context.Context
@@ -155,8 +138,6 @@ type DbosContext interface {
 	WithValue(key, val any) DbosContext
 	WithCancel() (DbosContext, context.CancelFunc)
 	WithCancelCause() (DbosContext, context.CancelCauseFunc)
-
-	SetAlertHandler(handler AlertHandler)
 }
 
 type dbosContext struct {
@@ -171,8 +152,6 @@ type dbosContext struct {
 	config       *Config
 
 	worker *worker
-
-	conductor *conductor
 
 	applicationVersion string
 	applicationId      string
@@ -195,35 +174,10 @@ type dbosContext struct {
 	logger *slog.Logger
 
 	serializer Serializer[any]
-
-	alertHandler AlertHandler
-}
-
-// Must be called before Launch(). Only one handler is allowed per context.
-func (c *dbosContext) SetAlertHandler(handler AlertHandler) {
-	if handler == nil {
-		panic("alert handler cannot be nil")
-	}
-	if c.launched.Load() {
-		panic("cannot set alert handler after Launch()")
-	}
-	if c.alertHandler != nil {
-		panic("alert handler is already registered")
-	}
-	c.alertHandler = handler
-}
-
-// Must be called before Launch(). Only one handler is allowed per context.
-func SetAlertHandler(ctx DbosContext, handler AlertHandler) {
-	if ctx == nil {
-		panic("ctx cannot be nil")
-	}
-	ctx.SetAlertHandler(handler)
 }
 
 func (c *dbosContext) ClearRegistries() {
 	c.workflowRegistry.Clear()
-	c.alertHandler = nil
 }
 
 func (c *dbosContext) Deadline() (deadline time.Time, ok bool) {
@@ -498,29 +452,6 @@ func NewDbosContext(ctx context.Context, inputConfig Config) (DbosContext, error
 	// This allows a client to debounce workflow and the server side to run them, even without knowing the actual workflow types
 	registerWorkflow(initExecutor, internalDebouncerWF[any, any])
 
-	if config.ConductorApiKey != "" {
-		initExecutor.executorId = uuid.NewString()
-		if config.ConductorUrl == "" {
-			dbosDomain := os.Getenv("DBOS_DOMAIN")
-			if dbosDomain == "" {
-				dbosDomain = _dbosDomain
-			}
-			config.ConductorUrl = fmt.Sprintf("wss://%s/conductor/v1alpha1", dbosDomain)
-		}
-		conductorConfig := conductorConfig{
-			url:              config.ConductorUrl,
-			apiKey:           config.ConductorApiKey,
-			appName:          config.AppName,
-			executorMetadata: config.ConductorExecutorMetadata,
-		}
-		conductor, err := newConductor(initExecutor, conductorConfig)
-		if err != nil {
-			return nil, newInitializationError(fmt.Sprintf("failed to initialize conductor: %v", err))
-		}
-		initExecutor.conductor = conductor
-		initExecutor.logger.Debug("Conductor initialized")
-	}
-
 	return initExecutor, nil
 }
 
@@ -571,11 +502,6 @@ func (c *dbosContext) Launch() error {
 
 	go c.runScheduleReconciler()
 
-	if c.conductor != nil {
-		c.conductor.launch()
-		c.logger.Debug("Conductor started")
-	}
-
 	recoveryHandles, err := recoverPendingWorkflows(c, []string{c.executorId})
 	if err != nil {
 		return newInitializationError(fmt.Sprintf("failed to recover pending workflows during launch: %v", err))
@@ -621,11 +547,6 @@ func (c *dbosContext) Shutdown(timeout time.Duration) {
 		case <-time.After(timeout):
 			c.logger.Warn("Timeout waiting for jobs to complete. Moving on", "timeout", timeout)
 		}
-	}
-
-	if c.conductor != nil {
-		c.logger.Debug("Shutting down conductor")
-		c.conductor.shutdown(timeout)
 	}
 
 	if c.adminServer != nil && c.launched.Load() {

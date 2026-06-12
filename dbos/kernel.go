@@ -33,7 +33,7 @@ type ExportedWorkflow struct {
 }
 
 type Kernel struct {
-	pool                          Pool
+	pool                          *pgxpool.Pool
 	queries                       *db.Queries
 	notificationLoopDone          chan struct{}
 	workflowNotificationsMap      *sync.Map
@@ -473,9 +473,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, schema string, logge
 
 // q returns the sqlc query set bound to tx when one is supplied, otherwise the
 
-func (k *Kernel) q(tx Tx) *db.Queries {
+func (k *Kernel) q(tx pgx.Tx) *db.Queries {
 	if tx != nil {
-		return k.queries.WithTx(PgxTx(tx))
+		return k.queries.WithTx(tx)
 	}
 	return k.queries
 }
@@ -642,7 +642,7 @@ func newKernel(ctx context.Context, inputs newKernelInput) (*Kernel, error) {
 	workflowEventsRepollMap := &sync.Map{}
 
 	return &Kernel{
-		pool:                          newPgxPool(pool),
+		pool:                          pool,
 		queries:                       db.New(pool),
 		workflowNotificationsMap:      workflowNotificationsMap,
 		workflowNotificationRepollMap: workflowNotificationRepollMap,
@@ -679,7 +679,7 @@ func (k *Kernel) Shutdown(ctx context.Context, timeout time.Duration) {
 }
 
 func (k *Kernel) listenNotifyPool() *pgxpool.Pool {
-	return PgxPool(k.pool)
+	return k.pool
 }
 
 func (k *Kernel) launch(ctx context.Context) {
@@ -733,7 +733,7 @@ type insertWorkflowResult struct {
 type insertWorkflowStatusDBInput struct {
 	status            WorkflowStatus
 	maxRetries        int
-	tx                Tx
+	tx                pgx.Tx
 	ownerXId          *string
 	incrementAttempts bool
 }
@@ -814,7 +814,7 @@ func (k *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 		inputs = &v
 	}
 
-	row, err := k.queries.WithTx(PgxTx(input.tx)).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
+	row, err := k.queries.WithTx(input.tx).InsertWorkflowStatus(ctx, db.InsertWorkflowStatusParams{
 		WorkflowUuid:            input.status.Id,
 		Status:                  string(input.status.Status),
 		Name:                    input.status.Name,
@@ -886,7 +886,7 @@ func (k *Kernel) insertWorkflowStatus(ctx context.Context, input insertWorkflowS
 	if result.status != WorkflowStatusSuccess && result.status != WorkflowStatusError &&
 		input.maxRetries > 0 && result.attempts > input.maxRetries+1 {
 
-		if err := k.queries.WithTx(PgxTx(input.tx)).MarkWorkflowMaxRecoveryExceeded(ctx, db.MarkWorkflowMaxRecoveryExceededParams{
+		if err := k.queries.WithTx(input.tx).MarkWorkflowMaxRecoveryExceeded(ctx, db.MarkWorkflowMaxRecoveryExceededParams{
 			NewStatus:     string(WorkflowStatusMaxRecoveryAttemptsExceeded),
 			WorkflowUuid:  input.status.Id,
 			PendingStatus: string(WorkflowStatusPending),
@@ -930,7 +930,7 @@ type listWorkflowsDBInput struct {
 	sortDesc           bool
 	loadInput          bool
 	loadOutput         bool
-	tx                 Tx
+	tx                 pgx.Tx
 }
 
 func (k *Kernel) listWorkflows(ctx context.Context, input listWorkflowsDBInput) ([]WorkflowStatus, error) {
@@ -1097,7 +1097,7 @@ type updateWorkflowOutcomeDBInput struct {
 	output     *string
 	errStr     string
 	errEncoded *string
-	tx         Tx
+	tx         pgx.Tx
 }
 
 func (k *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflowOutcomeDBInput) error {
@@ -1120,7 +1120,7 @@ func (k *Kernel) updateWorkflowOutcome(ctx context.Context, input updateWorkflow
 
 type cancelWorkflowsDBInput struct {
 	workflowIds []string
-	tx          Tx
+	tx          pgx.Tx
 }
 
 func (k *Kernel) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInput) ([]string, error) {
@@ -1144,7 +1144,7 @@ func (k *Kernel) cancelWorkflows(ctx context.Context, input cancelWorkflowsDBInp
 type deleteWorkflowsDBInput struct {
 	workflowIds    []string
 	deleteChildren bool
-	tx             Tx
+	tx             pgx.Tx
 }
 
 func (k *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInput) error {
@@ -1152,7 +1152,7 @@ func (k *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInp
 	tx := input.tx
 	if tx == nil {
 		var err error
-		tx, err = k.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to begin transaction for deleteWorkflows: %w", err)
 		}
@@ -1177,7 +1177,7 @@ func (k *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInp
 		}
 	}
 
-	if err := k.queries.WithTx(PgxTx(tx)).DeleteWorkflows(ctx, workflowIds); err != nil {
+	if err := k.queries.WithTx(tx).DeleteWorkflows(ctx, workflowIds); err != nil {
 		return fmt.Errorf("failed to delete workflow(s): %w", err)
 	}
 
@@ -1192,7 +1192,7 @@ func (k *Kernel) deleteWorkflows(ctx context.Context, input deleteWorkflowsDBInp
 
 type getWorkflowChildrenDBInput struct {
 	workflowId string
-	tx         Tx
+	tx         pgx.Tx
 }
 
 func (k *Kernel) getWorkflowChildren(ctx context.Context, input getWorkflowChildrenDBInput) ([]WorkflowStatus, error) {
@@ -1309,7 +1309,7 @@ func (k *Kernel) garbageCollectWorkflows(ctx context.Context, input garbageColle
 type resumeWorkflowsDBInput struct {
 	workflowIds []string
 	queueName   string
-	tx          Tx
+	tx          pgx.Tx
 }
 
 func (k *Kernel) resumeWorkflows(ctx context.Context, input resumeWorkflowsDBInput) ([]string, error) {
@@ -1343,7 +1343,7 @@ type forkWorkflowDBInput struct {
 	applicationVersion string
 	queueName          string
 	queuePartitionKey  string
-	tx                 Tx
+	tx                 pgx.Tx
 }
 
 func (k *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (string, error) {
@@ -1361,13 +1361,13 @@ func (k *Kernel) forkWorkflow(ctx context.Context, input forkWorkflowDBInput) (s
 	ownTx := tx == nil
 	if ownTx {
 		var err error
-		tx, err = k.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return "", fmt.Errorf("failed to begin fork transaction: %w", err)
 		}
 		defer tx.Rollback(ctx)
 	}
-	txq := k.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(tx)
 
 	listInput := listWorkflowsDBInput{
 		workflowIds: []string{input.originalWorkflowId},
@@ -1548,7 +1548,7 @@ type recordOperationResultDBInput struct {
 	output        *string
 	errStr        *string
 	errEncoded    *string
-	tx            Tx
+	tx            pgx.Tx
 	startedAt     time.Time
 	completedAt   time.Time
 	serialization string
@@ -1605,7 +1605,7 @@ type checkOperationExecutionDBInput struct {
 	workflowId string
 	stepId     int
 	stepName   string
-	tx         Tx
+	tx         pgx.Tx
 }
 
 func (k *Kernel) checkOperationExecution(ctx context.Context, input checkOperationExecutionDBInput) (*recordedResult, error) {
@@ -1613,13 +1613,13 @@ func (k *Kernel) checkOperationExecution(ctx context.Context, input checkOperati
 	tx := input.tx
 	if tx == nil {
 		var err error
-		tx, err = k.pool.BeginTx(ctx, TxOptions{})
+		tx, err = k.pool.BeginTx(ctx, pgx.TxOptions{})
 		if err != nil {
 			return nil, fmt.Errorf("failed to begin transaction: %w", err)
 		}
 		defer tx.Rollback(ctx)
 	}
-	q := k.queries.WithTx(PgxTx(tx))
+	q := k.queries.WithTx(tx)
 
 	status, err := q.GetWorkflowStatusOnly(ctx, input.workflowId)
 	if err != nil {
@@ -1741,7 +1741,7 @@ type getWorkflowAggregatesDBInput struct {
 	queueName                 []string
 	workflowIdPrefix          []string
 	limit                     int64
-	tx                        Tx
+	tx                        pgx.Tx
 }
 
 func aggGroupString(v any) *string {
@@ -1948,7 +1948,7 @@ type getStepAggregatesDBInput struct {
 	completedAfter      time.Time
 	completedBefore     time.Time
 	limit               int64
-	tx                  Tx
+	tx                  pgx.Tx
 }
 
 // SUCCESS, otherwise ERROR. operation_outputs has no explicit status column.
@@ -2385,7 +2385,7 @@ type WorkflowSendInput struct {
 	DestinationId string
 	Message       any
 	Topic         string
-	tx            Tx
+	tx            pgx.Tx
 	serialization string
 }
 
@@ -2525,7 +2525,7 @@ loop:
 
 	startTime := time.Now()
 
-	tx, err := k.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -2533,7 +2533,7 @@ loop:
 	// Use message_uuid so we update exactly one row; created_at_epoch_ms can match multiple rows when inserts occur in the same millisecond.
 	var messageString *string
 	var msgSerialization *string
-	consumed, err := k.queries.WithTx(PgxTx(tx)).ConsumeOldestMessage(ctx, db.ConsumeOldestMessageParams{
+	consumed, err := k.queries.WithTx(tx).ConsumeOldestMessage(ctx, db.ConsumeOldestMessageParams{
 		DestinationUuid: destinationId,
 		Topic:           topic,
 	})
@@ -2586,7 +2586,7 @@ loop:
 type WorkflowSetEventInput struct {
 	Key           string
 	Message       any
-	tx            Tx
+	tx            pgx.Tx
 	serialization string
 }
 
@@ -2807,7 +2807,7 @@ func (k *Kernel) getEvent(ctx context.Context, input getEventInput) (*getEventRe
 type writeStreamDBInput struct {
 	Key           string
 	Value         *string
-	tx            Tx
+	tx            pgx.Tx
 	serialization string
 }
 
@@ -2969,7 +2969,7 @@ func (k *Kernel) getAllStreamEntries(ctx context.Context, workflowId string) ([]
 type setWorkflowDelayDBInput struct {
 	workflowId string
 	delayUntil time.Time
-	tx         Tx
+	tx         pgx.Tx
 }
 
 func (k *Kernel) setWorkflowDelay(ctx context.Context, input setWorkflowDelayDBInput) error {
@@ -3049,16 +3049,16 @@ func (k *Kernel) dequeueWorkflows(ctx context.Context, input dequeueWorkflowsInp
 		policyRateLimit = &rateLimiter{limit: int(*def.RateLimit), period: time.Duration(*def.RatePeriodMs) * time.Millisecond}
 	}
 
-	iso := IsoLevelReadCommitted
+	iso := pgx.ReadCommitted
 	if policyConcurrency != nil || policyRateLimit != nil {
-		iso = IsoLevelRepeatableRead
+		iso = pgx.RepeatableRead
 	}
-	tx, err := k.pool.BeginTx(ctx, TxOptions{IsoLevel: iso})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: iso})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
-	txq := k.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(tx)
 
 	var numRecentQueries int64
 	if policyRateLimit != nil {
@@ -3277,7 +3277,7 @@ type createScheduleDBInput struct {
 	AutomaticBackfill bool
 	CronTimezone      string
 	QueueName         string
-	tx                Tx
+	tx                pgx.Tx
 }
 
 func scheduleFromRow(r db.WorkflowSchedule) WorkflowSchedule {
@@ -3342,7 +3342,7 @@ type listSchedulesDBInput struct {
 	Statuses             []ScheduleStatus
 	WorkflowNames        []string
 	ScheduleNamePrefixes []string
-	tx                   Tx
+	tx                   pgx.Tx
 }
 
 func (k *Kernel) listSchedules(ctx context.Context, input listSchedulesDBInput) ([]WorkflowSchedule, error) {
@@ -3378,7 +3378,7 @@ type updateScheduleDBInput struct {
 	ScheduleName string
 	Status       ScheduleStatus
 	LastFiredAt  *time.Time
-	tx           Tx
+	tx           pgx.Tx
 }
 
 func (k *Kernel) updateSchedule(ctx context.Context, input updateScheduleDBInput) error {
@@ -3409,7 +3409,7 @@ func (k *Kernel) updateScheduleLastFiredAt(ctx context.Context, scheduleName str
 
 type deleteScheduleDBInput struct {
 	ScheduleName string
-	tx           Tx
+	tx           pgx.Tx
 }
 
 func (k *Kernel) deleteSchedule(ctx context.Context, input deleteScheduleDBInput) error {
@@ -3469,13 +3469,13 @@ func (k *Kernel) backfillSchedule(ctx context.Context, input backfillScheduleDBI
 		backfillAppVersion = backfillLatest.Name
 	}
 
-	tx, err := k.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	txq := k.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(tx)
 
 	nextTime := scheduleEntry.Next(input.StartTime)
 	now := time.Now()
@@ -3531,7 +3531,7 @@ func (k *Kernel) triggerSchedule(ctx context.Context, scheduleName string) (stri
 		return "", errors.New("schedule_name is required")
 	}
 
-	tx, err := k.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -3679,7 +3679,7 @@ func dropDatabaseIfExists(ctx context.Context, conn *pgx.Conn, dbName string) er
 
 func (k *Kernel) resetSystemDB(ctx context.Context) error {
 
-	config := PgxPool(k.pool).Config()
+	config := k.pool.Config()
 	if config == nil || config.ConnConfig == nil {
 		return fmt.Errorf("failed to get pool configuration")
 	}
@@ -3869,7 +3869,7 @@ func retryWithResult[T any](ctx context.Context, fn func() (T, error), options .
 }
 
 func (k *Kernel) exportWorkflow(ctx context.Context, workflowId string, exportChildren bool) ([]ExportedWorkflow, error) {
-	tx, err := k.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to begin transaction for exportWorkflow: %w", err)
 	}
@@ -3889,7 +3889,7 @@ func (k *Kernel) exportWorkflow(ctx context.Context, workflowId string, exportCh
 		}
 	}
 
-	txq := k.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(tx)
 	exported := make([]ExportedWorkflow, 0, len(workflowIds))
 
 	for _, wfId := range workflowIds {
@@ -4007,13 +4007,13 @@ func (k *Kernel) exportWorkflow(ctx context.Context, workflowId string, exportCh
 }
 
 func (k *Kernel) importWorkflow(ctx context.Context, workflows []ExportedWorkflow) error {
-	tx, err := k.pool.BeginTx(ctx, TxOptions{})
+	tx, err := k.pool.BeginTx(ctx, pgx.TxOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction for importWorkflow: %w", err)
 	}
 	defer tx.Rollback(ctx)
 
-	txq := k.queries.WithTx(PgxTx(tx))
+	txq := k.queries.WithTx(tx)
 
 	for _, wf := range workflows {
 		status := wf.WorkflowStatus

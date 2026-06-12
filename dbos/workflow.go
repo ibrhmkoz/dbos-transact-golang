@@ -869,7 +869,7 @@ func (c *dbosContext) RunWorkflow(fn WorkflowFunc, input any, opts ...WorkflowOp
 	var insertStatusResult *insertWorkflowResult
 
 	insertWorkflowStatusTx := func() error {
-		tx, err := c.kernel.pool.BeginTx(uncancellableCtx, TxOptions{})
+		tx, err := c.kernel.pool.BeginTx(uncancellableCtx, pgx.TxOptions{})
 		if err != nil {
 			return newWorkflowExecutionError(workflowId, fmt.Errorf("failed to begin transaction: %w", err))
 		}
@@ -1054,9 +1054,9 @@ type StepFunc func(ctx context.Context) (any, error)
 
 type Step[R any] func(ctx context.Context) (R, error)
 
-type txnFunc func(ctx context.Context, tx Tx) (any, error)
+type txnFunc func(ctx context.Context, tx pgx.Tx) (any, error)
 
-type txn[R any] func(ctx context.Context, tx Tx) (R, error)
+type txn[R any] func(ctx context.Context, tx pgx.Tx) (R, error)
 
 type stepOptions struct {
 	maxRetries         int
@@ -1065,7 +1065,7 @@ type stepOptions struct {
 	maxInterval        time.Duration
 	stepName           string
 	preGeneratedStepId *int
-	txIsoLevel         *IsoLevel
+	txIsoLevel         *pgx.TxIsoLevel
 }
 
 func (opts *stepOptions) setDefaults() {
@@ -1377,7 +1377,7 @@ func runAsTxn[R any](ctx DbosContext, fn txn[R], opts ...StepOption) (R, error) 
 	stepName := runtime.FuncForPC(reflect.ValueOf(fn).Pointer()).Name()
 	opts = append(opts, WithStepName(stepName))
 
-	typeErasedFn := txnFunc(func(ctx context.Context, tx Tx) (any, error) { return fn(ctx, tx) })
+	typeErasedFn := txnFunc(func(ctx context.Context, tx pgx.Tx) (any, error) { return fn(ctx, tx) })
 
 	result, err := c.runAsTxn(typeErasedFn, opts...)
 	if result == nil {
@@ -1409,7 +1409,7 @@ func (c *dbosContext) runAsTxn(fn txnFunc, opts ...StepOption) (any, error) {
 	stepCtx := WithValue(c, workflowStateKey, stepState)
 	stepStartTime := time.Now()
 
-	txOpts := TxOptions{IsoLevel: IsoLevelReadCommitted}
+	txOpts := pgx.TxOptions{IsoLevel: pgx.ReadCommitted}
 	if stepOpts.txIsoLevel != nil {
 		txOpts.IsoLevel = *stepOpts.txIsoLevel
 	}
@@ -1713,7 +1713,7 @@ func (c *dbosContext) Send(destinationId string, message any, topic string, opts
 	}
 
 	if isWithinWorkflow {
-		_, err = runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			input.tx = tx
 			return nil, ctx.(*dbosContext).kernel.send(ctx, input)
 		}, WithStepName("DBOS.send"))
@@ -1823,7 +1823,7 @@ func (c *dbosContext) SetEvent(key string, message any, opts ...SetEventOption) 
 		return fmt.Errorf("failed to serialize event value: %w", err)
 	}
 
-	_, err = runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+	_, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 		return nil, c.kernel.setEvent(ctx, WorkflowSetEventInput{
 			Key:           key,
 			Message:       encodedMessage,
@@ -1939,7 +1939,7 @@ func (c *dbosContext) WriteStream(key string, value any, opts ...WriteStreamOpti
 		return fmt.Errorf("failed to serialize stream value: %w", err)
 	}
 
-	_, err = runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+	_, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 		return "", c.kernel.writeStream(ctx, writeStreamDBInput{
 			Key:           key,
 			Value:         encodedValue,
@@ -2224,7 +2224,7 @@ func ReadStreamAsync[R any](ctx DbosContext, workflowId string, key string) (<-c
 }
 
 func (c *dbosContext) CloseStream(key string) error {
-	_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+	_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 		sentinel := _dbosStreamClosedSentinel
 		return "", c.kernel.writeStream(ctx, writeStreamDBInput{
 			Key:   key,
@@ -2446,7 +2446,7 @@ func (c *dbosContext) CancelWorkflow(workflowId string) error {
 	var found []string
 	var err error
 	if isWithinWorkflow {
-		found, err = runAsTxn(c, func(ctx context.Context, tx Tx) ([]string, error) {
+		found, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
 			return c.kernel.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIds: []string{workflowId}, tx: tx})
 		}, WithStepName("DBOS.cancelWorkflow"))
 	} else {
@@ -2476,7 +2476,7 @@ func (c *dbosContext) CancelWorkflows(workflowIds []string) error {
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) ([]string, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
 			return c.kernel.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIds: workflowIds, tx: tx})
 		}, WithStepName("DBOS.cancelWorkflows"))
 		return err
@@ -2544,7 +2544,7 @@ func (c *dbosContext) SetWorkflowDelay(workflowId string, opts ...SetWorkflowDel
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			input.tx = tx
 			return nil, c.kernel.setWorkflowDelay(ctx, input)
 		}, WithStepName("DBOS.setWorkflowDelay"))
@@ -2572,7 +2572,7 @@ func (c *dbosContext) DeleteWorkflows(workflowIds []string, opts ...DeleteWorkfl
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			err := c.kernel.deleteWorkflows(ctx, deleteWorkflowsDBInput{
 				workflowIds:    workflowIds,
 				deleteChildren: params.deleteChildren,
@@ -2645,7 +2645,7 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 	var foundIds []string
 	var err error
 	if isWithinWorkflow {
-		foundIds, err = runAsTxn(c, func(ctx context.Context, tx Tx) ([]string, error) {
+		foundIds, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
 			return c.kernel.resumeWorkflows(ctx, resumeWorkflowsDBInput{
 				workflowIds: workflowIds,
 				queueName:   params.queueName,
@@ -2741,7 +2741,7 @@ func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any
 	var forkedWorkflowId string
 	var err error
 	if isWithinWorkflow {
-		forkedWorkflowId, err = runAsTxn(c, func(ctx context.Context, tx Tx) (string, error) {
+		forkedWorkflowId, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (string, error) {
 			dbInput.tx = tx
 			return c.kernel.forkWorkflow(ctx, dbInput)
 		}, WithStepName("DBOS.forkWorkflow"))
@@ -3228,7 +3228,7 @@ func (c *dbosContext) GetWorkflowAggregates(input GetWorkflowAggregatesInput) ([
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		return runAsTxn(c, func(ctx context.Context, tx Tx) ([]WorkflowAggregateRow, error) {
+		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowAggregateRow, error) {
 			in := dbInput
 			in.tx = tx
 			return c.kernel.getWorkflowAggregates(ctx, in)
@@ -3288,7 +3288,7 @@ func (c *dbosContext) GetStepAggregates(input GetStepAggregatesInput) ([]StepAgg
 	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
 	isWithinWorkflow := ok && workflowState != nil
 	if isWithinWorkflow {
-		return runAsTxn(c, func(ctx context.Context, tx Tx) ([]StepAggregateRow, error) {
+		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]StepAggregateRow, error) {
 			in := dbInput
 			in.tx = tx
 			return c.kernel.getStepAggregates(ctx, in)
@@ -3382,7 +3382,7 @@ func (c *dbosContext) CreateSchedule(fn ScheduledWorkflowFunc, input CreateSched
 	}
 
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			input := dbInput
 			input.tx = tx
 			return nil, c.kernel.createSchedule(ctx, input)
@@ -3465,7 +3465,7 @@ func (c *dbosContext) ApplySchedules(schedules []ApplySchedulesRequest) error {
 	}
 
 	return retry(c, func() error {
-		tx, err := c.kernel.pool.BeginTx(c, TxOptions{})
+		tx, err := c.kernel.pool.BeginTx(c, pgx.TxOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to begin transaction: %w", err)
 		}
@@ -3538,7 +3538,7 @@ func (c *dbosContext) PauseSchedule(scheduleName string) error {
 	}
 
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			in := dbInput
 			in.tx = tx
 			return nil, c.kernel.updateSchedule(ctx, in)
@@ -3577,7 +3577,7 @@ func (c *dbosContext) ResumeSchedule(scheduleName string) error {
 	}
 
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			in := dbInput
 			in.tx = tx
 			return nil, c.kernel.updateSchedule(ctx, in)
@@ -3603,7 +3603,7 @@ func (c *dbosContext) DeleteSchedule(scheduleName string) error {
 	}
 
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx Tx) (any, error) {
+		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
 			return nil, c.kernel.deleteSchedule(ctx, deleteScheduleDBInput{ScheduleName: scheduleName, tx: tx})
 		}, WithStepName("DBOS.deleteSchedule"))
 		return err
@@ -3631,7 +3631,7 @@ func (c *dbosContext) GetSchedule(scheduleName string) (*WorkflowSchedule, error
 	var schedules []WorkflowSchedule
 	var err error
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		schedules, err = runAsTxn(c, func(ctx context.Context, tx Tx) ([]WorkflowSchedule, error) {
+		schedules, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowSchedule, error) {
 			in := dbInput
 			in.tx = tx
 			return c.kernel.listSchedules(ctx, in)
@@ -3670,7 +3670,7 @@ func (c *dbosContext) ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSche
 		ScheduleNamePrefixes: o.scheduleNamePrefixes,
 	}
 	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		return runAsTxn(c, func(ctx context.Context, tx Tx) ([]WorkflowSchedule, error) {
+		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowSchedule, error) {
 			in := dbInput
 			in.tx = tx
 			return c.kernel.listSchedules(ctx, in)

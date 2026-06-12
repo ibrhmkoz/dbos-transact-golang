@@ -16,7 +16,7 @@ func poolFromContext(t *testing.T, ctx DbosContext) *pgxpool.Pool {
 	c, ok := ctx.(*dbosContext)
 	require.True(t, ok)
 	s := c.kernel
-	return PgxPool(s.pool)
+	return s.pool
 }
 
 func TestShouldMigrate(t *testing.T) {
