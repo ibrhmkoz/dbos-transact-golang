@@ -30,11 +30,11 @@ WHERE parallel
 ORDER BY elapsed_seconds DESC
 LIMIT 30;
 
--- Failed tests from the latest run, with their output.
-SELECT test, package, elapsed_seconds, output
-FROM latest_test_results
-WHERE status = 'fail'
-ORDER BY elapsed_seconds DESC;
+-- Failed tests from the latest run (deepest failing nodes), with their output.
+SELECT failed.test, failed.package, failed.elapsed_seconds, failed.output
+FROM failed_test_results AS failed
+JOIN latest_test_run AS latest USING (run_id)
+ORDER BY failed.elapsed_seconds DESC;
 
 -- Failed packages from the latest run (setup/build failures have no test rows).
 SELECT events.package, events.elapsed_seconds

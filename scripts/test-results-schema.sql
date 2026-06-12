@@ -38,8 +38,19 @@ SELECT results.*
 FROM leaf_test_results AS results
 JOIN latest_test_run AS latest USING (run_id);
 
+-- Deepest failing nodes: failures with no failing descendant. A parent test can
+-- fail without any failing subtest (e.g. an assertion in the parent body or in
+-- a workflow goroutine that captured the parent's *testing.T).
 CREATE OR REPLACE VIEW failed_test_results AS
 SELECT runs.started_at, runs.backend, runs.race, results.*
-FROM leaf_test_results AS results
+FROM test_results AS results
 JOIN test_runs AS runs USING (run_id)
-WHERE results.status = 'fail';
+WHERE results.status = 'fail'
+  AND NOT EXISTS (
+    SELECT 1
+    FROM test_results AS child
+    WHERE child.run_id = results.run_id
+      AND child.package = results.package
+      AND child.status = 'fail'
+      AND starts_with(child.test, results.test || '/')
+  );
