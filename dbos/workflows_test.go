@@ -825,6 +825,71 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
+	goErrorWorkflow := func(dbosCtx Context, input string) (string, error) {
+		result, _ := Go(dbosCtx, func(ctx context.Context) (string, error) {
+			return "", fmt.Errorf("step error")
+		})
+
+		resultChan := <-result
+		return resultChan.Result, resultChan.Err
+	}
+	goErrorWorkflowD := NewWorkflow(dbosCtx, goErrorWorkflow, WithWorkflowName("go-error-workflow"))
+
+	const numSteps = 100
+	// The workflow returns the step IDs as its result: outcomes flow through the durable
+	// return value, never through closure-captured state.
+	goParallelStepsWorkflow := func(dbosCtx Context, input string) ([]int, error) {
+		resultChans := make([]<-chan StepOutcome[int], 0, numSteps)
+		for range numSteps {
+			resultChan, err := Go(dbosCtx, func(ctx context.Context) (int, error) {
+				return stepReturningStepId(ctx)
+			})
+
+			if err != nil {
+				return nil, err
+			}
+			resultChans = append(resultChans, resultChan)
+		}
+
+		stepIds := make([]int, 0, numSteps)
+		for _, resultChan := range resultChans {
+			outcome := <-resultChan
+			if outcome.Err != nil {
+				return nil, outcome.Err
+			}
+			stepIds = append(stepIds, outcome.Result)
+
+			if again, ok := <-resultChan; ok {
+				return nil, fmt.Errorf("channel should be closed after receiving result, got %v", again)
+			}
+		}
+		return stepIds, nil
+	}
+	goParallelStepsWorkflowD := NewWorkflow(dbosCtx, goParallelStepsWorkflow, WithWorkflowName("go-parallel-steps-workflow"))
+
+	goIdempotencyWorkflow := func(dbosCtx Context, input string) (string, error) {
+		channels := make([]chan StepOutcome[string], 0, 10)
+		for range 10 {
+			ch, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
+				return stepWithSleep(ctx, 1*time.Second)
+			})
+			if err != nil {
+				return "", err
+			}
+			channels = append(channels, ch)
+		}
+		for _, ch := range channels {
+			outcome := <-ch
+			if outcome.Err != nil {
+				return "", outcome.Err
+			}
+		}
+		return "ok", nil
+	}
+	goIdempotencyWorkflowD := NewWorkflow(dbosCtx, goIdempotencyWorkflow, WithWorkflowName("go-idempotency-workflow"))
+
+	require.NoError(t, Start(dbosCtx))
+
 	t.Run("Go must run steps inside a workflow", func(t *testing.T) {
 		_, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
 			return stepWithSleep(ctx, 1*time.Second)
@@ -839,17 +904,7 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 	})
 
 	t.Run("Go must return step error correctly", func(t *testing.T) {
-		goWorkflow := func(dbosCtx Context, input string) (string, error) {
-			result, _ := Go(dbosCtx, func(ctx context.Context) (string, error) {
-				return "", fmt.Errorf("step error")
-			})
-
-			resultChan := <-result
-			return resultChan.Result, resultChan.Err
-		}
-		goWorkflowD := NewWorkflow(dbosCtx, goWorkflow)
-
-		handle, err := goWorkflowD(dbosCtx, "test-input")
+		handle, err := goErrorWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to run go workflow")
 		_, err = handle.GetResult()
 		require.Error(t, err, "expected error when running step, but got none")
@@ -857,66 +912,18 @@ func TestGoRunningStepsInsideGoRoutines(t *testing.T) {
 	})
 
 	t.Run("Go must execute 100 steps simultaneously then return the stepIDs in the correct sequence", func(t *testing.T) {
-		const numSteps = 100
-		results := make(chan string, numSteps)
-		defer close(results)
-		resultChans := make([]<-chan StepOutcome[int], 0)
-
-		goWorkflow := func(dbosCtx Context, input string) (string, error) {
-			for range numSteps {
-				resultChan, err := Go(dbosCtx, func(ctx context.Context) (int, error) {
-					return stepReturningStepId(ctx)
-				})
-
-				if err != nil {
-					return "", err
-				}
-				resultChans = append(resultChans, resultChan)
-			}
-
-			return "", nil
-		}
-		goWorkflowD := NewWorkflow(dbosCtx, goWorkflow)
-
-		handle, err := goWorkflowD(dbosCtx, "test-input")
+		handle, err := goParallelStepsWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to run go workflow")
-		_, err = handle.GetResult()
+		stepIds, err := handle.GetResult()
 		require.NoError(t, err, "failed to get result from go workflow")
-		assert.Equal(t, len(resultChans), numSteps, "expected %d results, got %d", numSteps, len(resultChans))
-		for i, resultChan := range resultChans {
-			res := <-resultChan
-			assert.Equal(t, i, res.Result, "expected step ID to be %d, got %d", i, res.Result)
-			assert.NoError(t, res.Err, "expected no error, got %v", res.Err)
-
-			res2, ok := <-resultChan
-			assert.False(t, ok, "channel should be closed after receiving result")
-			assert.Equal(t, StepOutcome[int]{}, res2, "closed channel should return zero value")
+		require.Len(t, stepIds, numSteps, "expected %d results, got %d", numSteps, len(stepIds))
+		for i, stepId := range stepIds {
+			assert.Equal(t, i, stepId, "expected step ID to be %d, got %d", i, stepId)
 		}
 	})
 
 	t.Run("Go idempotency", func(t *testing.T) {
-		goWorkflow := func(dbosCtx Context, input string) (string, error) {
-			channels := make([]chan StepOutcome[string], 0, 10)
-			for range 10 {
-				ch, err := Go(dbosCtx, func(ctx context.Context) (string, error) {
-					return stepWithSleep(ctx, 1*time.Second)
-				})
-				if err != nil {
-					return "", err
-				}
-				channels = append(channels, ch)
-			}
-			for _, ch := range channels {
-				outcome := <-ch
-				if outcome.Err != nil {
-					return "", outcome.Err
-				}
-			}
-			return "ok", nil
-		}
-		goWorkflowD := NewWorkflow(dbosCtx, goWorkflow)
-
-		handle1, err := goWorkflowD(dbosCtx, "test-input")
+		handle1, err := goIdempotencyWorkflowD(dbosCtx, "test-input")
 		require.NoError(t, err, "failed to run go workflow")
 		workflowId := handle1.GetWorkflowId()
 		result1, err := handle1.GetResult()
@@ -1421,6 +1428,7 @@ func TestWorkflowIdempotency(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	idempotencyWorkflowD := NewWorkflow(dbosCtx, idempotencyWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("WorkflowExecutedOnlyOnce", func(t *testing.T) {
 		idempotencyCounter = 0
@@ -1499,6 +1507,7 @@ func TestNoConcurrentWorkflowSameId(t *testing.T) {
 		return "done", nil
 	}
 	blockingWorkflowD := NewWorkflow(dbosCtx, blockingWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	dedupKey := uuid.NewString()
 
@@ -2764,6 +2773,7 @@ func TestWorkflowExecutionMismatch(t *testing.T) {
 	conflictWorkflowAD := NewWorkflow(dbosCtx, conflictWorkflowA)
 	conflictWorkflowBD := NewWorkflow(dbosCtx, conflictWorkflowB)
 	workflowWithMultipleStepsD := NewWorkflow(dbosCtx, workflowWithMultipleSteps)
+	require.NoError(t, Start(dbosCtx))
 
 	_ = conflictWorkflowAD
 	_ = conflictWorkflowBD
@@ -2803,6 +2813,7 @@ func TestSleep(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	sleepRecoveryWorkflowD := NewWorkflow(dbosCtx, sleepRecoveryWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("SleepDurableRecovery", func(t *testing.T) {
 		sleepDuration := 2 * time.Second
@@ -2855,7 +2866,6 @@ func TestSleep(t *testing.T) {
 func TestWorkflowTimeout(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
-
 	waitForCancelWorkflow := func(ctx Context, _ string) (string, error) {
 
 		<-ctx.Done()
@@ -2864,24 +2874,6 @@ func TestWorkflowTimeout(t *testing.T) {
 		return "", ctx.Err()
 	}
 	waitForCancelWorkflowD := NewWorkflow(dbosCtx, waitForCancelWorkflow)
-
-	t.Run("WorkflowTimeout", func(t *testing.T) {
-
-		// So we are almost guaranteed that the workflow will be cancelled before returning, hence GetStatus will show it as cancelled
-
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
-		defer cancelFunc()
-		handle, err := waitForCancelWorkflowD(cancelCtx, "wait-for-cancel")
-		require.NoError(t, err, "failed to start wait for cancel workflow")
-
-		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
-		assert.Equal(t, "", result, "expected result to be an empty string")
-
-		status, err := handle.GetStatus()
-		require.NoError(t, err, "failed to get workflow status")
-		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
-	})
 
 	wfcStart := NewEvent()
 	wfcStop := NewEvent()
@@ -2895,32 +2887,6 @@ func TestWorkflowTimeout(t *testing.T) {
 		return "", ctx.Err()
 	}
 	waitForCancelWorkflowManualD := NewWorkflow(dbosCtx, waitForCancelWorkflowManual)
-
-	t.Run("ManuallyCancelWorkflow", func(t *testing.T) {
-		// This test requires an event to prevent the workflow for returning before we GetStatus
-		// This is because direct cancellation through the cancel function can happen faster than the timeout context AfterFunc
-
-		// Thus the workflow status will be "Error" instead of "Cancelled" and the test fail
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 5*time.Hour)
-		defer cancelFunc()
-		handle, err := waitForCancelWorkflowManualD(cancelCtx, "manual-cancel")
-		require.NoError(t, err, "failed to start manual cancel workflow")
-
-		cancelFunc()
-		wfcStart.Wait()
-
-		require.Eventually(t, func() bool {
-			status, err := handle.GetStatus()
-			require.NoError(t, err, "failed to get workflow status")
-			return status.Status == WorkflowStatusCancelled
-		}, 5*time.Second, 100*time.Millisecond, "workflow did not reach cancelled status in time")
-
-		wfcStop.Set()
-
-		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
-		assert.Equal(t, "", result, "expected result to be an empty string")
-	})
 
 	waitForCancelStep := func(ctx context.Context) (string, error) {
 
@@ -2937,22 +2903,6 @@ func TestWorkflowTimeout(t *testing.T) {
 		})
 	}
 	waitForCancelWorkflowWithStepD := NewWorkflow(dbosCtx, waitForCancelWorkflowWithStep)
-
-	t.Run("WorkflowWithStepTimeout", func(t *testing.T) {
-
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 100*time.Millisecond)
-		defer cancelFunc()
-		handle, err := waitForCancelWorkflowWithStepD(cancelCtx, "wf-with-step-timeout")
-		require.NoError(t, err, "failed to start workflow with step timeout")
-
-		result, err := handle.GetResult()
-		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
-		assert.Equal(t, "", result, "expected result to be an empty string")
-
-		status, err := handle.GetStatus()
-		require.NoError(t, err, "failed to get workflow status")
-		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
-	})
 
 	waitForCancelWorkflowWithStepAfterCancel := func(ctx Context, _ string) (string, error) {
 		uncancellableCtx := WithoutCancel(ctx)
@@ -2986,26 +2936,6 @@ func TestWorkflowTimeout(t *testing.T) {
 	}
 	waitForCancelWorkflowWithStepAfterCancelD := NewWorkflow(dbosCtx, waitForCancelWorkflowWithStepAfterCancel)
 
-	t.Run("WorkflowWithStepAfterTimeout", func(t *testing.T) {
-
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
-		defer cancelFunc()
-		handle, err := waitForCancelWorkflowWithStepAfterCancelD(cancelCtx, "wf-with-step-after-timeout")
-		require.NoError(t, err, "failed to start workflow with step after timeout")
-
-		result, err := handle.GetResult()
-
-		require.Error(t, err, "expected error from workflow")
-
-		targetErr := &DbosError{Code: AwaitedWorkflowCancelled}
-		assert.True(t, errors.Is(err, targetErr), "expected AwaitedWorkflowCancelled error, got: %v", err)
-		assert.Equal(t, "", result, "expected result to be an empty string")
-
-		status, err := handle.GetStatus()
-		require.NoError(t, err, "failed to get workflow status")
-		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
-	})
-
 	shorterStepTimeoutWorkflow := func(ctx Context, _ string) (string, error) {
 
 		stepCtx, stepCancelFunc := WithTimeout(ctx, 1*time.Millisecond)
@@ -3017,22 +2947,6 @@ func TestWorkflowTimeout(t *testing.T) {
 		return "step-timed-out", nil
 	}
 	shorterStepTimeoutWorkflowD := NewWorkflow(dbosCtx, shorterStepTimeoutWorkflow)
-
-	t.Run("ShorterStepTimeout", func(t *testing.T) {
-
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 5*time.Second)
-		defer cancelFunc()
-		handle, err := shorterStepTimeoutWorkflowD(cancelCtx, "shorter-step-timeout")
-		require.NoError(t, err, "failed to start shorter step timeout workflow")
-
-		result, err := handle.GetResult()
-		require.NoError(t, err, "failed to get result from shorter step timeout workflow")
-		assert.Equal(t, "step-timed-out", result, "expected result to be 'step-timed-out'")
-
-		status, err := handle.GetStatus()
-		require.NoError(t, err, "failed to get workflow status")
-		assert.Equal(t, WorkflowStatusSuccess, status.Status, "expected workflow status to be WorkflowStatusSuccess")
-	})
 
 	detachedStep := func(ctx context.Context, timeout time.Duration) (string, error) {
 		select {
@@ -3061,22 +2975,6 @@ func TestWorkflowTimeout(t *testing.T) {
 	}
 	detachedStepWorkflowD := NewWorkflow(dbosCtx, detachedStepWorkflow)
 
-	t.Run("DetachedStepWorkflow", func(t *testing.T) {
-
-		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
-		defer cancelFunc()
-
-		handle, err := detachedStepWorkflowD(cancelCtx, 1*time.Second)
-		require.NoError(t, err, "failed to start detached step workflow")
-
-		_, err = handle.GetResult()
-		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
-
-		status, err := handle.GetStatus()
-		require.NoError(t, err, "failed to get workflow status")
-		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
-	})
-
 	var childIdRegistry sync.Map
 
 	waitForCancelParent := func(ctx Context, registryKey string) (string, error) {
@@ -3099,6 +2997,143 @@ func TestWorkflowTimeout(t *testing.T) {
 		return result, ctx.Err()
 	}
 	waitForCancelParentD := NewWorkflow(dbosCtx, waitForCancelParent)
+
+	detachedChild := func(ctx Context, timeout time.Duration) (string, error) {
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(timeout):
+		}
+		return "detached-step-completed", nil
+	}
+	detachedChildD := NewWorkflow(dbosCtx, detachedChild)
+
+	detachedChildWorkflowParent := func(ctx Context, timeout time.Duration) (string, error) {
+
+		childCtx := WithoutCancel(ctx)
+		myId, err := GetWorkflowId(ctx)
+		require.NoError(t, err, "failed to get parent workflow ID")
+		childId, result, err := callChildWorkflow(childCtx, detachedChildD, timeout*2)
+		require.NoError(t, err, "failed to call child workflow")
+		childIdRegistry.Store(myId+"-detached-child", childId)
+
+		return result, ctx.Err()
+	}
+	detachedChildWorkflowParentD := NewWorkflow(dbosCtx, detachedChildWorkflowParent)
+
+	require.NoError(t, Start(dbosCtx))
+
+	t.Run("WorkflowTimeout", func(t *testing.T) {
+
+		// So we are almost guaranteed that the workflow will be cancelled before returning, hence GetStatus will show it as cancelled
+
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
+		defer cancelFunc()
+		handle, err := waitForCancelWorkflowD(cancelCtx, "wait-for-cancel")
+		require.NoError(t, err, "failed to start wait for cancel workflow")
+
+		result, err := handle.GetResult()
+		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
+		assert.Equal(t, "", result, "expected result to be an empty string")
+
+		status, err := handle.GetStatus()
+		require.NoError(t, err, "failed to get workflow status")
+		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
+	})
+
+	t.Run("ManuallyCancelWorkflow", func(t *testing.T) {
+		// This test requires an event to prevent the workflow for returning before we GetStatus
+		// This is because direct cancellation through the cancel function can happen faster than the timeout context AfterFunc
+
+		// Thus the workflow status will be "Error" instead of "Cancelled" and the test fail
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 5*time.Hour)
+		defer cancelFunc()
+		handle, err := waitForCancelWorkflowManualD(cancelCtx, "manual-cancel")
+		require.NoError(t, err, "failed to start manual cancel workflow")
+
+		cancelFunc()
+		wfcStart.Wait()
+
+		require.Eventually(t, func() bool {
+			status, err := handle.GetStatus()
+			require.NoError(t, err, "failed to get workflow status")
+			return status.Status == WorkflowStatusCancelled
+		}, 5*time.Second, 100*time.Millisecond, "workflow did not reach cancelled status in time")
+
+		wfcStop.Set()
+
+		result, err := handle.GetResult()
+		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
+		assert.Equal(t, "", result, "expected result to be an empty string")
+	})
+
+	t.Run("WorkflowWithStepTimeout", func(t *testing.T) {
+
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 100*time.Millisecond)
+		defer cancelFunc()
+		handle, err := waitForCancelWorkflowWithStepD(cancelCtx, "wf-with-step-timeout")
+		require.NoError(t, err, "failed to start workflow with step timeout")
+
+		result, err := handle.GetResult()
+		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
+		assert.Equal(t, "", result, "expected result to be an empty string")
+
+		status, err := handle.GetStatus()
+		require.NoError(t, err, "failed to get workflow status")
+		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
+	})
+
+	t.Run("WorkflowWithStepAfterTimeout", func(t *testing.T) {
+
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
+		defer cancelFunc()
+		handle, err := waitForCancelWorkflowWithStepAfterCancelD(cancelCtx, "wf-with-step-after-timeout")
+		require.NoError(t, err, "failed to start workflow with step after timeout")
+
+		result, err := handle.GetResult()
+
+		require.Error(t, err, "expected error from workflow")
+
+		targetErr := &DbosError{Code: AwaitedWorkflowCancelled}
+		assert.True(t, errors.Is(err, targetErr), "expected AwaitedWorkflowCancelled error, got: %v", err)
+		assert.Equal(t, "", result, "expected result to be an empty string")
+
+		status, err := handle.GetStatus()
+		require.NoError(t, err, "failed to get workflow status")
+		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
+	})
+
+	t.Run("ShorterStepTimeout", func(t *testing.T) {
+
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 5*time.Second)
+		defer cancelFunc()
+		handle, err := shorterStepTimeoutWorkflowD(cancelCtx, "shorter-step-timeout")
+		require.NoError(t, err, "failed to start shorter step timeout workflow")
+
+		result, err := handle.GetResult()
+		require.NoError(t, err, "failed to get result from shorter step timeout workflow")
+		assert.Equal(t, "step-timed-out", result, "expected result to be 'step-timed-out'")
+
+		status, err := handle.GetStatus()
+		require.NoError(t, err, "failed to get workflow status")
+		assert.Equal(t, WorkflowStatusSuccess, status.Status, "expected workflow status to be WorkflowStatusSuccess")
+	})
+
+	t.Run("DetachedStepWorkflow", func(t *testing.T) {
+
+		cancelCtx, cancelFunc := WithTimeout(dbosCtx, 1*time.Millisecond)
+		defer cancelFunc()
+
+		handle, err := detachedStepWorkflowD(cancelCtx, 1*time.Second)
+		require.NoError(t, err, "failed to start detached step workflow")
+
+		_, err = handle.GetResult()
+		assert.True(t, errors.Is(err, &DbosError{Code: AwaitedWorkflowCancelled}), "expected AwaitedWorkflowCancelled error, got: %v", err)
+
+		status, err := handle.GetStatus()
+		require.NoError(t, err, "failed to get workflow status")
+		assert.Equal(t, WorkflowStatusCancelled, status.Status, "expected workflow status to be WorkflowStatusCancelled")
+	})
 
 	t.Run("ChildWorkflowTimesout", func(t *testing.T) {
 
@@ -3132,29 +3167,6 @@ func TestWorkflowTimeout(t *testing.T) {
 			return err == nil && s.Status == WorkflowStatusCancelled
 		}, 5*time.Second, 50*time.Millisecond, "expected child workflow status to be WorkflowStatusCancelled")
 	})
-
-	detachedChild := func(ctx Context, timeout time.Duration) (string, error) {
-		select {
-		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-time.After(timeout):
-		}
-		return "detached-step-completed", nil
-	}
-	detachedChildD := NewWorkflow(dbosCtx, detachedChild)
-
-	detachedChildWorkflowParent := func(ctx Context, timeout time.Duration) (string, error) {
-
-		childCtx := WithoutCancel(ctx)
-		myId, err := GetWorkflowId(ctx)
-		require.NoError(t, err, "failed to get parent workflow ID")
-		childId, result, err := callChildWorkflow(childCtx, detachedChildD, timeout*2)
-		require.NoError(t, err, "failed to call child workflow")
-		childIdRegistry.Store(myId+"-detached-child", childId)
-
-		return result, ctx.Err()
-	}
-	detachedChildWorkflowParentD := NewWorkflow(dbosCtx, detachedChildWorkflowParent)
 
 	t.Run("ChildWorkflowDetached", func(t *testing.T) {
 		timeout := 500 * time.Millisecond
@@ -3288,6 +3300,7 @@ func TestConcurrentWorkflows(t *testing.T) {
 	notificationSetterWorkflowD := NewWorkflow(dbosCtx, notificationSetterWorkflow)
 	sendRecvReceiverWorkflowD := NewWorkflow(dbosCtx, sendRecvReceiverWorkflow)
 	sendRecvSenderWorkflowD := NewWorkflow(dbosCtx, sendRecvSenderWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("SimpleWorkflow", func(t *testing.T) {
 		const numGoroutines = 500
@@ -3526,6 +3539,7 @@ func TestWorkflowAtVersion(t *testing.T) {
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 
 	simpleWorkflowD := NewWorkflow(dbosCtx, simpleWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	version := "test-app-version-12345"
 	handle, err := simpleWorkflowD(dbosCtx, "input", WithApplicationVersion(version))
@@ -3560,6 +3574,20 @@ func TestWorkflowCancel(t *testing.T) {
 	}
 	blockingWorkflowD := NewWorkflow(dbosCtx, blockingWorkflow)
 
+	blockingEventNoError := NewEvent()
+
+	// Workflow that waits for an event, then calls Recv(). Does NOT return error when Recv times out
+	blockingWorkflowNoError := func(ctx Context, topic string) (string, error) {
+
+		blockingEventNoError.Wait()
+		Recv[string](ctx, topic, 5*time.Second)
+
+		return "", nil
+	}
+	blockingWorkflowNoErrorD := NewWorkflow(dbosCtx, blockingWorkflowNoError)
+
+	require.NoError(t, Start(dbosCtx))
+
 	t.Run("TestWorkflowCancelWithRecvError", func(t *testing.T) {
 		topic := "cancel-test-topic"
 
@@ -3585,18 +3613,6 @@ func TestWorkflowCancel(t *testing.T) {
 	})
 
 	t.Run("TestWorkflowCancelWithSuccess", func(t *testing.T) {
-		blockingEventNoError := NewEvent()
-
-		// Workflow that waits for an event, then calls Recv(). Does NOT return error when Recv times out
-		blockingWorkflowNoError := func(ctx Context, topic string) (string, error) {
-
-			blockingEventNoError.Wait()
-			Recv[string](ctx, topic, 5*time.Second)
-
-			return "", nil
-		}
-		blockingWorkflowNoErrorD := NewWorkflow(dbosCtx, blockingWorkflowNoError)
-
 		topic := "cancel-no-error-test-topic"
 
 		handle, err := blockingWorkflowNoErrorD(dbosCtx, topic)
@@ -4097,6 +4113,8 @@ func TestSpecialSteps(t *testing.T) {
 	}
 	childWorkflowD := NewWorkflow(dbosCtx, childWorkflow, WithWorkflowName("child-workflow"))
 
+	// Admin APIs are plain effectful functions: when a workflow needs them durably, it
+	// wraps them in Run like any other effect. No context-sensitive magic.
 	specialStepsWorkflow := func(dbosCtx Context, input string) (string, error) {
 		currentWorkflowId, err := GetWorkflowId(dbosCtx)
 		if err != nil {
@@ -4109,79 +4127,108 @@ func TestSpecialSteps(t *testing.T) {
 			return "", fmt.Errorf("failed to start child workflow: %w", err)
 		}
 
-		err = CancelWorkflow(dbosCtx, childId)
+		_, err = Run(dbosCtx, func(ctx context.Context) (string, error) {
+			return "", CancelWorkflow(dbosCtx, childId)
+		}, WithStepName("cancelChild"))
 		if err != nil {
 			return "", fmt.Errorf("CancelWorkflow failed: %w", err)
 		}
 
-		retrievedHandle, err := RetrieveWorkflow[string](dbosCtx, childId)
+		_, err = Run(dbosCtx, func(ctx context.Context) (string, error) {
+			retrievedHandle, err := RetrieveWorkflow[string](dbosCtx, childId)
+			if err != nil {
+				return "", fmt.Errorf("RetrieveWorkflow failed: %w", err)
+			}
+			if retrievedHandle.GetWorkflowId() != childId {
+				return "", fmt.Errorf("RetrieveWorkflow returned wrong workflow ID")
+			}
+			status, err := retrievedHandle.GetStatus()
+			if err != nil {
+				return "", fmt.Errorf("failed to get status of retrieved workflow: %w", err)
+			}
+			if status.Status != WorkflowStatusCancelled {
+				return "", fmt.Errorf("expected cancelled workflow status, got %v", status.Status)
+			}
+			return string(status.Status), nil
+		}, WithStepName("checkChildCancelled"))
 		if err != nil {
-			return "", fmt.Errorf("RetrieveWorkflow failed: %w", err)
-		}
-		if retrievedHandle.GetWorkflowId() != childId {
-			return "", fmt.Errorf("RetrieveWorkflow returned wrong workflow ID")
+			return "", err
 		}
 
-		status, err := retrievedHandle.GetStatus()
-		if err != nil {
-			return "", fmt.Errorf("failed to get status of retrieved workflow: %w", err)
-		}
-		if status.Status != WorkflowStatusCancelled {
-			return "", fmt.Errorf("expected cancelled workflow status, got %v", status.Status)
-		}
-
-		resumeHandle, err := ResumeWorkflow[string](dbosCtx, childId)
+		_, err = Run(dbosCtx, func(ctx context.Context) (string, error) {
+			resumeHandle, err := ResumeWorkflow[string](dbosCtx, childId)
+			if err != nil {
+				return "", err
+			}
+			if resumeHandle.GetWorkflowId() != childId {
+				return "", fmt.Errorf("ResumeWorkflow returned wrong workflow ID")
+			}
+			return childId, nil
+		}, WithStepName("resumeChild"))
 		if err != nil {
 			return "", fmt.Errorf("ResumeWorkflow failed: %w", err)
 		}
-		if resumeHandle.GetWorkflowId() != childId {
-			return "", fmt.Errorf("ResumeWorkflow returned wrong workflow ID")
-		}
 
-		forkHandle, err := ForkWorkflow[string](dbosCtx, ForkWorkflowInput{
-			OriginalWorkflowId: currentWorkflowId,
-			StartStep:          0,
-		})
+		forkedId, err := Run(dbosCtx, func(ctx context.Context) (string, error) {
+			forkHandle, err := ForkWorkflow[string](dbosCtx, ForkWorkflowInput{
+				OriginalWorkflowId: currentWorkflowId,
+				StartStep:          0,
+			})
+			if err != nil {
+				return "", err
+			}
+			return forkHandle.GetWorkflowId(), nil
+		}, WithStepName("forkSelf"))
 		if err != nil {
 			return "", fmt.Errorf("ForkWorkflow failed: %w", err)
 		}
-		if forkHandle.GetWorkflowId() == "" {
+		if forkedId == "" {
 			return "", fmt.Errorf("ForkWorkflow returned empty workflow ID")
 		}
 
-		steps, err := GetWorkflowSteps(dbosCtx, currentWorkflowId)
+		stepCount, err := Run(dbosCtx, func(ctx context.Context) (int, error) {
+			steps, err := GetWorkflowSteps(dbosCtx, currentWorkflowId)
+			if err != nil {
+				return 0, err
+			}
+			return len(steps), nil
+		}, WithStepName("countSteps"))
 		if err != nil {
 			return "", fmt.Errorf("GetWorkflowSteps failed: %w", err)
 		}
-		if len(steps) != 7 {
-			t.Logf("Expected 7 steps so far, got %d", len(steps))
-			for step := range steps {
-				t.Logf("Step %d: %s (Error: %v)\n", steps[step].StepId, steps[step].StepName, steps[step].Error)
-			}
-			return "", fmt.Errorf("Expected 7 steps so far, got %d", len(steps))
+		if stepCount != 6 {
+			return "", fmt.Errorf("expected 6 steps so far, got %d", stepCount)
 		}
 
-		workflows, err := ListWorkflows(dbosCtx, WithLimit(100))
+		found, err := Run(dbosCtx, func(ctx context.Context) (bool, error) {
+			workflows, err := ListWorkflows(dbosCtx, WithLimit(100))
+			if err != nil {
+				return false, err
+			}
+			foundMain := false
+			foundChild := false
+			foundForked := false
+			for _, wf := range workflows {
+				if wf.Id == currentWorkflowId {
+					foundMain = true
+				}
+				if wf.Id == childId {
+					foundChild = true
+				}
+				if wf.Id == forkedId {
+					foundForked = true
+				}
+			}
+			if !foundMain || !foundChild || !foundForked {
+				return false, fmt.Errorf("ListWorkflows did not return expected workflows. Found main: %v, child: %v, forked: %v", foundMain, foundChild, foundForked)
+			}
+			return true, nil
+		}, WithStepName("listAll"))
 		if err != nil {
 			return "", fmt.Errorf("ListWorkflows failed: %w", err)
 		}
-
-		foundMain := false
-		foundChild := false
-		foundForked := false
-		for _, wf := range workflows {
-			if wf.Id == currentWorkflowId {
-				foundMain = true
-			}
-			if wf.Id == childId {
-				foundChild = true
-			}
-			if wf.Id == forkHandle.GetWorkflowId() {
-				foundForked = true
-			}
-		}
-		if !foundMain || !foundChild || !foundForked {
-			return "", fmt.Errorf("ListWorkflows did not return expected workflows. Found main: %v, child: %v, forked: %v", foundMain, foundChild, foundForked)
+		if !found {
+			return "", fmt.Errorf("ListWorkflows did not find expected workflows")
 		}
 
 		childEvent.Set()
@@ -4190,6 +4237,7 @@ func TestSpecialSteps(t *testing.T) {
 	}
 
 	specialStepsWorkflowD := NewWorkflow(dbosCtx, specialStepsWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("SpecialStepsExecution", func(t *testing.T) {
 		handle, err := specialStepsWorkflowD(dbosCtx, "test-input")
@@ -4219,17 +4267,16 @@ func TestSpecialSteps(t *testing.T) {
 
 		steps, err := GetWorkflowSteps(dbosCtx, workflowId)
 		require.NoError(t, err, "failed to get workflow steps")
-		require.Len(t, steps, 9, "expected 9 steps")
+		require.Len(t, steps, 8, "expected 8 steps")
 		expectedSteps := []string{
 			"DBOS.uuid",
 			"startChildWorkflow",
-			"DBOS.cancelWorkflow",
-			"DBOS.retrieveWorkflow",
-			"DBOS.getStatus",
-			"DBOS.resumeWorkflow",
-			"DBOS.forkWorkflow",
-			"DBOS.getWorkflowSteps",
-			"DBOS.listWorkflows",
+			"cancelChild",
+			"checkChildCancelled",
+			"resumeChild",
+			"forkSelf",
+			"countSteps",
+			"listAll",
 		}
 		for i, name := range expectedSteps {
 			require.Equal(t, name, steps[i].StepName, "unexpected step at index %d", i)
@@ -4444,6 +4491,7 @@ func TestWorkflowHandles(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	slowWorkflowD := NewWorkflow(dbosCtx, slowWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	workflowSleep := 1 * time.Second
 
@@ -4485,6 +4533,7 @@ func TestWorkflowHandleContextCancel(t *testing.T) {
 	parallelTest(t)
 	dbosCtx := setupDbos(t, setupDbosOptions{dropDB: true, checkLeaks: true})
 	getEventWorkflowD := NewWorkflow(dbosCtx, getEventWorkflow)
+	require.NoError(t, Start(dbosCtx))
 
 	t.Run("WorkflowHandleContextCancel", func(t *testing.T) {
 		getEventWorkflowStartedSignal.Clear()

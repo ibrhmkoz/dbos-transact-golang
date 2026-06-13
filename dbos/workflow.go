@@ -121,29 +121,15 @@ func (h *workflowHandle) GetStatus() (WorkflowStatus, error) {
 		loadOutput = false
 	}
 	c := h.dbosContext.(*dbosContext)
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
 	var workflowStatuses []WorkflowStatus
 	var err error
-	if isWithinWorkflow {
-		workflowStatuses, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
-			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
-				return c.kernel.listWorkflows(ctx, listWorkflowsDBInput{
-					workflowIds: []string{h.workflowId},
-					loadInput:   loadInput,
-					loadOutput:  loadOutput,
-				})
-			}, withRetrierLogger(c.logger))
-		}, WithStepName("DBOS.getStatus"))
-	} else {
-		workflowStatuses, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
-			return c.kernel.listWorkflows(c, listWorkflowsDBInput{
-				workflowIds: []string{h.workflowId},
-				loadInput:   loadInput,
-				loadOutput:  loadOutput,
-			})
+	workflowStatuses, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
+		return c.kernel.listWorkflows(c, listWorkflowsDBInput{
+			workflowIds: []string{h.workflowId},
+			loadInput:   loadInput,
+			loadOutput:  loadOutput,
 		})
-	}
+	})
 	if err != nil {
 		return WorkflowStatus{}, fmt.Errorf("failed to get workflow status: %w", err)
 	}
@@ -2400,29 +2386,15 @@ func (c *dbosContext) RetrieveWorkflow(workflowId string) (*WorkflowHandle[any],
 		loadOutput = false
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
 	var workflowStatus []WorkflowStatus
 	var err error
-	if isWithinWorkflow {
-		workflowStatus, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
-			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
-				return c.kernel.listWorkflows(ctx, listWorkflowsDBInput{
-					workflowIds: []string{workflowId},
-					loadInput:   loadInput,
-					loadOutput:  loadOutput,
-				})
-			}, withRetrierLogger(c.logger))
-		}, WithStepName("DBOS.retrieveWorkflow"))
-	} else {
-		workflowStatus, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
-			return c.kernel.listWorkflows(c, listWorkflowsDBInput{
-				workflowIds: []string{workflowId},
-				loadInput:   loadInput,
-				loadOutput:  loadOutput,
-			})
-		}, withRetrierLogger(c.logger))
-	}
+	workflowStatus, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
+		return c.kernel.listWorkflows(c, listWorkflowsDBInput{
+			workflowIds: []string{workflowId},
+			loadInput:   loadInput,
+			loadOutput:  loadOutput,
+		})
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve workflow status: %w", err)
 	}
@@ -2448,19 +2420,11 @@ func RetrieveWorkflow[R any](ctx Context, workflowId string) (*WorkflowHandle[R]
 }
 
 func (c *dbosContext) CancelWorkflow(workflowId string) error {
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
 	var found []string
 	var err error
-	if isWithinWorkflow {
-		found, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
-			return c.kernel.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIds: []string{workflowId}, tx: tx})
-		}, WithStepName("DBOS.cancelWorkflow"))
-	} else {
-		found, err = retryWithResult(c, func() ([]string, error) {
-			return c.kernel.cancelWorkflows(c, cancelWorkflowsDBInput{workflowIds: []string{workflowId}})
-		}, withRetrierLogger(c.logger))
-	}
+	found, err = retryWithResult(c, func() ([]string, error) {
+		return c.kernel.cancelWorkflows(c, cancelWorkflowsDBInput{workflowIds: []string{workflowId}})
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return err
 	}
@@ -2480,14 +2444,6 @@ func CancelWorkflow(ctx Context, workflowId string) error {
 }
 
 func (c *dbosContext) CancelWorkflows(workflowIds []string) error {
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
-			return c.kernel.cancelWorkflows(ctx, cancelWorkflowsDBInput{workflowIds: workflowIds, tx: tx})
-		}, WithStepName("DBOS.cancelWorkflows"))
-		return err
-	}
 	_, err := retryWithResult(c, func() ([]string, error) {
 		return c.kernel.cancelWorkflows(c, cancelWorkflowsDBInput{workflowIds: workflowIds})
 	}, withRetrierLogger(c.logger))
@@ -2548,15 +2504,6 @@ func (c *dbosContext) SetWorkflowDelay(workflowId string, opts ...SetWorkflowDel
 	}
 	input := setWorkflowDelayDBInput{workflowId: workflowId, delayUntil: delayUntil}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			input.tx = tx
-			return nil, c.kernel.setWorkflowDelay(ctx, input)
-		}, WithStepName("DBOS.setWorkflowDelay"))
-		return err
-	}
 	return retry(c, func() error {
 		return c.kernel.setWorkflowDelay(c, input)
 	}, withRetrierLogger(c.logger))
@@ -2576,26 +2523,12 @@ func (c *dbosContext) DeleteWorkflows(workflowIds []string, opts ...DeleteWorkfl
 		opt(params)
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			err := c.kernel.deleteWorkflows(ctx, deleteWorkflowsDBInput{
-				workflowIds:    workflowIds,
-				deleteChildren: params.deleteChildren,
-				tx:             tx,
-			})
-			return "", err
-		}, WithStepName("DBOS.deleteWorkflows"))
-		return err
-	} else {
-		return retry(c, func() error {
-			return c.kernel.deleteWorkflows(c, deleteWorkflowsDBInput{
-				workflowIds:    workflowIds,
-				deleteChildren: params.deleteChildren,
-			})
-		}, withRetrierLogger(c.logger))
-	}
+	return retry(c, func() error {
+		return c.kernel.deleteWorkflows(c, deleteWorkflowsDBInput{
+			workflowIds:    workflowIds,
+			deleteChildren: params.deleteChildren,
+		})
+	}, withRetrierLogger(c.logger))
 }
 
 type deleteWorkflowOptions struct {
@@ -2638,24 +2571,13 @@ func (c *dbosContext) ResumeWorkflows(workflowIds []string, opts ...ResumeWorkfl
 		opt(params)
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
 	var foundIds []string
 	var err error
-	if isWithinWorkflow {
-		foundIds, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]string, error) {
-			return c.kernel.resumeWorkflows(ctx, resumeWorkflowsDBInput{
-				workflowIds: workflowIds,
-				tx:          tx,
-			})
-		}, WithStepName("DBOS.resumeWorkflow"))
-	} else {
-		foundIds, err = retryWithResult(c, func() ([]string, error) {
-			return c.kernel.resumeWorkflows(c, resumeWorkflowsDBInput{
-				workflowIds: workflowIds,
-			})
-		}, withRetrierLogger(c.logger))
-	}
+	foundIds, err = retryWithResult(c, func() ([]string, error) {
+		return c.kernel.resumeWorkflows(c, resumeWorkflowsDBInput{
+			workflowIds: workflowIds,
+		})
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -2719,20 +2641,11 @@ func (c *dbosContext) ForkWorkflow(input ForkWorkflowInput) (*WorkflowHandle[any
 		applicationVersion: input.ApplicationVersion,
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
 	var forkedWorkflowId string
 	var err error
-	if isWithinWorkflow {
-		forkedWorkflowId, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (string, error) {
-			dbInput.tx = tx
-			return c.kernel.forkWorkflow(ctx, dbInput)
-		}, WithStepName("DBOS.forkWorkflow"))
-	} else {
-		forkedWorkflowId, err = retryWithResult(c, func() (string, error) {
-			return c.kernel.forkWorkflow(c, dbInput)
-		}, withRetrierLogger(c.logger))
-	}
+	forkedWorkflowId, err = retryWithResult(c, func() (string, error) {
+		return c.kernel.forkWorkflow(c, dbInput)
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -2986,19 +2899,9 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 
 	var workflows []WorkflowStatus
 	var err error
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		workflows, err = Run(c, func(ctx context.Context) ([]WorkflowStatus, error) {
-			return retryWithResult(ctx, func() ([]WorkflowStatus, error) {
-				return c.kernel.listWorkflows(ctx, dbInput)
-			}, withRetrierLogger(c.logger))
-		}, WithStepName("DBOS.listWorkflows"))
-	} else {
-		workflows, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
-			return c.kernel.listWorkflows(c, dbInput)
-		}, withRetrierLogger(c.logger))
-	}
+	workflows, err = retryWithResult(c, func() ([]WorkflowStatus, error) {
+		return c.kernel.listWorkflows(c, dbInput)
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -3006,8 +2909,15 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 	if params.loadInput || params.loadOutput {
 		for i := range workflows {
 			if params.loadInput && workflows[i].Input != nil {
-				encodedInput, ok := workflows[i].Input.(*string)
-				if !ok {
+				// When this runs as a step inside a workflow, a replay returns the
+				// checkpointed rows, where the JSON round-trip turns *string into string.
+				var encodedInput *string
+				switch v := workflows[i].Input.(type) {
+				case *string:
+					encodedInput = v
+				case string:
+					encodedInput = &v
+				default:
 					return nil, fmt.Errorf("workflow input must be encoded string, got %T", workflows[i].Input)
 				}
 				if encodedInput == nil || *encodedInput == nilMarker {
@@ -3030,8 +2940,13 @@ func (c *dbosContext) ListWorkflows(opts ...ListWorkflowsOption) ([]WorkflowStat
 				}
 			}
 			if params.loadOutput && workflows[i].Output != nil {
-				encodedOutput, ok := workflows[i].Output.(*string)
-				if !ok {
+				var encodedOutput *string
+				switch v := workflows[i].Output.(type) {
+				case *string:
+					encodedOutput = v
+				case string:
+					encodedOutput = &v
+				default:
 					return nil, fmt.Errorf("workflow output must be encoded *string, got %T", workflows[i].Output)
 				}
 				if encodedOutput == nil || *encodedOutput == nilMarker {
@@ -3110,19 +3025,9 @@ func (c *dbosContext) GetWorkflowSteps(workflowId string, opts ...GetWorkflowSte
 
 	var steps []stepInfo
 	var err error
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		steps, err = Run(c, func(ctx context.Context) ([]stepInfo, error) {
-			return retryWithResult(ctx, func() ([]stepInfo, error) {
-				return c.kernel.getWorkflowSteps(ctx, getWorkflowStepsInput)
-			}, withRetrierLogger(c.logger))
-		}, WithStepName("DBOS.getWorkflowSteps"))
-	} else {
-		steps, err = retryWithResult(c, func() ([]stepInfo, error) {
-			return c.kernel.getWorkflowSteps(c, getWorkflowStepsInput)
-		}, withRetrierLogger(c.logger))
-	}
+	steps, err = retryWithResult(c, func() ([]stepInfo, error) {
+		return c.kernel.getWorkflowSteps(c, getWorkflowStepsInput)
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -3221,15 +3126,6 @@ func (c *dbosContext) GetWorkflowAggregates(input GetWorkflowAggregatesInput) ([
 		workflowIdPrefix:          input.WorkflowIdPrefix,
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowAggregateRow, error) {
-			in := dbInput
-			in.tx = tx
-			return c.kernel.getWorkflowAggregates(ctx, in)
-		}, WithStepName("DBOS.getWorkflowAggregates"))
-	}
 	return retryWithResult(c, func() ([]WorkflowAggregateRow, error) {
 		return c.kernel.getWorkflowAggregates(c, dbInput)
 	}, withRetrierLogger(c.logger))
@@ -3281,15 +3177,6 @@ func (c *dbosContext) GetStepAggregates(input GetStepAggregatesInput) ([]StepAgg
 		completedBefore:     input.CompletedBefore,
 	}
 
-	workflowState, ok := c.Value(workflowStateKey).(*workflowState)
-	isWithinWorkflow := ok && workflowState != nil
-	if isWithinWorkflow {
-		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]StepAggregateRow, error) {
-			in := dbInput
-			in.tx = tx
-			return c.kernel.getStepAggregates(ctx, in)
-		}, WithStepName("DBOS.getStepAggregates"))
-	}
 	return retryWithResult(c, func() ([]StepAggregateRow, error) {
 		return c.kernel.getStepAggregates(c, dbInput)
 	}, withRetrierLogger(c.logger))
@@ -3375,15 +3262,6 @@ func (c *dbosContext) CreateSchedule(fn ScheduledWorkflowFunc, input CreateSched
 		Status:            ScheduleStatusActive,
 		AutomaticBackfill: o.automaticBackfill,
 		CronTimezone:      o.cronTimezone,
-	}
-
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			input := dbInput
-			input.tx = tx
-			return nil, c.kernel.createSchedule(ctx, input)
-		}, WithStepName("DBOS.createSchedule"))
-		return err
 	}
 
 	return retry(c, func() error {
@@ -3533,15 +3411,6 @@ func (c *dbosContext) PauseSchedule(scheduleName string) error {
 		Status:       ScheduleStatusPaused,
 	}
 
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			in := dbInput
-			in.tx = tx
-			return nil, c.kernel.updateSchedule(ctx, in)
-		}, WithStepName("DBOS.pauseSchedule"))
-		return err
-	}
-
 	return retry(c, func() error {
 		return c.kernel.updateSchedule(c, dbInput)
 	}, withRetrierLogger(c.logger))
@@ -3572,15 +3441,6 @@ func (c *dbosContext) ResumeSchedule(scheduleName string) error {
 		Status:       ScheduleStatusActive,
 	}
 
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			in := dbInput
-			in.tx = tx
-			return nil, c.kernel.updateSchedule(ctx, in)
-		}, WithStepName("DBOS.resumeSchedule"))
-		return err
-	}
-
 	return retry(c, func() error {
 		return c.kernel.updateSchedule(c, dbInput)
 	}, withRetrierLogger(c.logger))
@@ -3596,13 +3456,6 @@ func ResumeSchedule(ctx Context, scheduleName string) error {
 func (c *dbosContext) DeleteSchedule(scheduleName string) error {
 	if scheduleName == "" {
 		return errors.New("schedule_name is required")
-	}
-
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		_, err := runAsTxn(c, func(ctx context.Context, tx pgx.Tx) (any, error) {
-			return nil, c.kernel.deleteSchedule(ctx, deleteScheduleDBInput{ScheduleName: scheduleName, tx: tx})
-		}, WithStepName("DBOS.deleteSchedule"))
-		return err
 	}
 
 	return retry(c, func() error {
@@ -3624,19 +3477,9 @@ func (c *dbosContext) GetSchedule(scheduleName string) (*WorkflowSchedule, error
 
 	dbInput := listSchedulesDBInput{ScheduleNamePrefixes: []string{scheduleName}}
 
-	var schedules []WorkflowSchedule
-	var err error
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		schedules, err = runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowSchedule, error) {
-			in := dbInput
-			in.tx = tx
-			return c.kernel.listSchedules(ctx, in)
-		}, WithStepName("DBOS.getSchedule"))
-	} else {
-		schedules, err = retryWithResult(c, func() ([]WorkflowSchedule, error) {
-			return c.kernel.listSchedules(c, dbInput)
-		}, withRetrierLogger(c.logger))
-	}
+	schedules, err := retryWithResult(c, func() ([]WorkflowSchedule, error) {
+		return c.kernel.listSchedules(c, dbInput)
+	}, withRetrierLogger(c.logger))
 	if err != nil {
 		return nil, err
 	}
@@ -3664,13 +3507,6 @@ func (c *dbosContext) ListSchedules(opts ...ListSchedulesOption) ([]WorkflowSche
 		Statuses:             o.statuses,
 		WorkflowNames:        o.workflowNames,
 		ScheduleNamePrefixes: o.scheduleNamePrefixes,
-	}
-	if state, inWorkflow := c.Value(workflowStateKey).(*workflowState); inWorkflow && state != nil {
-		return runAsTxn(c, func(ctx context.Context, tx pgx.Tx) ([]WorkflowSchedule, error) {
-			in := dbInput
-			in.tx = tx
-			return c.kernel.listSchedules(ctx, in)
-		}, WithStepName("DBOS.listSchedules"))
 	}
 	return retryWithResult(c, func() ([]WorkflowSchedule, error) {
 		return c.kernel.listSchedules(c, dbInput)

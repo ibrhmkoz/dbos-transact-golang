@@ -254,10 +254,13 @@ func testCapturingScheduledWorkflow(ctx Context, input ScheduledWorkflowInput) (
 	wfId, _ := GetWorkflowId(ctx)
 	scheduledInputCapture.Store(wfId, input)
 
-	if err := CreateSchedule(ctx, testCapturingScheduledWorkflow, CreateScheduleRequest{
-		ScheduleName: wfId + "-inner",
-		Schedule:     "0 0 0 1 1 *",
-	}); err != nil {
+	// CreateSchedule is a plain effect: wrap it in a step for replay safety.
+	if _, err := Run(ctx, func(context.Context) (any, error) {
+		return nil, CreateSchedule(ctx, testCapturingScheduledWorkflow, CreateScheduleRequest{
+			ScheduleName: wfId + "-inner",
+			Schedule:     "0 0 0 1 1 *",
+		})
+	}, WithStepName("createInnerSchedule")); err != nil {
 		return nil, err
 	}
 	return "completed", nil
