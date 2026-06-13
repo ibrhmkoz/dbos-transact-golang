@@ -22,6 +22,8 @@ workspace_db="${TEST_RESULTS_DB:-$results_root/results.duckdb}"
 started_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 started_epoch="$(date +%s)"
 events_file="$(mktemp "${TMPDIR:-/tmp}/go-test-events.XXXXXX")"
+sanitized_events="$events_file.clean"
+recorded=false
 
 mkdir -p "$results_root/runs"
 if [[ "$results_root" = /* ]]; then
@@ -36,12 +38,74 @@ staging_dir="$results_root/.staging-$run_id"
 mkdir -p "$staging_dir"
 
 cleanup() {
-    rm -f "$events_file"
+    rm -f "$events_file" "$sanitized_events"
     rm -rf "$staging_dir"
 }
 trap cleanup EXIT
 
 command_display="$(printf '%q ' "$@")"
+
+# Load whatever go-test events were captured into parquet and move the run into
+# place. Shared by the normal completion path and the interrupt handler so a
+# cancelled run still persists everything that finished. Idempotent.
+finalize_run() {
+    local status="$1"
+    local exit_code="$2"
+    if [[ "$recorded" == true ]]; then
+        return 0
+    fi
+    recorded=true
+
+    local finished_at finished_epoch duration_seconds
+    finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+    finished_epoch="$(date +%s)"
+    duration_seconds="$((finished_epoch - started_epoch))"
+
+    # On interrupt the last line may be a half-written event; keep only complete
+    # single-line JSON objects so DuckDB never trips on a truncated record.
+    grep -E '^\{.*\}$' "$events_file" > "$sanitized_events" 2>/dev/null || true
+
+    if ! (
+        cd "$staging_dir" &&
+        TEST_RUN_ID="$run_id" \
+        TEST_STARTED_AT="$started_at" \
+        TEST_FINISHED_AT="$finished_at" \
+        TEST_DURATION_SECONDS="$duration_seconds" \
+        TEST_STATUS="$status" \
+        TEST_EXIT_CODE="$exit_code" \
+        DBOS_TEST_BACKEND="$backend" \
+        TEST_RACE="$race" \
+        TEST_PATTERN="$pattern" \
+        TEST_COMMAND="$command_display" \
+        TEST_EVENTS_FILE="$sanitized_events" \
+        duckdb -f "$script_dir/load-test-results.sql" >/dev/null
+    ); then
+        echo "Failed to record test run $run_id" >&2
+        return 1
+    fi
+
+    mv "$staging_dir" "$results_root/runs/$run_id"
+
+    # Create the workspace database once: views over the per-run parquet files.
+    # It is never written to afterwards, so an open DataGrip connection to it
+    # cannot conflict with recording new runs.
+    if [[ ! -e "$workspace_db" ]]; then
+        sed "s|__TEST_RESULTS_ROOT__|$results_root_absolute|g" \
+            "$script_dir/test-results-schema.sql" | duckdb "$workspace_db" >/dev/null
+    fi
+
+    printf '\nRecorded run %s: %s in %ss\n' "$run_id" "$status" "$duration_seconds"
+    printf 'Query results: duckdb -readonly %s -f scripts/test-results.sql\n' "$workspace_db"
+}
+
+on_interrupt() {
+    trap '' INT TERM
+    printf '\nInterrupted — recording partial run %s as interrupted\n' "$run_id" >&2
+    finalize_run interrupted 130 || true
+    exit 130
+}
+trap on_interrupt INT TERM
+
 printf 'Recording test run %s in %s/runs/%s\n' "$run_id" "$results_root" "$run_id"
 
 set +e
@@ -55,43 +119,10 @@ if [[ "${pipeline_status[1]}" -ne 0 || "${pipeline_status[2]}" -ne 0 ]]; then
     exit 2
 fi
 
-finished_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-finished_epoch="$(date +%s)"
-duration_seconds="$((finished_epoch - started_epoch))"
 status="pass"
 if [[ "$test_exit_code" -ne 0 ]]; then
     status="fail"
 fi
 
-if ! (
-    cd "$staging_dir" &&
-    TEST_RUN_ID="$run_id" \
-    TEST_STARTED_AT="$started_at" \
-    TEST_FINISHED_AT="$finished_at" \
-    TEST_DURATION_SECONDS="$duration_seconds" \
-    TEST_STATUS="$status" \
-    TEST_EXIT_CODE="$test_exit_code" \
-    DBOS_TEST_BACKEND="$backend" \
-    TEST_RACE="$race" \
-    TEST_PATTERN="$pattern" \
-    TEST_COMMAND="$command_display" \
-    TEST_EVENTS_FILE="$events_file" \
-    duckdb -f "$script_dir/load-test-results.sql" >/dev/null
-); then
-    echo "Failed to record test run $run_id" >&2
-    exit 2
-fi
-
-mv "$staging_dir" "$results_root/runs/$run_id"
-
-# Create the workspace database once: views over the per-run parquet files.
-# It is never written to afterwards, so an open DataGrip connection to it
-# cannot conflict with recording new runs.
-if [[ ! -e "$workspace_db" ]]; then
-    sed "s|__TEST_RESULTS_ROOT__|$results_root_absolute|g" \
-        "$script_dir/test-results-schema.sql" | duckdb "$workspace_db" >/dev/null
-fi
-
-printf '\nRecorded run %s: %s in %ss\n' "$run_id" "$status" "$duration_seconds"
-printf 'Query results: duckdb -readonly %s -f scripts/test-results.sql\n' "$workspace_db"
+finalize_run "$status" "$test_exit_code" || exit 2
 exit "$test_exit_code"
